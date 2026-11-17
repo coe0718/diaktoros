@@ -633,7 +633,7 @@ class CheckShowsIt(Base):
     def kinds(self):
         from diaktoros import ready
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
-        with mock.patch.object(ready.gate, "shadow_state", return_value=("", "", "")), \
+        with mock.patch.object(ready.gate.shadows, "shadow_state", return_value=("", "", "")), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
             return ready.assess_kinds({**self.loop, "required_checks": []}, self.st, pr,
                                       list(self.reviews), ci.CIState(passed=[]), tra.CLEAN)

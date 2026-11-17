@@ -182,7 +182,7 @@ class Blocking(Base):
 class Ready(Base):
     def kinds(self, reviews):
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
-        with mock.patch.object(gate, "shadow_state", return_value=("", "", "")), \
+        with mock.patch.object(gate.shadows, "shadow_state", return_value=("", "", "")), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
             return ready.assess_kinds({**self.loop, "required_checks": []}, self.st, pr, reviews,
                                       GREEN, CLEAN)

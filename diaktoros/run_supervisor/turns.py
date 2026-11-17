@@ -384,7 +384,7 @@ class ClaimAndLaunch:
             elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
                 # #1004 part 3: no reviewer verdict either (the head is approved); the
                 # adjudicator's upholding ruling is its work order, and it must still stand.
-                ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+                ruled = gate.shadows.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
                 if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
                     read.superseded = 'upheld shadow ruling no longer current'
             elif str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
@@ -829,7 +829,8 @@ class ClaimAndLaunch:
         st = state_mod.state_for(loop)
         reviews = transition.effective_reviews(loop, st, row['pr'], row['head'],
                                                gh.reviews(loop, row['pr']))
-        outcome = gate.shadow_escalation(loop, st, row['pr'], row['head'], reviews, db=self.db)
+        outcome = gate.shadows.shadow_escalation(loop, st, row['pr'], row['head'], reviews,
+                                                 db=self.db)
         if outcome == "new":
             util.log(f"#{row['pr']} @ {row['head'][:7]} shadow review disagrees with the "
                      "approval: sent for a ruling")
@@ -956,7 +957,7 @@ class ClaimAndLaunch:
         from .. import gate, gh, prompts
         from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
-        ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
         if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
             raise ValueError('upheld shadow ruling no longer current')
         if self._policy_hold(turn):
@@ -1210,9 +1211,9 @@ class ClaimAndLaunch:
 
         A shadow run (#1786): the check says "waiting on the shadow review" for as long as the
         ledger shows the run open, so it is refreshed once the run has ended; one still open
-        (``gate.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing. Any other PR turn
-        (#753): the check names the turn (``views.turn_note``), so it is refreshed when the turn
-        launches and when it ends, except a turn that never launched and waits again with the
+        (``gate.shadows.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing. Any other PR
+        turn (#753): the check names the turn (``views.turn_note``), so it is refreshed when the
+        turn launches and when it ends, except a turn that never launched and waits again with the
         reason it was claimed with: a CI hold re-polled unchanged costs no refresh. ``state``
         None means this owner no longer holds the run. A ``loop`` of None is looked up from the
         row's repo. Best effort, like every refresh after an event."""
@@ -1222,7 +1223,7 @@ class ClaimAndLaunch:
             if (row is None or state is None
                     or row['seat'] not in (*claims.PR_HOLD_SEATS, run_supervisor.SHADOW)):
                 return                  # an issue fix's or a triage's number is an issue's
-            if row['seat'] == run_supervisor.SHADOW and state in gate.SHADOW_OPEN:
+            if row['seat'] == run_supervisor.SHADOW and state in gate.shadows.SHADOW_OPEN:
                 return
             if row['seat'] != run_supervisor.SHADOW and state == 'waiting' and not launched:
                 with self._connect() as con:

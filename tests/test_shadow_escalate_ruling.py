@@ -1,10 +1,10 @@
 """#1004 part 2: a shadow block against the reviewer's approval goes for a ruling.
 
 With ``shadow.escalate`` on, when the reviewer approved a head and the shadow review there
-requested changes, the head is sent to the adjudicator once (``gate.shadow_escalation``, from the
-shadow's finish and the watchdog sweep). The adjudicator's prompt says the head is approved and
-carries the shadow review. ACCEPT overrules it: the hold lifts, ``ready`` and ``explain`` treat the
-approval as standing. REJECT keeps the hold, and part 3 hands the upheld findings to the fixer
+requested changes, the head is sent to the adjudicator once (``gate.shadows.shadow_escalation``,
+from the shadow's finish and the watchdog sweep). The adjudicator's prompt says the head is approved
+and carries the shadow review. ACCEPT overrules it: the hold lifts, ``ready`` and ``explain`` treat
+the approval as standing. REJECT keeps the hold, and part 3 hands the upheld findings to the fixer
 (test_shadow_upheld_fix).
 """
 from __future__ import annotations
@@ -68,8 +68,8 @@ class Base(fg.Base):
 class Trigger(Base):
     def escalate(self, reviews=APPROVED, loop=None):
         with mock.patch.object(gate, "breach", return_value="new") as breach:
-            outcome = gate.shadow_escalation(loop or self.loop, self.st, 7, fg.HEAD, reviews,
-                                             db=self.db)
+            outcome = gate.shadows.shadow_escalation(loop or self.loop, self.st, 7, fg.HEAD,
+                                                     reviews, db=self.db)
         return outcome, breach
 
     def test_a_shadow_block_on_an_approved_head_goes_for_a_ruling_once(self):
@@ -126,7 +126,7 @@ class Trigger(Base):
 
 class Hold(Base):
     def hold(self, marker):
-        return gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        return gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
 
     def test_the_hold_follows_the_ruling(self):
         self.shadow("REQUEST_CHANGES")
@@ -148,17 +148,17 @@ class Hold(Base):
         self.assertEqual(self.hold(marker)[0], "")
         self.shadow("REQUEST_CHANGES")                      # a re-review dissents again
         self.assertIn("waiting for its ruling", self.hold(marker)[0])
-        self.assertFalse(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+        self.assertFalse(gate.shadows.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
 
     def test_another_escalation_or_head_is_not_this_shadows(self):
         self.shadow("REQUEST_CHANGES")
         self.ruled("ACCEPT")
         dispute = self.mark_escalated(by="dispute")
         self.assertIn("holds the PR until you decide", self.hold(dispute)[0])
-        self.assertTrue(gate.shadow_overruled(self.loop, self.mark_escalated(), fg.HEAD,
+        self.assertTrue(gate.shadows.shadow_overruled(self.loop, self.mark_escalated(), fg.HEAD,
                                               db=self.db))
-        self.assertFalse(gate.shadow_overruled(self.loop, dispute, fg.HEAD, db=self.db))
-        self.assertFalse(gate.shadow_overruled(self.loop, self.mark_escalated(), "b" * 40,
+        self.assertFalse(gate.shadows.shadow_overruled(self.loop, dispute, fg.HEAD, db=self.db))
+        self.assertFalse(gate.shadows.shadow_overruled(self.loop, self.mark_escalated(), "b" * 40,
                                                db=self.db))
 
 
@@ -213,15 +213,16 @@ class Between(Base):
         self.shadow("REQUEST_CHANGES", body="F2: lands mid-turn", at=time.time())
         self.assertEqual(self.rule(launch.scope), {"accepted": True})
         marker = self.st.breach_get(7)
-        held, _note = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        held, _note = gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
         self.assertIn("waiting for its ruling", held)            # s2 was never shown
-        self.assertFalse(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+        self.assertFalse(gate.shadows.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
         # ...and the sweep sends s2 for a ruling of its own, as the next round.
         from diaktoros import gh
         with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
                 mock.patch.object(gate.observer, "notify"), \
                 mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
-            outcome = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED, db=self.db)
+            outcome = gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED,
+                                                     db=self.db)
         self.assertEqual((outcome, [c.args[3] for c in wake.call_args_list]), ("new", [2]))
 
     def test_an_accept_of_the_review_it_was_shown_still_overrules_it(self):
@@ -229,14 +230,16 @@ class Between(Base):
         launch, _row = self.claim()
         self.assertEqual(self.rule(launch.scope), {"accepted": True})
         marker = self.st.breach_get(7)
-        self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
-        self.assertTrue(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+        self.assertEqual(
+            gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
+        self.assertTrue(gate.shadows.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
 
     def test_a_ruling_from_before_the_column_reads_by_time(self):
         self.shadow("REQUEST_CHANGES")
         marker = self.mark_escalated()
         self.ruled("ACCEPT")                                     # shadow_run NULL
-        self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
+        self.assertEqual(
+            gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
 
     def drop_column(self):
         """The rulings table as a ledger from before #1112 has it: no shadow_run column."""
@@ -254,17 +257,17 @@ class Between(Base):
         self.assertNotIn("--", sql)
 
     def test_a_ledger_without_the_column_is_read_by_time(self):
-        # gate._rulings_at's OperationalError fallback: no column reads as NULL (time rule).
+        # gate.shadows._rulings_at's OperationalError fallback: no column reads as NULL (time rule).
         self.shadow("REQUEST_CHANGES")
         marker = self.mark_escalated()
         self.ruled("ACCEPT")
         self.drop_column()
-        held, note = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        held, note = gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
         self.assertEqual(held, "")
         self.assertIn("overruled the shadow review", note)
         self.shadow("REQUEST_CHANGES")                           # a newer dissent still holds
         self.assertIn("waiting for its ruling",
-                      gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0])
+                      gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0])
 
     def test_the_migration_adds_the_column_so_an_old_ledger_can_record_a_ruling(self):
         # A ledger created before #1112: the launch happened, then the file is upgraded by a
@@ -279,7 +282,7 @@ class Between(Base):
         with closing(sqlite3.connect(self.db)) as con:
             self.assertEqual(con.execute("SELECT shadow_run FROM rulings").fetchall(), [("s1",)])
         marker = self.st.breach_get(7)
-        self.assertTrue(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+        self.assertTrue(gate.shadows.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
 
 
 class Eligibility(Base):
@@ -323,8 +326,8 @@ class Eligibility(Base):
         with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
                 mock.patch.object(gate, "wake_adjudicator", return_value=True), \
                 mock.patch.object(gate.observer, "notify"):
-            self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED,
-                                                    db=self.db), "new")
+            self.assertEqual(gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                                                            APPROVED, db=self.db), "new")
         marker = self.st.breach_get(7)
         from diaktoros.run_supervisor import pr_facts
         pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
@@ -349,7 +352,7 @@ class Eligibility(Base):
                 mock.patch.object(gate.observer, "notify"):
             self.assertEqual(gate.breach(loop, self.st, 7, fg.HEAD, 1, "r",
                                          escalated={"by": "dispute"}), "stale")
-            self.assertEqual(gate.shadow_escalation(loop, self.st, 7, fg.HEAD, APPROVED,
+            self.assertEqual(gate.shadows.shadow_escalation(loop, self.st, 7, fg.HEAD, APPROVED,
                                                     db=self.db), "new")
         wake.assert_called_once()
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
@@ -364,7 +367,8 @@ class Again(Base):
         with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
                 mock.patch.object(gate.observer, "notify"), \
                 mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
-            outcome = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED, db=self.db)
+            outcome = gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED,
+                                                     db=self.db)
         return outcome, [c.args[3] for c in wake.call_args_list]
 
     def claim(self, rounds):
@@ -385,7 +389,7 @@ class Again(Base):
         self.assertIsNotNone(self.st.breach_start(7, fg.HEAD, 1))   # the adjudicator's turn
         self.ruled("ACCEPT")                                        # turn key breach:1
         self.assertEqual(self.escalate(), ("already", []))          # no newer dissent
-        self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db,
+        self.assertEqual(gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db,
                                           marker=self.st.breach_get(7))[0], "")
         self.shadow("REQUEST_CHANGES")                              # a re-review dissents
         self.assertEqual(self.escalate(), ("new", [2]))
@@ -396,7 +400,7 @@ class Again(Base):
         self.assertEqual(self.claim(1), "superseded")
         self.assertEqual(self.escalate(), ("already", []))          # once per dissent
         self.assertIn("waiting for its ruling",
-                      gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0])
+                      gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0])
 
     def test_a_ruling_still_out_is_not_doubled(self):
         self.shadow("REQUEST_CHANGES")
@@ -416,13 +420,13 @@ class Retry(Base):
         with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
                 mock.patch.object(gate.observer, "notify"):
             with mock.patch.object(gate, "wake_adjudicator", return_value=False):
-                self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                self.assertEqual(gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
                                                         APPROVED, db=self.db), "new")
             self.assertEqual(self.st.breach_get(7)["status"], "delivery-pending")
             with mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
-                self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                self.assertEqual(gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
                                                         APPROVED, db=self.db), "retry")
-                self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                self.assertEqual(gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
                                                         APPROVED, db=self.db), "already")
         wake.assert_called_once()
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
@@ -431,8 +435,8 @@ class Retry(Base):
         self.shadow("REQUEST_CHANGES")
         self.mark_escalated(by="dispute", status="delivery-pending")
         with mock.patch.object(gate, "breach") as breach:
-            self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED,
-                                                    db=self.db), "already")
+            self.assertEqual(gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                                                            APPROVED, db=self.db), "already")
         breach.assert_not_called()
 
 class Explain(Base):
@@ -461,11 +465,11 @@ class Ready(Base):
         from diaktoros import ready
         self.mark_escalated()
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
-        with mock.patch.object(gate, "shadow_state", return_value=("", "", "")), \
+        with mock.patch.object(gate.shadows, "shadow_state", return_value=("", "", "")), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
-            with mock.patch.object(gate, "shadow_overruled", return_value=False):
+            with mock.patch.object(gate.shadows, "shadow_overruled", return_value=False):
                 parked = ready.assess(self.loop, self.st, pr, APPROVED, None, None)
-            with mock.patch.object(gate, "shadow_overruled", return_value=True):
+            with mock.patch.object(gate.shadows, "shadow_overruled", return_value=True):
                 free = ready.assess(self.loop, self.st, pr, APPROVED, None, None)
         self.assertIn("escalated: parked awaiting adjudication", parked)
         self.assertNotIn("escalated: parked awaiting adjudication", free)
@@ -540,7 +544,7 @@ class CallSites(Base):
 
     def test_the_sweep_checks_an_approved_head(self):
         calls = []
-        with mock.patch.object(gate, "shadow_escalation",
+        with mock.patch.object(gate.shadows, "shadow_escalation",
                                side_effect=lambda *a, **k: calls.append(a[2:4]) or "new"):
             self.sweep()                                      # first sweep: snapshot only
             self.sweep()

@@ -58,11 +58,11 @@ class Snapshot(unittest.TestCase):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         st = state_mod.state_for(loop)
         supervisor = mock.Mock()
-        gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
+        gate.shadows.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
         supervisor.submit.assert_called_once()
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
         st.findings_put(7, VEX_SAME_ROUND)
-        gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)  # a redelivery after the review
+        gate.shadows.enqueue_shadow(loop, supervisor, 7, ts.HEAD)  # a redelivery after the review
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})    # the first one stands
         self.assertIsNone(st.shadow_findings_get(7, "b" * 40))
 
@@ -123,11 +123,11 @@ class Retention(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=temp.name):
             with self.assertRaises(OSError):
-                gate.shadow_open_heads("acme/widgets")
-            held, _note = gate.shadow_hold({**loop, "shadow": {**loop["shadow"], "escalate": True}},
-                                           7, ts.HEAD)
+                gate.shadows.shadow_open_heads("acme/widgets")
+            held, _note = gate.shadows.shadow_hold(
+                {**loop, "shadow": {**loop["shadow"], "escalate": True}}, 7, ts.HEAD)
             supervisor = mock.Mock()
-            gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
+            gate.shadows.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
         self.assertTrue(held)                                          # the hold agrees
         self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # the oldest: not evicted
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
@@ -139,7 +139,7 @@ class Retention(unittest.TestCase):
         self.fill(st, st.SHADOW_FINDINGS_KEPT)
         db = self.ledger((1000, "waiting"), (1001, "succeeded"))
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            gate.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)
+            gate.shadows.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)
         self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # delayed, still open
         self.assertIsNone(st.shadow_findings_get(1001, ts.HEAD))      # ended: evicted
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
@@ -152,9 +152,9 @@ class Retention(unittest.TestCase):
         self.fill(st, st.SHADOW_FINDINGS_KEPT)
         db = self.ledger((1000, "waiting", "other/repo"), (1001, "waiting"))
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            self.assertEqual(gate.shadow_open_heads("acme/widgets"), {(1001, ts.HEAD)})
-            self.assertEqual(gate.shadow_open_heads("other/repo"), {(1000, ts.HEAD)})
-            gate.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)       # the enforcing entry point
+            self.assertEqual(gate.shadows.shadow_open_heads("acme/widgets"), {(1001, ts.HEAD)})
+            self.assertEqual(gate.shadows.shadow_open_heads("other/repo"), {(1000, ts.HEAD)})
+            gate.shadows.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)   # the enforcing entry point
         self.assertIsNone(st.shadow_findings_get(1000, ts.HEAD))      # only another repo's: evicted
         self.assertEqual(st.shadow_findings_get(1001, ts.HEAD), {})   # this repo's, open: kept
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
@@ -180,7 +180,7 @@ class Retention(unittest.TestCase):
         sup._spawn = lambda: None
         seen = {}
         second = threading.Thread(target=lambda: seen.update(
-            b=gate.enqueue_shadow(loop, sup, 8, ts.HEAD)))
+            b=gate.shadows.enqueue_shadow(loop, sup, 8, ts.HEAD)))
         real_submit = sup.submit
 
         def submit_a(*args, **kwargs):
@@ -191,7 +191,7 @@ class Retention(unittest.TestCase):
 
         sup.submit = submit_a
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            a = gate.enqueue_shadow(loop, sup, 7, ts.HEAD)
+            a = gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD)
             second.join(30)
         self.assertEqual(a, "enqueued")
         self.assertEqual(seen.get("b"), "enqueued")
@@ -203,7 +203,8 @@ class Retention(unittest.TestCase):
         supervisor = mock.Mock()
         with mock.patch.object(state_mod.LoopState, "shadow_findings_put",
                                side_effect=OSError("disk full")):
-            self.assertEqual(gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD), "no snapshot")
+            self.assertEqual(gate.shadows.enqueue_shadow(loop, supervisor, 7, ts.HEAD),
+                             "no snapshot")
         supervisor.submit.assert_not_called()
 
     def queued_failed_shadow(self, loop, turn_key="", production=True):
@@ -240,10 +241,11 @@ class Retention(unittest.TestCase):
         st = state_mod.state_for(loop)
         sup = self.queued_failed_shadow(loop, turn_key="old")
         st.findings_put(7, VEX_SAME_ROUND)                  # live findings, since the old turn
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"),
+                         "enqueued")
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "new"), VEX_SAME_ROUND)
         self.assertIsNone(st.shadow_findings_get(7, ts.HEAD, "old"))
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="old"),
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="old"),
                          "snapshot gone")
         self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")["state"], "failed")
         with mock.patch("diaktoros.config.by_repo", return_value=loop):
@@ -257,7 +259,7 @@ class Retention(unittest.TestCase):
         st = state_mod.state_for(loop)
         sup = self.queued_failed_shadow(loop, production=False)
         st.findings_put(7, VEX_SAME_ROUND)
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "snapshot gone")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD), "snapshot gone")
         self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow")["state"], "failed")
         self.assertIsNone(st.shadow_findings_get(7, ts.HEAD))
 
@@ -268,7 +270,7 @@ class Retention(unittest.TestCase):
         st = state_mod.state_for(loop)
         sup = self.queued_failed_shadow(loop)
         st.findings_put(7, VEX_SAME_ROUND)             # what the real review recorded since
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "snapshot gone")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD), "snapshot gone")
         self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow")["state"], "failed")
         self.assertIsNone(st.shadow_findings_get(7, ts.HEAD))       # no fresh snapshot
 
@@ -277,7 +279,7 @@ class Retention(unittest.TestCase):
         st = state_mod.state_for(loop)
         sup = self.queued_failed_shadow(loop)
         st.shadow_findings_put(7, ts.HEAD, {}, set())
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "rearmed")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD), "rearmed")
         self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow")["state"], "pending")
 
     def test_a_new_reviewer_turn_at_the_head_still_gets_a_snapshot_for_its_own_shadow(self):
@@ -285,7 +287,8 @@ class Retention(unittest.TestCase):
         # row (a retarget's fresh review), taken on a fresh snapshot as before.
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         sup = self.queued_failed_shadow(loop, turn_key="old")
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"),
+                         "enqueued")
         self.assertEqual(state_mod.state_for(loop).shadow_findings_get(7, ts.HEAD, "new"), {})
 
     def test_a_snapshot_from_before_turns_were_keyed_is_not_taken_for_any_turns(self):
@@ -300,7 +303,7 @@ class Retention(unittest.TestCase):
                         {f"7:{ts.HEAD}": {"entry": {}, "at": time.time()}})
         self.assertIsNone(st.shadow_findings_get(7, ts.HEAD, "old"))
         st.findings_put(7, VEX_SAME_ROUND)
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="old"),
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="old"),
                          "snapshot gone")
         old = sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")
         self.assertEqual(old["state"], "failed")
@@ -351,7 +354,7 @@ class Retention(unittest.TestCase):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, ts.HEAD, turn_key="t"),
                              "rearmed")
         self.assertIsNone(st.shadow_findings_get(7, ts.HEAD, "t"))      # none taken for it
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="t"),
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="t"),
                          "snapshot gone")
         shadow = sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:t")
         with mock.patch("diaktoros.config.by_repo", return_value=loop):
@@ -377,7 +380,8 @@ class Retention(unittest.TestCase):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, ts.HEAD, turn_key="t"),
                              "rearmed")
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "t"), {})
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="t"), "rearmed")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="t"),
+                         "rearmed")
 
     def test_a_new_turn_at_a_head_whose_earlier_snapshot_is_kept_gets_its_own(self):
         # Review of #1900, round 2 F3: the put used to return early for the existing PR and head,
@@ -390,7 +394,8 @@ class Retention(unittest.TestCase):
         sup = self.queued_failed_shadow(loop, turn_key="old")
         st.shadow_findings_put(7, ts.HEAD, VEX_SAME_ROUND, set(), "old")   # kept; F1 open then
         st.findings_put(7, {})                                    # resolved since: live is empty
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
+        self.assertEqual(gate.shadows.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"),
+                         "enqueued")
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "new"), {})            # its own
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "old"), VEX_SAME_ROUND)   # unchanged
         new = sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:new")

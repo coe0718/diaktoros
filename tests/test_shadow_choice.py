@@ -101,7 +101,7 @@ class ByRisk(unittest.TestCase):
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
                 mock.patch.object(gh, "pr_files_read", side_effect=lambda *a: next(listings)):
             gate.enqueue_isolated(self.loop, "reviewer", 11, head)
-            self.assertTrue(gate.shadow_sampled(self.loop, 11, head))      # kept, not re-read
+            self.assertTrue(gate.shadows.shadow_sampled(self.loop, 11, head))   # kept, not re-read
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer", "shadow"])
         self.assertIn("could not be read (HTTP 502): shadowed, since it may change a "
                       "shadow.always_paths path", shadow_choice.explain_line(self.loop, 11, head))
@@ -134,10 +134,10 @@ class ByRisk(unittest.TestCase):
         broker = (files("diaktoros/broker.py"), "")
         old = self.make(every=1000, always_paths=["x/*"])
         with mock.patch.object(gh, "pr_files_read", return_value=broker) as read:
-            self.assertFalse(gate.shadow_sampled(old, 16, head))
-            self.assertTrue(gate.shadow_sampled(self.loop, 16, head))      # broker* added
-            self.assertFalse(gate.shadow_sampled(old, 16, head))           # and taken away
-            self.assertFalse(gate.shadow_sampled(old, 16, head))           # kept again
+            self.assertFalse(gate.shadows.shadow_sampled(old, 16, head))
+            self.assertTrue(gate.shadows.shadow_sampled(self.loop, 16, head))      # broker* added
+            self.assertFalse(gate.shadows.shadow_sampled(old, 16, head))           # and taken away
+            self.assertFalse(gate.shadows.shadow_sampled(old, 16, head))           # kept again
         self.assertEqual(read.call_count, 3)
         self.assertIsNone(shadow_choice.recorded(self.loop, 16, head))
         self.assertIn("no shadow choice made", shadow_choice.explain_line(self.loop, 16, head))
@@ -149,13 +149,13 @@ class ByRisk(unittest.TestCase):
         # A redelivery whose listing now reads differently keeps the kept choice, and reads none.
         seats, reads = self.enqueue(self.loop, (files("docs/a.md"), ""), 13, head)
         self.assertEqual(reads, 0)
-        self.assertTrue(gate.shadow_sampled(self.loop, 13, head))
+        self.assertTrue(gate.shadows.shadow_sampled(self.loop, 13, head))
 
     def test_no_lists_no_read_and_exactly_the_old_sampling(self):
         loop = self.make(every=3, always_paths=None, never_paths=None)
         heads = [f"{i:040x}" for i in range(60)]
         with mock.patch.object(gh, "pr_files_read") as read:
-            picked = [h for h in heads if gate.shadow_sampled(loop, 8, h)]
+            picked = [h for h in heads if gate.shadows.shadow_sampled(loop, 8, h)]
         read.assert_not_called()
         self.assertEqual(picked, [h for h in heads if shadow_choice.sampled(loop, 8, h)])
         self.assertTrue(0 < len(picked) < len(heads))
@@ -171,12 +171,12 @@ class ByRisk(unittest.TestCase):
         head = an_unsampled_head(self.loop, 20)
         retarget = "retarget:release:1700000000000"
         with mock.patch.object(gh, "pr_files_read", return_value=(files("docs/a.md"), "")):
-            self.assertFalse(gate.shadow_sampled(self.loop, 20, head))
+            self.assertFalse(gate.shadows.shadow_sampled(self.loop, 20, head))
         with mock.patch.object(gh, "pr_files_read",
                                return_value=(files("diaktoros/broker.py"), "")) as read:
-            self.assertTrue(gate.shadow_sampled(self.loop, 20, head, retarget))
-            self.assertFalse(gate.shadow_sampled(self.loop, 20, head))      # each turn its own
-            self.assertTrue(gate.shadow_sampled(self.loop, 20, head, retarget))
+            self.assertTrue(gate.shadows.shadow_sampled(self.loop, 20, head, retarget))
+            self.assertFalse(gate.shadows.shadow_sampled(self.loop, 20, head))   # each turn its own
+            self.assertTrue(gate.shadows.shadow_sampled(self.loop, 20, head, retarget))
         self.assertEqual(read.call_count, 1)
         # Through the real enqueue: the retarget's fresh turn carries its key to every ask.
         head = an_unsampled_head(self.loop, 21)

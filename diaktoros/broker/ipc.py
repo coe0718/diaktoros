@@ -998,7 +998,7 @@ class RunBroker(broker_issues.IssueWrites):
             # sweep queues the same turn (same key) if this does not.
             try:
                 from .. import gate
-                gate.queue_shadow_fix(self._loop, self.scope.number, self.scope.head,
+                gate.shadows.queue_shadow_fix(self._loop, self.scope.number, self.scope.head,
                                       db=self.scope.ledger_db)
             except Exception:
                 pass

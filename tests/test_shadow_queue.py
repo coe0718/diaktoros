@@ -197,7 +197,7 @@ class SnapshotFirst(Ledger):
             return "enqueued"
         sup.submit.side_effect = submit
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
-                mock.patch.object(gate, "shadow_open_heads", return_value=set()):
+                mock.patch.object(gate.shadows, "shadow_open_heads", return_value=set()):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
         self.assertEqual(st.shadow_findings_get(7, HEAD), {})
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer", "shadow"])
@@ -226,7 +226,7 @@ class SnapshotFirst(Ledger):
         sup, other = mock.Mock(), []
         def submit(delivery, _repo, pr, head, seat, **_k):
             if seat == "reviewer":
-                other.append(threading.Thread(target=gate.snapshot_shadow, args=(loop, 8, "b" * 40)))
+                other.append(threading.Thread(target=gate.shadows.snapshot_shadow, args=(loop, 8, "b" * 40)))
                 other[0].start()
                 other[0].join(0.5)                  # another process's enqueue
                 st.findings_put(7, {"findings": {"F1": {"state": "open"}}})   # the worker ran
@@ -236,7 +236,7 @@ class SnapshotFirst(Ledger):
             return {(c.args[2], c.args[3]) for c in sup.submit.call_args_list
                     if c.args[4] == "shadow"}
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
-                mock.patch.object(gate, "shadow_open_heads", side_effect=opened), \
+                mock.patch.object(gate.shadows, "shadow_open_heads", side_effect=opened), \
                 mock.patch.object(state_mod.LoopState, "SHADOW_FINDINGS_KEPT", 1):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
             other[0].join(10)
