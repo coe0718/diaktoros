@@ -156,6 +156,24 @@ class Staleness(Fixture):
         (self.root / "app.pem").write_text(APP_KEY + "\n")
         self.assert_stale_from("identities")
 
+    def test_an_unreadable_token_file_never_reads_current(self):
+        # #1714 review F1: "absent" then and "absent" now are not the same credential.
+        (self.root / "reader-pat").unlink()
+        entry = self.record("identities")
+        self.assertEqual((entry["status"], entry["fingerprint"]), ("failed", ""))
+        self.assertEqual(self.read()["identities"], "stale")
+
+    def test_inputs_taken_before_the_checks_that_no_longer_match_are_never_current(self):
+        # #1714 review F1: the caller fingerprints before its checks; a token rotated in
+        # between makes the pass unrecordable as current.
+        before = onboarding.fingerprint_now(self.loop, "identities", runtime_file=self.runtime)
+        (self.root / "reader-pat").write_text("ghp_" + "Q" * 36)
+        entry = self.record("identities", inputs=before)
+        self.assertEqual((entry["status"], entry["fingerprint"]), ("failed", ""))
+        self.assertEqual(self.read()["identities"], "stale")
+        same = onboarding.fingerprint_now(self.loop, "identities", runtime_file=self.runtime)
+        self.assertEqual(self.record("identities", inputs=same)["status"], "passed")
+
     def test_changing_a_loop_setting_makes_loop_and_later_stages_stale(self):
         # #1714: a `set` of the gateway host (or base, hook admin, ...) must re-run the checks.
         for key, value in (("host", "https://elsewhere.example"), ("base", "develop"),

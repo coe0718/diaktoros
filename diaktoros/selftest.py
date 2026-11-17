@@ -1392,6 +1392,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     runtime_file = Path(runtime_file or runtime_path())
     redact = redactor_for(loop)
     report = Report(out, redact)
+    # #1714: the stages' inputs before any check runs, so a credential or setting that changes
+    # mid-run is never recorded as checked.
+    inputs = onboarding_record.inputs_before(loop, runtime_file=runtime_file, resolver=resolver)
     github_scope = (("GitHub: reads only, plus one write: --ping asks GitHub to redeliver the "
                      "App's newest ping" if config.app_ingress(loop) else
                      "GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook")
@@ -1442,7 +1445,8 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
         check_hook_signatures(report, loop, ping=True, login=ping_login)
     onboarding_record.record_selftest(
         loop, report, say=report.text, pr=pr, live_pr=live_pr, model=model,
-        live_turn=live_turn, seats=seats, runtime_file=runtime_file, resolver=resolver)
+        live_turn=live_turn, seats=seats, runtime_file=runtime_file, resolver=resolver,
+        inputs=inputs)
     counts = report.counts()
     report.text(f"\n{loop['id']}: {counts[PASS]} passed, {counts[FAIL]} failed, "
                 f"{counts[WARN]} warnings, {counts[SKIP]} skipped")

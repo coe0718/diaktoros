@@ -60,7 +60,11 @@ REQUIRED_CHECKS = {
 # (selftest's ``github:distinct-files``, ``github:adjudicator``, ``ledger:production``, ...).
 FAILURE_SCOPE = {
     "identities": ("github:",),
-    "loop": ("runtime:", "bwrap:", "sandbox:", "ledger"),
+    # The loop stage fingerprints the loop's settings (``host`` included, #1714), so a failed
+    # check of what those settings point at keeps it from ``passed`` too: the gateway, each
+    # repo hook's signature (``hooks:signature``, ``hook:<id>``) and the App's webhook.
+    "loop": ("runtime:", "bwrap:", "sandbox:", "ledger", "gateway", "hooks:", "hook:",
+             "app-webhook"),
     "model": ("seat:", "model:"),
     "live_turn": ("broker:", "turn:"),
     "armed": ("arm:",),
@@ -175,12 +179,23 @@ def _runtime_hash(runtime_file: Path) -> str:
     return _file_hash(runtime_file)
 
 
+class CredentialUnreadable(Exception):
+    """A credential file is unset or cannot be read; there is nothing to fingerprint."""
+
+
 def _credential_hashes(loop: dict) -> dict:
     """login -> SHA-256 of its credential file's contents (a PAT file or an App key, from
     ``config.credentials_map``), so a rotated token in the same file is a change (#1714).
-    Only the hash is kept, and ``_digest`` hashes it again: never the credential itself."""
-    return {login: _file_hash(Path(raw)) if raw else "absent"
-            for login, raw in config.credentials_map(loop).items()}
+    Only the hash is kept, and ``_digest`` hashes it again: never the credential itself.
+
+    Raises ``CredentialUnreadable`` when a file is unset or unreadable: an unreadable file then
+    and an unreadable file now are not the same credential, so that must never match."""
+    found = {login: _file_hash(Path(raw)) if raw else "absent"
+             for login, raw in config.credentials_map(loop).items()}
+    missing = sorted(login for login, digest in found.items() if digest == "absent")
+    if missing:
+        raise CredentialUnreadable(f"credential file unreadable: {', '.join(missing)}")
+    return found
 
 
 def _loop_settings(loop: dict) -> dict:
@@ -285,6 +300,15 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
     return _digest([stage, facts])
 
 
+def fingerprint_now(loop: dict, stage: str, **kwargs) -> str:
+    """``fingerprint``, or ``""`` when it cannot be computed now. A caller takes it before its
+    checks run and hands it to ``record`` as ``inputs`` (#1714)."""
+    try:
+        return fingerprint(loop, stage, **kwargs)
+    except (HookStateUnknown, SeatUnresolved, CredentialUnreadable, ValueError):
+        return ""
+
+
 # -- the file ------------------------------------------------------------------------------
 
 @contextlib.contextmanager
@@ -362,8 +386,12 @@ def _redactor(loop: dict, runtime_file: Path, seats: dict, stage: str, secrets=(
 
 def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
            checks=None, pr: tuple | None = None, runtime_file: Path | None = None,
-           resolver=None, hook_state=None, secrets=()) -> dict:
+           resolver=None, hook_state=None, secrets=(), inputs: str | None = None) -> dict:
     """Store ``stage``'s result with the fingerprint of its inputs as they are now.
+
+    ``inputs`` is the fingerprint the caller took before its checks ran (``fingerprint_now``);
+    when the inputs no longer hash to it, the result is stored with no fingerprint (never
+    current) and a ``passed`` becomes ``failed``: what was checked is not what is there now.
 
     ``secrets`` are credentials the caller's check saw (a key it resolved) that must not reach
     the file. If one cannot be redacted (shorter than four characters), or a model-facing stage
@@ -392,7 +420,11 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     try:
         prints = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
                              hook_state=hook_state, seats=seats)
-    except (HookStateUnknown, SeatUnresolved):
+    except (HookStateUnknown, SeatUnresolved, CredentialUnreadable):
+        prints, status = "", (FAILED if status == PASSED else status)
+    if inputs is not None and inputs != prints:
+        # The inputs changed while the checks ran (a token rotated mid-selftest, #1714): the
+        # result belongs to inputs nobody fingerprinted, so it must never read as current.
         prints, status = "", (FAILED if status == PASSED else status)
     distinct = len({found.identity() for found in seats.values() if found is not None})
     if stage == "model" and not distinct and status == PASSED:
@@ -499,7 +531,7 @@ def _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state) -> 
     try:
         now = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
                           hook_state=hook_state)
-    except (HookStateUnknown, SeatUnresolved, ValueError) as exc:
+    except (HookStateUnknown, SeatUnresolved, CredentialUnreadable, ValueError) as exc:
         return f"{stage} fingerprint cannot be computed now ({exc})"
     except Exception as exc:
         return f"{stage} fingerprint cannot be computed now ({type(exc).__name__})"
