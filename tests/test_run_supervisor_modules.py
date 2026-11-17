@@ -33,7 +33,7 @@ from submodule_shadows import local_submodule_shadows as _local_submodule_shadow
 from submodule_shadows import shadowed_submodules as _shadowed_submodules  # noqa: E402
 
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
-              "issue_inputs", "ledger_schema", "waits", "merge_hold")
+              "issue_inputs", "ledger_schema", "waits", "merge_hold", "shadow_turns")
 # ALL_SUBMODULES is every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES:
 # the package deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the
 # one-home rules check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a
@@ -262,9 +262,10 @@ class Split(unittest.TestCase):
     def test_every_mixins_methods_live_only_there(self):
         # The notice, intake and worker mixins (#1349) too: each method has one home, and neither
         # Supervisor nor another mixin defines it again.
-        from diaktoros.run_supervisor import Supervisor, intake, notices, records, turns, workers
-        mixins = (records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNotices,
-                  intake.RunIntake, workers.WorkerLifecycle)
+        from diaktoros.run_supervisor import Supervisor, intake, notices, records, shadow_turns
+        from diaktoros.run_supervisor import turns, workers
+        mixins = (records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.ShadowTurns,
+                  notices.OperatorNotices, intake.RunIntake, workers.WorkerLifecycle)
         own = {cls: {n for n in vars(cls) if not n.startswith("__")} for cls in mixins}
         for cls in mixins:
             self.assertIn(cls, Supervisor.__mro__)
@@ -276,6 +277,19 @@ class Split(unittest.TestCase):
         self.assertIn("notify", own[notices.OperatorNotices])
         self.assertIn("submit", own[intake.RunIntake])
         self.assertIn("recover", own[workers.WorkerLifecycle])
+
+    def test_the_shadow_steps_live_only_in_their_mixin(self):
+        # The shadow's turn steps left turns at its size limit: each is defined once, in
+        # shadow_turns.ShadowTurns, and Supervisor reaches that one definition.
+        from diaktoros.run_supervisor import Supervisor, shadow_turns, turns
+        steps = ("_claim_read_shadow", "_shadow_verdict_recorded", "_shadow_escalation",
+                 "_shadow_ci_gate", "_prepare_shadow_fix_launch")
+        for step in steps:
+            self.assertIn(step, vars(shadow_turns.ShadowTurns))
+            self.assertNotIn(step, vars(turns.ClaimAndLaunch))
+            self.assertIs(getattr(Supervisor, step), vars(shadow_turns.ShadowTurns)[step])
+        self.assertIn("_verdict_in", _top_level_names(PACKAGE / "shadow_turns.py"))
+        self.assertNotIn("_verdict_in", _top_level_names(PACKAGE / "turns.py"))
 
     def test_nothing_imports_a_moved_name_from_the_package(self):
         files = [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py"),
