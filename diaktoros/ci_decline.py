@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 
-from . import ledger
+from .state import ledger
 
 PREFIX = "DECLINE:"           # the request's verdict field: ``DECLINE:<kind>``
 # Each kind, and the maintainer's move it leaves.

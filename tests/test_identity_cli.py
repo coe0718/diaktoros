@@ -81,7 +81,8 @@ class Identity(app_cli.Base):
         self.assertEqual(self.loop_file().read_bytes(), before)
 
     def test_a_run_in_flight_refuses_it(self):
-        from diaktoros import config, ledger
+        from diaktoros import config
+        from diaktoros.state import ledger
         from diaktoros.run_supervisor import Supervisor
         sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
         with mock.patch.object(sup, "_spawn"):
@@ -110,7 +111,8 @@ class Identity(app_cli.Base):
         self.assertEqual(self.loop_file().read_bytes(), before)
 
     def busy(self, seat, state="running"):
-        from diaktoros import config, ledger
+        from diaktoros import config
+        from diaktoros.state import ledger
         from diaktoros.run_supervisor import Supervisor
         sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
         with mock.patch.object(sup, "_spawn"):

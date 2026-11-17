@@ -14,7 +14,8 @@ import unittest
 from unittest import mock
 import warnings
 
-from diaktoros import ledger, review_receipt
+from diaktoros import review_receipt
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import Supervisor
 
 HEAD = 'a' * 40
@@ -128,7 +129,7 @@ class ConnectHelper(unittest.TestCase):
     """``ledger.connect`` keeps ``with con:`` transaction semantics and adds the close."""
 
     def setUp(self):
-        from diaktoros import ledger
+        from diaktoros.state import ledger
         self.connect = ledger.connect
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.tmp.cleanup)

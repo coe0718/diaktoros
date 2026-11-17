@@ -15,7 +15,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import ledger, review_receipt, run_supervisor  # noqa: E402
+from diaktoros import review_receipt, run_supervisor  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 import _sources  # noqa: E402  every *.py the scans read (#1489)
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -64,9 +65,9 @@ class Waits(unittest.TestCase):
         # #644: the ledger reads the escalation selector needs moved with it from cli/operations
         # to the shared one_shot_action owner, so the enumerated set moved too; then (#1349) to
         # escalate_action, with one_shot_action keeping its own reviewer-run count.
-        self.assertLessEqual({"run_supervisor/__init__", "ci_fix", "review_receipt", "stats", "migrate",
-                              "backup", "trace", "ledger", "one_shot_action",
-                              "escalate_action"}, names)
+        self.assertLessEqual({"run_supervisor/__init__", "ci_fix", "review_receipt", "stats",
+                              "state/migrate", "state/backup", "trace", "state/ledger",
+                              "one_shot_action", "escalate_action"}, names)
         for path in paths:
             name = path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix()
             source = path.read_text()
@@ -151,13 +152,13 @@ class ReadOnly(unittest.TestCase):
 
     def stray(self, path: Path, source: str) -> list[tuple[int, str | None]]:
         """The read-only URI strings in ``source`` outside ``ledger.read_only`` itself."""
-        allowed = {"read_only"} if path == ROOT / "diaktoros" / "ledger.py" else set()
+        allowed = {"read_only"} if path == ROOT / "diaktoros" / "state" / "ledger.py" else set()
         return [site for site in self.uri_sites(source) if site[1] not in allowed]
 
     def test_no_read_only_uri_is_written_outside_ledger_read_only(self):
         self.assertEqual(self.strays(ROOT), [])
         # The exemption is the helper, not its file (#1471 review).
-        ledger_py = ROOT / "diaktoros" / "ledger.py"
+        ledger_py = ROOT / "diaktoros" / "state" / "ledger.py"
         extra = ledger_py.read_text() + '\n\ndef another(path):\n    return f"file:{path}?mode=ro"\n'
         self.assertEqual([func for _, func in self.stray(ledger_py, extra)], ["another"])
 

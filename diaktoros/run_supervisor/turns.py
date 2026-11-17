@@ -17,7 +17,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .. import claimant, ledger, run_supervisor, runtime_detect, util
+from .. import claimant, run_supervisor, runtime_detect, util
+from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
 
@@ -58,6 +59,7 @@ class _Turn:
     row: sqlite3.Row | None = None
     loop: dict | None = None
     launched: bool = False     # its merge check says it is running (#753)
+    recorded: bool | None = None   # a shadow's submission written (#1361); None: not tried yet
 
 
 class _Launch(NamedTuple):
@@ -153,6 +155,15 @@ def _provider_strike(turn: _Turn, account: str) -> float | None:
     return pacing.count_provider_failure(account, str(error), limit)
 
 
+def _verdict_in(turn: _Turn, seat: str) -> bool:
+    """#1361: a shadow turn whose last submission the broker authorized has done its job,
+    however its process then exited (Hermes exits 1 for a turn that ends partial, at its step
+    limit, say)."""
+    submissions = turn.observed.get('submissions') or []
+    return (seat == run_supervisor.SHADOW and bool(submissions)
+            and isinstance(submissions[-1], dict) and bool(submissions[-1].get('authorized')))
+
+
 def _conflict_waits(loop: dict, row) -> str:
     """Why a conflict row waits for the fixer (#1907), or ``""``: ``watch_conflicts.fix_owed``,
     read again at the claim and at the launch, since a verdict can land after the row was queued.
@@ -188,7 +199,7 @@ class ClaimAndLaunch:
     def _claim(self):
         # A migration holds the install (#431): no run starts under names being moved. The
         # pending rows wait where they are; the worker that finds nothing here exits as usual.
-        from .. import migrate
+        from ..state import migrate
         if migrate.migrating() is not None:
             return None
         # Code older than the install never claims (#1337): a process that loaded the plugin
@@ -647,6 +658,7 @@ class ClaimAndLaunch:
         if turn.rc == 0:
             pacing.clear_unavailable(account)
             return
+        done = seat == run_supervisor.SHADOW and self._shadow_verdict_recorded(turn)
         limited = turn.observed.get('rate_limited_until')
         if isinstance(limited, (int, float)) and limited > time.time():
             # The provider said its window is closed (#219): hold the account, and this run
@@ -663,11 +675,28 @@ class ClaimAndLaunch:
                 (turn.observed.get('stderr') or '')[-run_supervisor.DETAIL_STDERR_BYTES:])
             if detail is not None:
                 until = pacing.hold_unavailable(account, detail)
-            elif (until := _provider_strike(turn, account)) is None:
-                return
+            elif done or (until := _provider_strike(turn, account)) is None:
+                return      # a shadow whose verdict is recorded is no provider failure (#1361)
             reason = (pacing.held(account) or (0, ""))[1]
+        if done:
+            return          # the account's hold stands for its next turn; this run is done (#1361)
         turn.paced_until = until
         turn.error = pacing.hold_line(seat, provider, until, reason)
+
+    def _shadow_verdict_recorded(self, turn: _Turn) -> bool:
+        """Record what a shadow turn would have submitted (#218), once, while the run is still
+        live, and escalate a dissent. Answers whether a verdict the broker authorized is now
+        recorded (#1361): pacing asks first, so a turn whose write failed is paced as before."""
+        if turn.recorded is None:
+            turn.recorded = False
+            submissions = turn.observed.get('submissions') or []
+            try:
+                if submissions and self.record_shadow(turn.run_id, turn.owner, submissions[-1]):
+                    turn.recorded = True
+                    self._shadow_escalation(turn)
+            except Exception:
+                pass    # a lost record must not change how the turn ends
+        return turn.recorded and _verdict_in(turn, run_supervisor.SHADOW)
 
     def _pacing_hold(self, turn: _Turn, provider: str, account: str) -> bool:
         """Pacing (#219): an account whose usage window is closed, or a seat past its daily
@@ -1272,22 +1301,23 @@ class ClaimAndLaunch:
         except Exception:
             pass    # likewise: a lost count must not change how the turn ends
         shadow = turn.row is not None and turn.row['seat'] == run_supervisor.SHADOW
+        recorded = False
         if shadow:
             # A shadow is a sample, never stuck work: a failed one is not retried (#218: the
             # first live one spent four whole turns' tokens to record nothing). A closed usage
             # window still waits for its reset, which costs nothing.
             turn.retry = False
-            # What the shadow would have submitted (#218), recorded while the run is still live.
-            submissions = observed.get('submissions') or []
-            try:
-                if submissions and self.record_shadow(run_id, owner, submissions[-1]):
-                    self._shadow_escalation(turn)
-            except Exception:
-                pass    # a lost record must not change how the turn ends
+            # #1361: a shadow whose verdict is recorded did its job, so it succeeds; the exit
+            # is kept.
+            recorded = (self._shadow_verdict_recorded(turn) and turn.rc not in (None, 0)
+                        and turn.error is None)
+            if recorded:
+                turn.error = (f"verdict recorded, then the turn exited with status {turn.rc} "
+                              "(its output is in the run's detail)")
         state = self.complete_uncertain(
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=run_supervisor.output_detail(observed.get('stdout'), observed.get('stderr')),
-            paced_until=turn.paced_until, cancel=turn.cancel)
+            paced_until=turn.paced_until, cancel=turn.cancel, recorded=recorded)
         waits.note(self, run_id)               # a paced, held or backed-off turn (#2080)
         if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
             # This run marked the breach 'adjudicating' and made no ruling: hand the
