@@ -33,6 +33,7 @@ from diaktoros import (  # noqa: E402
     gh,
     merge_check,
     observer,
+    review_asks,
     state as state_mod,
     transition,
 )
@@ -121,6 +122,38 @@ def breach_at_cap(loop: dict, st, number: int, head: str, rounds: int) -> None:
         silence(f"cap reached on #{number} — but the breach was {outcome}: nothing parked, "
                 "no review queued; the next cap event tries again")
     silence(f"cap reached on #{number} — handed to adjudication")
+
+
+def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews: list,
+                    action: str, sender: str) -> None:
+    """A review-only author's PR (#191) has its own verdict cap (review_only_cap, default `cap`).
+    At the cap the gate declines with nothing spent, whoever asks: the author re-requesting their
+    own PR is no bypass, so this ends the gate with ``silence``. Only a maintainer's
+    --another-round (one verdict, this head) lifts it, or, with review_only_rerequest_grants on
+    (#2496), a maintainer's GitHub re-request of a head with no verdict yet, which grants the same
+    one verdict once its urgent ``granted`` notice is delivered, and only where one can be sent."""
+    ro_cap = config.review_only_cap(loop)
+    waits = ""
+    if rounds >= ro_cap and not gate.reviewed_at_head(reviews, loop, head):
+        waits = review_asks.grant_by_rerequest(
+            loop, st, number, head, rounds, sender if action == "review_requested" else "")
+    if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
+        ask = (" or re-request the reviewer on GitHub" if review_asks.rerequest_can_grant(loop)
+               else "")
+        if st.review_cap_notice_once(number, head):
+            observer.notify(
+                loop, st, "held", number, head, identity=f"review-cap:{head}",
+                outcome=(f"review cap reached on #{number} ({rounds} verdicts): no further "
+                         "review until a maintainer grants another round — merge, close, or "
+                         f"`hermes dk review --loop {loop['id']} --pr {number} "
+                         f"--another-round`{ask}"),
+                next_turn="nothing — waiting for a maintainer")
+        why = (review_asks.unannounced(loop) if review_asks.rerequest_grants(loop)
+               and action == "review_requested" and sender in config.maintainers(loop) else "")
+        silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
+                "until a maintainer grants another round"
+                + (f"; {waits}" if waits else f"; a re-request grants nothing here: {why}" if why
+                   else ""))
 
 
 @refreshes_declined_head
@@ -275,23 +308,9 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
         silence(f"#{number} @ {head[:7]} is escalated to adjudication — no further review here")
     rounds = len(gate.verdicts(reviews, loop))
     # A review-only author's PR (#191) spends no fixer rounds and is never adjudicated: the author
-    # answers each verdict by pushing and asking again.
+    # answers each verdict by pushing and asking again, up to its own verdict cap (review_only_cap).
     if author in config.review_only(loop):
-        # ...but it does have its own verdict cap (review_only_cap, default `cap`). At the cap
-        # the gate declines with nothing spent, whoever asks: the author re-requesting their own
-        # PR is no bypass. Only a maintainer's --another-round (one verdict, this head) lifts it.
-        ro_cap = config.review_only_cap(loop)
-        if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
-            if st.review_cap_notice_once(number, head):
-                observer.notify(
-                    loop, st, "held", number, head, identity=f"review-cap:{head}",
-                    outcome=(f"review cap reached on #{number} ({rounds} verdicts): no further "
-                             "review until a maintainer grants another round — merge, close, or "
-                             f"`hermes dk review --loop {loop['id']} --pr {number} "
-                             "--another-round`"),
-                    next_turn="nothing — waiting for a maintainer")
-            silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
-                    "until a maintainer grants another round")
+        review_only_cap(loop, st, number, head, rounds, reviews, action, sender)
     elif rounds >= loop["cap"]:
         breach_at_cap(loop, st, number, head, rounds)
 
