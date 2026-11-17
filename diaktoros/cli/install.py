@@ -876,7 +876,7 @@ def _init_route_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--observer-events", default="",
                       help="comma-separated transitions to send, from "
                            "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked "
+                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked,granted "
                            "(default: all)")
     init.add_argument("--observer-digest-min", type=int, default=0,
                       help="batch the feed into one message per this many minutes "
@@ -931,6 +931,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer"),
             ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice"),
             ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed"),
+            ("--review-only-rerequest-grants", "a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,

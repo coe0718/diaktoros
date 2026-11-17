@@ -201,6 +201,24 @@ SETTINGS_SCHEMA: dict = {
                                        "stops until a maintainer grants another round, a whole "
                                        "number 1-1000. Blank = not set here: the loop's own value, "
                                        "else the review cap"},
+    "review_only_rerequest_grants": {"label": "A maintainer's GitHub re-request grants a round",
+                                     "type": "bool", "default": False,
+                                     "description": "Off (default): at a review-only PR's verdict "
+                                                   "cap only `hermes dk review --another-round` "
+                                                   "grants one more verdict. On: a maintainer's "
+                                                   "re-request of the reviewer on GitHub (the web "
+                                                   "or mobile app) at the cap grants it too, under "
+                                                   "the same rules: one verdict at that head, "
+                                                   "never for a head that already has one, and an "
+                                                   "urgent granted notice says who granted it, at "
+                                                   "once. GitHub "
+                                                   "can't tell a person's click from a token's "
+                                                   "call, so anything holding a maintainer's token "
+                                                   "(an agent posting as you) can grant a round. "
+                                                   "Needs a reviewer GitHub can request (not a "
+                                                   "GitHub App), and an observer feed whose "
+                                                   "events include granted: without one, a "
+                                                   "re-request grants nothing"},
     "observer_weekly_report": {"label": "Weekly report (weekday and UTC time)", "type": "str",
                                "default": "",
                                "description": "When the observer feed gets the week's report: a "
