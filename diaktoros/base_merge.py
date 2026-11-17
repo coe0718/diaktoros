@@ -26,6 +26,9 @@ The carried approval is read live, from the PR's reviews: once the approval at t
 dismissed, or a later verdict lands there, nothing is carried. A carried ruled approval also needs
 its ACCEPT to stay the PR's newest ruling at the old head (``gate.ruled_approvals``), so a later
 ruling voids it at the new head too, and the watchdog raises no second breach for a spent cap.
+GitHub itself moves an approval to the merged head after a clean base merge (a change request
+stays), so the adjudicator's approval then reads at the new head while its ruling stays at the old
+one; ``ruled_at`` follows the records back to the ruled head by the approval's review id (#2402).
 """
 from __future__ import annotations
 
@@ -76,6 +79,47 @@ def carried(loop: dict, reviews: list, head: str) -> list:
             or gate._review_pr(latest, loop["repo"]) != record.get("number")):
         return []
     return [{**latest, "commit_id": head, "carried_from": old}]
+
+
+def ruled_at(loop: dict, reviews: list, ruling: dict, head: str, approval: dict) -> bool:
+    """Whether the ACCEPT ``ruling`` backs the adjudicator's ``approval`` at ``head`` (#905): it
+    was ruled at ``head``, or at a head this PR's clean base merges carried that approval from
+    (#2402). GitHub moves an approval's ``commit_id`` to the merged head while the ruling stays
+    at the old one, so ``carried`` finds nothing at the old head: the records, each naming the
+    approval's review id and the head it came from, link the new head back to the ruled one. A
+    verdict left at any of those heads after the approval (a change request stays put) voids it,
+    as it would have there (#2503 review, F1)."""
+    number = gate._review_pr(approval, loop["repo"])
+    if ruling.get("verdict") != "ACCEPT" or number is None:
+        return False
+    start, records = head, _records(loop) if ruling.get("head") != head else {}
+    for _ in range(CHAIN_MAX + 1):
+        if head != start and _later_verdict(loop, reviews, head, approval):
+            return False
+        if head == ruling.get("head"):
+            return True
+        record = records.get(head)
+        if (not isinstance(record, dict) or record.get("number") != number
+                or record.get("review") != approval.get("id")):
+            return False
+        head = str(record.get("from") or "")
+    return False
+
+
+def _later_verdict(loop: dict, reviews: list, head: str, approval: dict) -> bool:
+    """Whether the reviewer or the adjudicator left a verdict at ``head`` after ``approval``, or
+    one whose order can't be told: unknown order never counts as earlier."""
+    after = gate._review_when(approval)
+    seats = set(loop["reviewers"]) | {config.adjudicator_login(loop).lower()}
+    for review in reviews:
+        if (not isinstance(review, dict) or review.get("commit_id") != head
+                or gate.reviewer_login(review) not in seats
+                or gh.review_state(review) in gate.NOT_VERDICTS):
+            continue
+        when = gate._review_when(review)
+        if after is None or when is None or when > after:
+            return True
+    return False
 
 
 def said(loop: dict, review) -> str:

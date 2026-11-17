@@ -9,7 +9,10 @@ before **each** write:
 * the newest ruling on the PR at its current head is ACCEPT, and it overruled one review: the
   reviewer seat's latest verdict at that head, a change request submitted before the ruling (a
   shadow escalation's ACCEPT leaves an approval standing, so there is nothing to do);
-* the required checks are green at that head;
+* the required checks are green at that head, for the approval: the dismissal after it doesn't
+  wait for them (#2402). The approval was CI's to gate, and the required checks still hold the
+  merge, so lifting the overruled request on a red head strands nothing; waiting would hold the
+  base merge (``base_merge``) that may be what turns the head green;
 * the diff touches no ``human_paths`` path (those approvals are a person's, #478);
 * no maintainer hold (#477), and the PR is open, not a draft, by an authorized fixer.
 
@@ -25,8 +28,8 @@ sent again; a later ACCEPT at the same head is acted on afresh, once every earli
 there is settled. A lost
 response is ``uncertain`` until a later sweep reads GitHub: the approval or dismissal is there
 (``posted``) or it is not (``denied``). A refusal is ``denied`` with its reason. ``ready`` and the
-merge check show an uncertain or denied step with its reason. A wait (red or running CI, a hold,
-an unreadable read) writes nothing and is checked again on the next sweep.
+merge check show an uncertain or denied step with its reason. A wait (red or running CI before
+the approval, a hold, an unreadable read) writes nothing and is checked again on the next sweep.
 """
 from __future__ import annotations
 
@@ -102,10 +105,10 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     if row.get("dismiss", "pending") != "pending" or row.get("approve") in (
             "denied", "uncertain", "posting"):
         return False                                   # done, left for a person, or being written
-    wait, deny = _wait_or_deny(loop, st, number, head)
+    step = "approve" if row.get("approve", "pending") == "pending" else "dismiss"
+    wait, deny = _wait_or_deny(loop, st, number, head, checks=step == "approve")
     if wait or not _still_ruled(loop, number, ruling):
         return False                                   # a newer ruling since: the next sweep sees it
-    step = "approve" if row.get("approve", "pending") == "pending" else "dismiss"
     if deny:
         return sup.ruled_approval_step(repo, number, head, run, step, "denied", error=deny[:200])
     branch = str((pr.get("head") or {}).get("ref") or "")
@@ -240,11 +243,14 @@ def ruling_tag(run: str) -> str:
     return f"ruling `{run}`"
 
 
-def _wait_or_deny(loop: dict, st, number: int, head: str) -> tuple[str, str]:
-    """``(wait, deny)``: why the next write waits for a later sweep, or why it is a person's."""
-    gating = ci.gating(ci.read(loop, head), config.required_checks(loop))
-    if gating is None or not gating.green:
-        return "the required checks are not green yet", ""
+def _wait_or_deny(loop: dict, st, number: int, head: str, checks: bool = True) -> tuple[str, str]:
+    """``(wait, deny)``: why the next write waits for a later sweep, or why it is a person's.
+    ``checks``: whether it waits for green required checks (the approval does, the dismissal
+    doesn't, #2402)."""
+    if checks:
+        gating = ci.gating(ci.read(loop, head), config.required_checks(loop))
+        if gating is None or not gating.green:
+            return "the required checks are not green yet", ""
     held = st.human_hold(number, head)
     if isinstance(held, dict):
         return "", f"waiting for a person: {held.get('why') or 'touches human_paths'}"
