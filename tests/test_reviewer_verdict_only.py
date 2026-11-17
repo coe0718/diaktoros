@@ -21,7 +21,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import ledger
+from diaktoros.state import ledger
 from diaktoros import broker, broker_client, gh, prompts, review_receipt, trusted_turn
 from diaktoros.broker import ipc as broker_ipc
 from diaktoros.run_supervisor import Supervisor

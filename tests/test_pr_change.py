@@ -15,7 +15,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from diaktoros import ledger  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import config, contained, gh, run_supervisor, trusted_turn  # noqa: E402

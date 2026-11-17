@@ -22,7 +22,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, escalate_pending, explain, gate, gh, ledger, one_shot_action, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import cli, config, escalate_pending, explain, gate, gh, one_shot_action, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer  # noqa: E402

@@ -17,7 +17,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import config, gh, ledger, push_settle, run_supervisor  # noqa: E402
+from diaktoros import config, gh, push_settle, run_supervisor  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, workers  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
