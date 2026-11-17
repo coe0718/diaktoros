@@ -1272,6 +1272,7 @@ class ClaimAndLaunch:
         except Exception:
             pass    # likewise: a lost count must not change how the turn ends
         shadow = turn.row is not None and turn.row['seat'] == run_supervisor.SHADOW
+        recorded = False
         if shadow:
             # A shadow is a sample, never stuck work: a failed one is not retried (#218: the
             # first live one spent four whole turns' tokens to record nothing). A closed usage
@@ -1281,13 +1282,20 @@ class ClaimAndLaunch:
             submissions = observed.get('submissions') or []
             try:
                 if submissions and self.record_shadow(run_id, owner, submissions[-1]):
+                    recorded = bool(submissions[-1].get('authorized'))
                     self._shadow_escalation(turn)
             except Exception:
                 pass    # a lost record must not change how the turn ends
+            # #1361: Hermes exits 1 for a turn that ended partial (at its step limit, say) even
+            # after the verdict. The shadow did its job, so it succeeds, and the exit is kept.
+            recorded = recorded and turn.rc not in (None, 0) and turn.error is None
+            if recorded:
+                turn.error = (f"verdict recorded, then the turn exited with status {turn.rc} "
+                              "(its output is in the run's detail)")
         state = self.complete_uncertain(
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=run_supervisor.output_detail(observed.get('stdout'), observed.get('stderr')),
-            paced_until=turn.paced_until, cancel=turn.cancel)
+            paced_until=turn.paced_until, cancel=turn.cancel, recorded=recorded)
         waits.note(self, run_id)               # a paced, held or backed-off turn (#2080)
         if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
             # This run marked the breach 'adjudicating' and made no ruling: hand the

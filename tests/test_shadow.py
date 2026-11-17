@@ -590,6 +590,21 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual(sup.shadow_reviews(), [])
         self.assertEqual((row["state"], row["retries"]), ("failed", 0))
 
+    def test_a_shadow_that_exits_1_after_its_verdict_is_recorded_succeeded(self):
+        # #1361: on #1310 a shadow recorded its authorized APPROVE, then exited 1 (Hermes does
+        # for a turn that ends partial). The ledger called it failed; the exit is kept as its error.
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
+                                     "denial": ""}], rc=1)
+        self.assertEqual((row["state"], row["retries"], row["outcome"]), ("succeeded", 0, 1))
+        self.assertIn("verdict recorded, then the turn exited with status 1", row["error"])
+        self.assertEqual([r["verdict"] for r in sup.shadow_reviews()], ["APPROVE"])
+
+    def test_a_shadow_whose_verdict_was_refused_still_fails_on_a_bad_exit(self):
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": False,
+                                     "denial": "stale head"}], rc=1)
+        self.assertEqual((row["state"], row["error"]), ("failed", "turn exited with status 1"))
+        self.assertEqual([r["authorized"] for r in sup.shadow_reviews()], [0])
+
     def test_a_head_the_reviewer_sent_back_gets_no_shadow_and_spends_nothing(self):
         # #1647: on a change-requested head the shadow decides nothing, so it never runs.
         sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
