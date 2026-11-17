@@ -1447,6 +1447,11 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
         loop, report, say=report.text, pr=pr, live_pr=live_pr, model=model,
         live_turn=live_turn, seats=seats, runtime_file=runtime_file, resolver=resolver,
         inputs=inputs)
+    return _summarize(report, loop)
+
+
+def _summarize(report: "Report", loop: dict) -> int:
+    """Print the run's totals and what to fix; return 1 when any check failed, else 0."""
     counts = report.counts()
     report.text(f"\n{loop['id']}: {counts[PASS]} passed, {counts[FAIL]} failed, "
                 f"{counts[WARN]} warnings, {counts[SKIP]} skipped")

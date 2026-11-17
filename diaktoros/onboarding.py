@@ -439,6 +439,17 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
              "fingerprint": prints}
     if pr:
         entry["pr"] = int(pr[0])
+    _store(loop, stage, entry)
+    return entry
+
+
+def _store(loop: dict, stage: str, entry: dict) -> None:
+    """Write ``entry`` as ``stage``'s result, under the record's lock.
+
+    When the entry has no fingerprint, or one other than the stage's previous entry, every
+    later stage's entry is marked ``invalidated``; a stage's first record invalidates nothing.
+    """
+    prints = entry["fingerprint"]
     with _locked(loop):
         stages = _load(loop)
         before = stages.get(stage)
