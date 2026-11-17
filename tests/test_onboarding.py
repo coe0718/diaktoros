@@ -455,16 +455,17 @@ class Review1(Fixture):
             "failed")
 
     def _model_report(self, outcomes):
-        """selftest.check_model's real grouping, with each completion's outcome stubbed."""
-        from diaktoros import selftest
+        """selftest_inference.check_model's real grouping, with each completion's outcome
+        stubbed."""
+        from diaktoros import selftest, selftest_inference
         seats = {seat: self.resolver("p", seat, {}) for seat in ("reviewer", "fixer")}
         results = iter(outcomes)
-        real = selftest._one_completion
-        self.addCleanup(setattr, selftest, "_one_completion", real)
-        selftest._one_completion = lambda report, names, inference: report.add(
+        real = selftest_inference._one_completion
+        self.addCleanup(setattr, selftest_inference, "_one_completion", real)
+        selftest_inference._one_completion = lambda report, names, inference: report.add(
             "inference", "model:completion", next(results), names)
         report = selftest.Report(out=io.StringIO())
-        selftest.check_model(report, seats)
+        selftest_inference.check_model(report, seats)
         seat_checks = [(f"seat:{seat}", "pass") for seat in seats]
         return seat_checks + onboarding.report_checks(
             [r for r in report.results if r[1] == "model:completion"])
