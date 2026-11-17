@@ -15,7 +15,6 @@ import ast
 import importlib
 import pathlib
 import re
-import symtable
 import sys
 import unittest
 from unittest import mock
@@ -25,14 +24,20 @@ from diaktoros import run_supervisor  # noqa: E402
 
 PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
+# The shadow rules live in tools/submodule_shadows.py, outside tests/, so the host's base-failure
+# proof runs the tests below against the base's rules, not this PR's (#1973, #2509).
+sys.path.insert(0, str(ROOT / "tools"))
+import submodule_shadows  # noqa: E402
+from submodule_shadows import ALL_SUBMODULES  # noqa: E402
+from submodule_shadows import local_submodule_shadows as _local_submodule_shadows  # noqa: E402
+from submodule_shadows import shadowed_submodules as _shadowed_submodules  # noqa: E402
+
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs", "ledger_schema", "waits", "merge_hold")
-# Every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES: the package
-# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the one-home rules
-# check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a local named
-# ``turns`` shadows the module like any other (#1528).
-ALL_SUBMODULES = tuple(sorted(
-    p.stem for p in PACKAGE.glob("*.py") if p.stem not in ("__init__", "__main__")))
+# ALL_SUBMODULES is every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES:
+# the package deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the
+# one-home rules check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a
+# local named ``turns`` shadows the module like any other (#1528).
 # The package's deliberate re-exports (#758): the only names of a submodule that may also resolve
 # as ``run_supervisor.<name>``. The one-home rules check every other name of every submodule,
 # ``turns`` included (#1332).
@@ -129,184 +134,6 @@ def _prose_names_of_moved(text: str) -> list[tuple[int, str]]:
                 found.append((number, name))
     return found
 
-
-def _local_submodule_shadows(source: str, filename: str) -> list[tuple[str, str]]:
-    """(function, name) for each function in the source with a local binding named like any
-    run_supervisor submodule: one not imported, or a local import of it that the function reads
-    the name before (#2509), which raises UnboundLocalError."""
-    found = []
-    functions = _function_nodes(ast.parse(source))
-
-    def walk(table):
-        for child in table.get_children():
-            if child.get_type() == "function":
-                node = functions.get((child.get_name(), child.get_lineno()))
-                for sub in ALL_SUBMODULES:
-                    symbol = child.lookup(sub) if sub in child.get_identifiers() else None
-                    if symbol is None or not symbol.is_local():
-                        continue
-                    if not symbol.is_imported() or (
-                            node is not None and _read_before_local_import(node, sub) is not None):
-                        found.append((child.get_name(), sub))
-            walk(child)
-    walk(symtable.symtable(source, filename, "exec"))
-    return found
-
-
-def _submodule_import(node: ast.AST, alias: ast.alias) -> bool:
-    """Whether this import alias binds a run_supervisor submodule: ``from
-    diaktoros.run_supervisor import views [as v]`` or ``import diaktoros.run_supervisor.views as
-    v`` (#1665)."""
-    if isinstance(node, ast.ImportFrom):
-        return node.module == "diaktoros.run_supervisor" and alias.name in ALL_SUBMODULES
-    prefix = "diaktoros.run_supervisor."
-    return (alias.asname is not None and alias.name.startswith(prefix)
-            and alias.name[len(prefix):] in ALL_SUBMODULES)
-
-
-def _submodule_aliases(tree: ast.AST) -> set[str]:
-    """Every name the source binds to a run_supervisor submodule by an import, at any scope and
-    under any alias."""
-    return {a.asname or a.name for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for a in node.names if _submodule_import(node, a)}
-
-
-# Symtable names of the comprehension scopes. Before Python 3.12 (PEP 709) every comprehension
-# is a child "function" scope of this name; from 3.12 only a generator expression still is.
-_COMPREHENSION_SCOPES = ("listcomp", "setcomp", "dictcomp", "genexpr")
-
-
-def _scope_nodes(scope: ast.AST):
-    """Each AST node that belongs directly to one module or function scope. Nested function,
-    lambda and class bodies are their own scopes and are not entered; their decorators, bases
-    and defaults are. At module level a comprehension's own targets are skipped as well: Python
-    gives a comprehension its own scope, so ``[views for views in ()]`` there rebinds nothing in
-    the module (#2509). Inside a function they are kept, as the package guard and this guard
-    before #1665 count them."""
-    module = isinstance(scope, ast.Module)
-    stack = list(scope.body) if isinstance(scope.body, list) else [scope.body]
-    while stack:
-        node = stack.pop()
-        yield node
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            stack.extend(node.decorator_list)
-            if isinstance(node, ast.ClassDef):
-                stack.extend([*node.bases, *node.keywords])
-            else:
-                stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
-        elif isinstance(node, ast.Lambda):
-            stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
-        elif module and isinstance(node, ast.comprehension):
-            stack.extend([node.iter, *node.ifs])
-        else:
-            stack.extend(ast.iter_child_nodes(node))
-
-
-def _scope_bindings(scope: ast.AST) -> list[tuple[int, str, bool]]:
-    """(line, name, is_submodule_import) for each name bound directly in a module or function
-    scope (see _scope_nodes for what belongs to it): assignment, for/with/walrus/comprehension
-    targets, arguments, ``except ... as``, imports, def/class names and match captures."""
-    found = []
-    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        args = scope.args
-        for arg in (*args.posonlyargs, *args.args, args.vararg, *args.kwonlyargs, args.kwarg):
-            if arg is not None:
-                found.append((arg.lineno, arg.arg, False))
-    for node in _scope_nodes(scope):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            found.append((node.lineno, node.name, False))
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            found.append((node.lineno, node.id, False))
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            found.append((node.lineno, node.name, False))
-        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
-            found.append((node.lineno, node.name, False))
-        elif isinstance(node, ast.MatchMapping) and node.rest:
-            found.append((node.lineno, node.rest, False))
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for a in node.names:
-                found.append((node.lineno, a.asname or a.name.split(".")[0],
-                              _submodule_import(node, a)))
-    return found
-
-
-def _read_before_local_import(func: ast.AST, name: str) -> int | None:
-    """The line of the first read of ``name`` in this function that comes before the function's
-    first import of that name, or None (#2509). A local import makes the name local to the whole
-    function, so such a read raises UnboundLocalError even when the module imports the very same
-    submodule. This is source order, not control flow: a read that follows the import in the
-    text but runs first (a later loop iteration) is not seen."""
-    nodes = list(_scope_nodes(func))
-    imports = [(n.lineno, n.col_offset) for n in nodes
-               if isinstance(n, (ast.Import, ast.ImportFrom))
-               and any((a.asname or a.name.split(".")[0]) == name for a in n.names)]
-    if not imports:
-        return None
-    early = [(n.lineno, n.col_offset) for n in nodes
-             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == name
-             and (n.lineno, n.col_offset) < min(imports)]
-    return min(early)[0] if early else None
-
-
-def _function_nodes(tree: ast.AST) -> dict[tuple[str, int], ast.AST]:
-    """Each function and lambda of the tree, by the (name, line) symtable gives its scope."""
-    return {("lambda" if isinstance(n, ast.Lambda) else n.name, n.lineno): n
-            for n in ast.walk(tree)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))}
-
-
-def _shadowed_submodules(source: str, filename: str = "<source>") -> list[tuple[int, str]]:
-    """(line, name) for each binding, at module level or in a function, of a name the source
-    imports as a run_supervisor submodule, other than such an import itself (#1458, #1665), and
-    for each read of such a name in a function before that function's own import of it (#2509).
-
-    Function locals come from symtable, as in _local_submodule_shadows, so every binding shape
-    counts; _scope_bindings only supplies the line and tells a submodule import from any other
-    binding of the name. A local symtable reports that has no binding line found is reported at
-    the function's own line. A comprehension at module level is its own scope and rebinds
-    nothing in the module (#2509); one inside a function counts as part of that function."""
-    tree = ast.parse(source)
-    aliases = _submodule_aliases(tree)
-    if not aliases:
-        return []
-    functions = _function_nodes(tree)
-    found = {(line, name) for line, name, submodule in _scope_bindings(tree)
-             if name in aliases and not submodule}
-
-    def walk(table, in_function):
-        for child in table.get_children():
-            if child.get_type() != "function":
-                walk(child, in_function)
-                continue
-            if child.get_name() in _COMPREHENSION_SCOPES and not in_function:
-                walk(child, False)      # before Python 3.12: a module-level comprehension
-                continue
-            node = functions.get((child.get_name(), child.get_lineno()))
-            found.update(_function_shadows(child, node, aliases))
-            walk(child, True)
-    walk(symtable.symtable(source, filename, "exec"), False)
-    return sorted(found)
-
-
-def _function_shadows(table, node, aliases) -> set[tuple[int, str]]:
-    """(line, name) for each name of ``aliases`` that one function scope (its symtable and, when
-    found, its AST node) rebinds, or reads before its own import of it (#2509)."""
-    bindings = _scope_bindings(node) if node is not None else []
-    found = set()
-    for name in aliases & set(table.get_identifiers()):
-        symbol = table.lookup(name)
-        # A `global`/`nonlocal` name assigned here rebinds the import as well.
-        if not (symbol.is_local() or symbol.is_declared_global() or symbol.is_nonlocal()):
-            continue
-        hits = {(line, n) for line, n, submodule in bindings if n == name and not submodule}
-        if not hits and symbol.is_local() and not symbol.is_imported():
-            hits = {(table.get_lineno(), name)}
-        early = _read_before_local_import(node, name) if node is not None else None
-        if early is not None:
-            hits.add((early, name))
-        found.update(hits)
-    return found
 
 
 class Split(unittest.TestCase):
@@ -613,6 +440,57 @@ class Split(unittest.TestCase):
         self.assertEqual(_local_submodule_shadows(early, "x.py"), [("f", "turns")])
         late = "def f():\n    from . import turns\n    return turns.a\n"
         self.assertEqual(_local_submodule_shadows(late, "x.py"), [])
+
+    def test_a_read_after_an_import_that_may_not_run_is_a_shadow(self):
+        # #2509 round 2 F2: an import nested in an `if` (or try/with/loop) may never run, so a
+        # read after it in the text can still find the local unbound. Both rules flag it; an
+        # import that is a statement of the function body itself still binds every later read.
+        imp = "from diaktoros.run_supervisor import views\n"
+        local = "from diaktoros.run_supervisor import views\n"
+        for opener in ("    if False:\n", "    for _ in ():\n", "    try:\n"):
+            closer = "    except ImportError:\n        pass\n" if opener.startswith("    try") else ""
+            source = imp + "def f():\n" + opener + "        " + local + closer + "    return views\n"
+            with self.subTest(block=opener.strip()):
+                last = len(source.splitlines())
+                self.assertEqual(_shadowed_submodules(source), [(last, "views")])
+                self.assertEqual(_local_submodule_shadows(source, "x.py"), [("f", "views")])
+                if opener.startswith("    if") or opener.startswith("    for"):
+                    namespace = {}
+                    exec(compile(source, "<f>", "exec"), namespace)
+                    with self.assertRaises(UnboundLocalError):
+                        namespace["f"]()
+        straight = imp + "def f():\n    if True:\n        pass\n    " + local + "    return views\n"
+        self.assertEqual(_shadowed_submodules(straight), [])
+        self.assertEqual(_local_submodule_shadows(straight, "x.py"), [])
+
+    def test_a_function_named_like_a_comprehension_scope_is_checked(self):
+        # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
+        # (etc.); a real function of that name is still a function and is checked.
+        for name in ("listcomp", "setcomp", "dictcomp", "genexpr"):
+            with self.subTest(name=name):
+                source = ("from diaktoros.run_supervisor import views\n"
+                          f"def {name}():\n    print(views)\n    views = 1\n")
+                self.assertEqual(_shadowed_submodules(source), [(4, "views")])
+                self.assertEqual(_local_submodule_shadows(source, "x.py"), [(name, "views")])
+
+    def test_a_global_reimport_after_a_read_is_not_a_shadow(self):
+        # #2509 round 2 F4: under `global`, a later import rebinds the module's name; the read
+        # before it finds the module's import, so it runs. Only a local import leaves it unbound.
+        source = ("from diaktoros.run_supervisor import views\n"
+                  "def f():\n    global views\n    print(views)\n"
+                  "    from diaktoros.run_supervisor import views\n    return views\n")
+        self.assertEqual(_shadowed_submodules(source), [])
+        self.assertEqual(_local_submodule_shadows(source, "x.py"), [])
+        namespace = {}
+        exec(compile(source.replace("print(views)", "views.__name__"), "<f>", "exec"), namespace)
+        namespace["f"]()
+
+    def test_a_base_proof_tests_the_base_shadow_rules(self):
+        # #2509 round 2 F5: the rules live off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs the head's tests above against the base's rules. It
+        # fails if the rules go back into a tests/ module, where they were.
+        import _base_proof
+        _base_proof.assert_taken_from_the_base(self, submodule_shadows.__file__)
 
 
 if __name__ == "__main__":
