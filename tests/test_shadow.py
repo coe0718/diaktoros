@@ -381,10 +381,10 @@ class ProductionTurn(unittest.TestCase):
                                    proxy_model="", client_identity="")
 
     def run_shadow(self, submissions, reviews=(), rc=0, checks=GREEN, pr=None, created=None,
-                   reviewer=("confirmed", "APPROVED"), reviewer_state="succeeded"):
+                   reviewer=("confirmed", "APPROVED"), reviewer_state="succeeded", observed=None):
         sup = self.queue_shadow()
         self.reviewer_is(sup, reviewer, reviewer_state)
-        return self.claim_shadow(sup, submissions, reviews, rc, checks, pr, created)
+        return self.claim_shadow(sup, submissions, reviews, rc, checks, pr, created, observed)
 
     def queue_shadow(self):
         with mock.patch.object(Supervisor, "_spawn"), \
@@ -411,7 +411,7 @@ class ProductionTurn(unittest.TestCase):
                              time.time() if confirmed is None else confirmed))
 
     def claim_shadow(self, sup, submissions, reviews=(), rc=0, checks=GREEN, pr=None,
-                     created=None):
+                     created=None, observed=None):
         row = sup.get(f"acme/widgets:8:{HEAD}:shadow")
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
@@ -425,6 +425,7 @@ class ProductionTurn(unittest.TestCase):
                              prompt=kwargs.get("prompt"), steps=kwargs.get("steps"),
                              turn_key=scope.turn_key, shadow=scope.shadow)
             kwargs["observed"]["submissions"] = list(submissions)
+            kwargs["observed"].update(observed or {})
             return rc
 
         def prompt(loop, row, reviews, marker=None, change=None, steps=None):
@@ -590,20 +591,46 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual(sup.shadow_reviews(), [])
         self.assertEqual((row["state"], row["retries"]), ("failed", 0))
 
-    def test_a_shadow_that_exits_1_after_its_verdict_is_recorded_succeeded(self):
+    def test_a_shadow_that_exits_1_after_its_verdict_succeeds_only_if_it_was_authorized(self):
         # #1361: on #1310 a shadow recorded its authorized APPROVE, then exited 1 (Hermes does
-        # for a turn that ends partial). The ledger called it failed; the exit is kept as its error.
-        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
-                                     "denial": ""}], rc=1)
-        self.assertEqual((row["state"], row["retries"], row["outcome"]), ("succeeded", 0, 1))
-        self.assertIn("verdict recorded, then the turn exited with status 1", row["error"])
-        self.assertEqual([r["verdict"] for r in sup.shadow_reviews()], ["APPROVE"])
+        # for a turn that ends partial). The ledger called it failed; the exit is kept as its
+        # error. A verdict the broker refused is no work done: that exit still fails the run.
+        for authorized, state, error in ((True, "succeeded", "verdict recorded, then the turn "
+                                          "exited with status 1"),
+                                         (False, "failed", "turn exited with status 1")):
+            with self.subTest(authorized=authorized):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
+                                             "authorized": authorized, "denial": ""}], rc=1)
+                self.assertEqual((row["state"], row["retries"], row["outcome"]), (state, 0, 1))
+                self.assertIn(error, row["error"])
+                self.assertEqual([r["authorized"] for r in sup.shadow_reviews()], [int(authorized)])
 
-    def test_a_shadow_whose_verdict_was_refused_still_fails_on_a_bad_exit(self):
-        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": False,
-                                     "denial": "stale head"}], rc=1)
-        self.assertEqual((row["state"], row["error"]), ("failed", "turn exited with status 1"))
-        self.assertEqual([r["authorized"] for r in sup.shadow_reviews()], [0])
+    def test_a_shadow_whose_verdict_is_in_spends_no_provider_strike_and_never_waits(self):
+        # #1361 review F1: the provider error that ended the process came after the verdict, so
+        # it is no strike against the account (#1155), and the run never waits on a hold. A 429's
+        # hold still stands for the account's next turn. A refused verdict still counts a strike.
+        from diaktoros import pacing
+        error = {"provider_error": "HTTP 503: overloaded"}
+        later = {"rate_limited_until": time.time() + 600}
+        for name, limit, observed, authorized, state in (
+                ("under the breaker", 3, error, True, "succeeded"),
+                ("trips the breaker", 1, error, True, "succeeded"),
+                ("429", 3, later, True, "succeeded"),
+                ("refused", 3, error, False, "failed")):
+            with self.subTest(name):
+                self.setUp()
+                self.loop = {**self.loop, "provider_breaker_failures": limit}
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
+                                             "authorized": authorized, "denial": ""}],
+                                           rc=1, observed=observed)
+                self.assertEqual((row["state"], row["retries"], row["retry_at"]),
+                                 (state, 0, None), row)
+                stored = pacing._load(pacing.path())
+                strikes = sum(entry.get("count", 0) if isinstance(entry, dict) else entry
+                              for entry in (stored.get("provider_failures") or {}).values())
+                self.assertEqual(strikes, 0 if authorized else 1)
+                self.assertEqual(bool(stored.get("holds")), name in ("429",), stored)
 
     def test_a_head_the_reviewer_sent_back_gets_no_shadow_and_spends_nothing(self):
         # #1647: on a change-requested head the shadow decides nothing, so it never runs.
