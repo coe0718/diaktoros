@@ -147,22 +147,104 @@ def _local_submodule_shadows(source: str, filename: str) -> list[tuple[str, str]
     return found
 
 
-def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
-    """(line, name) for each function-local binding named like a run_supervisor submodule that
-    the source imports from diaktoros.run_supervisor."""
-    tree = ast.parse(source)
-    imported = {a.asname or a.name for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
-                for a in node.names if (a.asname or a.name) in ALL_SUBMODULES}
-    found = set()
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+def _submodule_import(node: ast.AST, alias: ast.alias) -> bool:
+    """Whether this import alias binds a run_supervisor submodule: ``from
+    diaktoros.run_supervisor import views [as v]`` or ``import diaktoros.run_supervisor.views as
+    v`` (#1665)."""
+    if isinstance(node, ast.ImportFrom):
+        return node.module == "diaktoros.run_supervisor" and alias.name in ALL_SUBMODULES
+    prefix = "diaktoros.run_supervisor."
+    return (alias.asname is not None and alias.name.startswith(prefix)
+            and alias.name[len(prefix):] in ALL_SUBMODULES)
+
+
+def _submodule_aliases(tree: ast.AST) -> set[str]:
+    """Every name the source binds to a run_supervisor submodule by an import, at any scope and
+    under any alias."""
+    return {a.asname or a.name for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for a in node.names if _submodule_import(node, a)}
+
+
+def _scope_bindings(scope: ast.AST) -> list[tuple[int, str, bool]]:
+    """(line, name, is_submodule_import) for each name bound directly in a module or function
+    scope: assignment, for/with/walrus/comprehension targets, arguments, ``except ... as``,
+    imports, def/class names and match captures. Nested function and class bodies are their own
+    scopes and are not entered; their decorators and defaults are."""
+    found = []
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = scope.args
+        for arg in (*args.posonlyargs, *args.args, args.vararg, *args.kwonlyargs, args.kwarg):
+            if arg is not None:
+                found.append((arg.lineno, arg.arg, False))
+        stack = list(scope.body) if isinstance(scope.body, list) else [scope.body]
+    else:
+        stack = list(scope.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append((node.lineno, node.name, False))
+            stack.extend(node.decorator_list)
+            if isinstance(node, ast.ClassDef):
+                stack.extend([*node.bases, *node.keywords])
+            else:
+                stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
             continue
-        for node in ast.walk(func):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in imported:
-                found.add((node.lineno, node.id))
-            elif isinstance(node, ast.arg) and node.arg in imported:
-                found.add((node.lineno, node.arg))
+        if isinstance(node, ast.Lambda):
+            stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            found.append((node.lineno, node.id, False))
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            found.append((node.lineno, node.name, False))
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            found.append((node.lineno, node.name, False))
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            found.append((node.lineno, node.rest, False))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                found.append((node.lineno, a.asname or a.name.split(".")[0],
+                              _submodule_import(node, a)))
+        stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _shadowed_submodules(source: str, filename: str = "<source>") -> list[tuple[int, str]]:
+    """(line, name) for each binding, at module level or in a function, of a name the source
+    imports as a run_supervisor submodule, other than such an import itself (#1458, #1665).
+
+    Function locals come from symtable, as in _local_submodule_shadows, so every binding shape
+    counts; _scope_bindings only supplies the line and tells a submodule import (allowed) from
+    any other binding of the name. A local symtable reports that has no binding line found is
+    reported at the function's own line."""
+    tree = ast.parse(source)
+    aliases = _submodule_aliases(tree)
+    if not aliases:
+        return []
+    functions = {("lambda" if isinstance(n, ast.Lambda) else n.name, n.lineno): n
+                 for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))}
+    found = {(line, name) for line, name, submodule in _scope_bindings(tree)
+             if name in aliases and not submodule}
+
+    def walk(table):
+        for child in table.get_children():
+            if child.get_type() == "function":
+                node = functions.get((child.get_name(), child.get_lineno()))
+                bindings = _scope_bindings(node) if node is not None else []
+                for name in aliases & set(child.get_identifiers()):
+                    symbol = child.lookup(name)
+                    # A `global`/`nonlocal` name assigned here rebinds the import as well.
+                    if not (symbol.is_local() or symbol.is_declared_global()
+                            or symbol.is_nonlocal()):
+                        continue
+                    hits = {(line, n) for line, n, submodule in bindings
+                            if n == name and not submodule}
+                    if not hits and symbol.is_local() and not symbol.is_imported():
+                        hits = {(child.get_lineno(), name)}
+                    found.update(hits)
+            walk(child)
+    walk(symtable.symtable(source, filename, "exec"))
     return sorted(found)
 
 
@@ -355,7 +437,7 @@ class Split(unittest.TestCase):
         # local named like a submodule its file imports turns a later `views.<name>` into an
         # UnboundLocalError.
         for path in (ROOT / "tests").rglob("*.py"):
-            for lineno, name in _shadowed_submodules(path.read_text()):
+            for lineno, name in _shadowed_submodules(path.read_text(), str(path)):
                 self.fail(f"{path.relative_to(ROOT)}:{lineno} binds a local `{name}` that "
                           f"shadows the imported submodule")
 
@@ -387,6 +469,45 @@ class Split(unittest.TestCase):
         as_argument = ("from diaktoros.run_supervisor import turns\n"
                        "def f(turns):\n    return turns\n")
         self.assertEqual(_shadowed_submodules(as_argument), [(2, "turns")])
+
+    def test_the_shadow_check_flags_every_binding_shape(self):
+        # #1665/#1664: except-as, with-as, module-level rebinding, aliased imports, imports
+        # inside a function and `import diaktoros.run_supervisor.views as views` all shadow.
+        imp = "from diaktoros.run_supervisor import views\n"
+        cases = {
+            "except_as": (imp + "def t():\n    try:\n        pass\n"
+                          "    except Exception as views:\n        return views\n", [(5, "views")]),
+            "with_as": (imp + "def t():\n    with open('x') as views:\n        pass\n",
+                        [(3, "views")]),
+            "module_level": (imp + "views = []\n", [(2, "views")]),
+            "import_alias": ("from diaktoros.run_supervisor import views as v\n"
+                             "def t():\n    v = 1\n    return v\n", [(3, "v")]),
+            "import_in_function": (imp + "def t():\n    import json as views\n    return views\n",
+                                   [(3, "views")]),
+            "from_import_in_function": (
+                imp + "def t():\n    from json import dumps as views\n    return views\n",
+                [(3, "views")]),
+            "alias_import_in_function": (
+                "def t():\n    from diaktoros.run_supervisor import views as v\n    return v\n"
+                "def u():\n    v = 2\n    return v\n", [(5, "v")]),
+            "dotted_import": ("import diaktoros.run_supervisor.views as views\n"
+                              "def t():\n    views = 1\n    return views\n", [(3, "views")]),
+            "match_capture": (imp + "def t(x):\n    match x:\n        case [*views]:\n"
+                              "            return views\n", [(4, "views")]),
+            "comprehension": (imp + "def t():\n    return [views for views in ()]\n",
+                              [(3, "views")]),
+            "global_rebinding": (imp + "def t():\n    global views\n    views = 1\n",
+                                 [(4, "views")]),
+        }
+        for label, (source, expected) in cases.items():
+            with self.subTest(shape=label):
+                self.assertEqual(_shadowed_submodules(source), expected)
+        # Importing the submodule itself, at any scope or alias, is not a shadow.
+        clean = ("import diaktoros.run_supervisor.views as views\n"
+                 "from diaktoros.run_supervisor import turns as t\n"
+                 "def f():\n    from diaktoros.run_supervisor import views\n"
+                 "    return views.x, t.y\n")
+        self.assertEqual(_shadowed_submodules(clean), [])
 
 
 if __name__ == "__main__":
