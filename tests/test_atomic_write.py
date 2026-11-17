@@ -58,7 +58,7 @@ CALLERS = {
     "diaktoros/cli/common.py::_restore_config_locked",
     "diaktoros/gate/shims.py::_write", "diaktoros/gate/shims.py::heal_watchdog_shim",
     "diaktoros/gh_cache.py::store", "diaktoros/gh_calls.py::flush",
-    "diaktoros/observer.py::_save", "diaktoros/onboarding.py::record", "diaktoros/pacing.py::_save",
+    "diaktoros/observer.py::_save", "diaktoros/onboarding.py::_store", "diaktoros/pacing.py::_save",
     "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
     "diaktoros/runtime_detect.py::write", "diaktoros/state/__init__.py::_atomic_publish",
     "diaktoros/state/__init__.py::LoopState._transition_write",
