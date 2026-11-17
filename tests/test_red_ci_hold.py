@@ -18,7 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_ci_fix as tcf  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import ci, ci_fix, ledger, observer, run_supervisor, stats  # noqa: E402
+from diaktoros import ci, ci_fix, observer, run_supervisor, stats  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 
 RED = ci.CIState(failed=["verticals"], passed=["lint"])
