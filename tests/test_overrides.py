@@ -250,6 +250,32 @@ class Recording(Override):
         self.sweep()
         self.assertEqual(len(self.rows()), 1)
 
+    def v2_checked(self):
+        """The checked list as the version before #1761 left it: the merge after an approval
+        marked read at once, though the reviewer still held a pending review at that head."""
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        (self.st.dir / "override-checked-v2.json").write_text(json.dumps({"7": HEAD}))
+
+    def test_an_approval_marked_checked_before_the_1761_upgrade_is_read_again(self):
+        self.v2_checked()
+        self.reviews = {7: [review(5, "APPROVED"),
+                            review(6, "CHANGES_REQUESTED", at="2026-01-02T00:00:00Z")]}
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual([row[5] for row in self.rows()], [6])
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+        self.assertEqual(self.scan(), [])                        # now trusted: no second record
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_the_sweep_reads_an_approval_marked_checked_before_the_1761_upgrade(self):
+        self.v2_checked()
+        self.reviews = {7: [review(5, "APPROVED"),
+                            review(6, "CHANGES_REQUESTED", at="2026-01-02T00:00:00Z")]}
+        self.sweep()
+        self.assertEqual([(r[0], r[2], r[5]) for r in self.rows()],
+                         [(7, "merged_over_changes", 6)])
+        self.sweep()
+        self.assertEqual(len(self.rows()), 1)
+
     def test_a_hidden_pending_review_beside_an_approval_is_read_again_once_submitted(self):
         # #1761: the reviewer's pending review at the head is invisible to the separate reader,
         # so an approval is all it sees. The merge is not marked checked, and the

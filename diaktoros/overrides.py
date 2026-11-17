@@ -22,8 +22,9 @@ record is written once per PR and head, so reading again never doubles it; the c
 read per such PR per sweep, within the window and the ``LISTED`` newest.) Not covered: a pending
 review submitted more than ``SETTLE_S`` after the merge, once the PR is marked checked, is not
 seen; nor is one submitted after a CHANGES_REQUESTED was recorded. Merges marked checked by an
-earlier version, which also marked those with no verdict, are not trusted: the checked list lives
-in a new file (``state.OVERRIDE_CHECKED_FILE``), so each is read once more.
+earlier version, which also marked those with no verdict (#1323) or those after an approval at once
+(#1761), are not trusted: the checked list lives in a new file (``state.OVERRIDE_CHECKED_FILE``),
+so each is read once more.
 """
 from __future__ import annotations
 
