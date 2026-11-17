@@ -14,7 +14,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from diaktoros import gate, ledger, run_supervisor
+from diaktoros import gate, run_supervisor
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import views, workers
 from diaktoros.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 

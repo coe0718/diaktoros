@@ -14,7 +14,8 @@ from pathlib import Path
 import sqlite3
 import time
 
-from .. import config, ledger, run_supervisor
+from .. import config, run_supervisor
+from ..state import ledger
 from . import claims
 from ..util import epoch
 

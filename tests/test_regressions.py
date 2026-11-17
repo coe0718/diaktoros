@@ -17,7 +17,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, gh, ledger, run_supervisor, stats  # noqa: E402
+from diaktoros import cli, gh, run_supervisor, stats  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD, EARLIER, LATER = fg.HEAD, "e" * 40, "f" * 40

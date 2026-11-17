@@ -18,7 +18,8 @@ import test_issue_fix as base  # noqa: E402
 BASE, REPO, issue = base.BASE, base.REPO, base.issue
 
 from diaktoros import fix_hold, fix_reply, gate, gh, observer, prompts  # noqa: E402
-from diaktoros import ledger, state as state_mod  # noqa: E402
+from diaktoros import state as state_mod  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 TURN = time.time() - 3600           # when the fixer's commenting turn was queued
