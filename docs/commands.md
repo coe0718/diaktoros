@@ -375,8 +375,11 @@ approval, a dismissed review, or a verdict at an earlier head writes none. A mer
 each sweep while it is within the 7 days when its reviews cannot be read or ordered, when no
 verdict is proved current at the merged head, or when the reviewer has a pending review there
 (GitHub shows a pending review only to its author, so the host cannot tell it from no review);
-one never proved by then is not recorded. The report lists them by the day of the merge, with a
-count per model and per category of the findings still open (each blocking finding carries one of
+one never proved by then is not recorded. Since the host cannot see a pending review beside a
+verdict either, a merge after an approval is also read again each sweep for one day after the
+merge (#1761), so a changes-requested the reviewer held pending at that head and submits within
+that day is recorded; one submitted later is not. The report lists them by the day of the merge,
+with a count per model and per category of the findings still open (each blocking finding carries one of
 `correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
 `F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
 ruling, or a reverted fixer push (so zero is not zero overrides). Detection needs the watchdog

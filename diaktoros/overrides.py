@@ -14,10 +14,14 @@ inside the 7-day window (``LOOKBACK_S``); one still unreadable or unordered then
 So is a merge with no verdict proved current at the merged head, and one whose reviewer has a
 PENDING review there: GitHub shows a pending review only to its author, so a separate reader sees
 nothing and cannot tell "no review" from "a review not yet submitted". Only a merge with a proved
-verdict (and no visible pending review) is marked checked. (A record is written once per PR and
-head, so reading again never doubles it; the cost is one review read per such PR per sweep, within
-the window and the ``LISTED`` newest.) Not covered: a pending review submitted after a verdict was
-already proved current is not seen, since that PR is marked checked. Merges marked checked by an
+verdict (and no visible pending review) is marked checked, and one whose verdict is not
+CHANGES_REQUESTED only once it was merged more than ``SETTLE_S`` ago (#1761): the reader cannot see
+a pending review beside a verdict either, so a merge after an approval is read again on each sweep
+for that long, in case the reviewer submits a CHANGES_REQUESTED it held pending at that head. (A
+record is written once per PR and head, so reading again never doubles it; the cost is one review
+read per such PR per sweep, within the window and the ``LISTED`` newest.) Not covered: a pending
+review submitted more than ``SETTLE_S`` after the merge, once the PR is marked checked, is not
+seen; nor is one submitted after a CHANGES_REQUESTED was recorded. Merges marked checked by an
 earlier version, which also marked those with no verdict, are not trusted: the checked list lives
 in a new file (``state.OVERRIDE_CHECKED_FILE``), so each is read once more.
 """
@@ -30,6 +34,7 @@ from . import config, findings, gate, gh
 MERGED_OVER_CHANGES = "merged_over_changes"
 LOOKBACK_S = 7 * 86400      # a merge older than the report's window is not looked at
 LISTED = 30                 # recently updated closed PRs read per sweep (one request)
+SETTLE_S = 86400            # a merge after an approval is read again this long (#1761)
 
 
 def scan(loop: dict, st, sup, now: float | None = None) -> list[int]:
@@ -63,9 +68,12 @@ def scan(loop: dict, st, sup, now: float | None = None) -> list[int]:
                                   for r in gate.reviews_at_head(reviews, loop, head)):
             continue                       # a verdict whose order is unproved: read again
         if latest is not None and not any(gh.review_state(r) == "PENDING"
-                                          for r in gate.reviews_at_head(reviews, loop, head)):
+                                          for r in gate.reviews_at_head(reviews, loop, head)) \
+                and (gh.review_state(latest) == "CHANGES_REQUESTED"
+                     or merged_at <= now - SETTLE_S):
             # Marked only once a verdict is proved. No verdict may mean a pending review the
-            # reader cannot see (GitHub shows it only to its author), so those are read again.
+            # reader cannot see (GitHub shows it only to its author), so those are read again;
+            # so may an approval (#1761), so a merge after one is read again for SETTLE_S.
             kept[str(number)] = head
         if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
             continue
