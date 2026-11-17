@@ -486,6 +486,12 @@ Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). 
 checks were never recorded (verified by hand, or before #1617) runs every step as before. The
 record does not know about `doctor`: a `runtime:*` problem `doctor` alone finds is not seen
 while the record is current, so run `hermes dk doctor` yourself after changing the host.
+What does make the record stale (#1714): a change to the loop's own settings (a `set` or an
+edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_check`, ...)
+makes `loop` stale, and a new token or App key written into the same credential file makes
+`identities` stale (only a hash of the file is kept, never its contents). A change outside the
+loop file, the runtime file, the credential files and the seats' models (a gateway that moved
+while `host` stayed the same, a token revoked on GitHub) is not seen.
 `setup` never changes `unattended_fixer_push`.
 
 `setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes
@@ -1435,7 +1441,8 @@ record (`onboarding.json` in the loop's state directory) that the checks leave. 
 `loop`, `model`, `live_turn` and `armed` it shows the status (`passed`, `failed`, `skipped`,
 `stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
 summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
-identities, the runtime file, a seat's model, the PR head, the hook state), or that an earlier
+identities and a hash of each credential file's contents, the loop's settings and the runtime
+file, a seat's model, the PR head, the hook state), or that an earlier
 stale stage is the cause. A stage whose inputs cannot be read now is stale, never passed.
 
 ```bash

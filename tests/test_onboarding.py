@@ -146,9 +146,28 @@ class Staleness(Fixture):
         self.loop["apps"]["critic[bot]"]["app_id"] = 8
         self.assert_stale_from("identities")
 
-    def test_the_token_file_contents_are_not_part_of_the_fingerprint(self):
-        (self.root / "reader-pat").write_text("ghp_" + "Z" * 36)     # a rotated token, same mapping
-        self.assertEqual(set(self.read().values()), {"passed"})
+    def test_a_rotated_token_in_the_same_file_makes_identities_stale(self):
+        # #1714: the same mapping, new contents. Only a hash of the contents is fingerprinted.
+        (self.root / "reader-pat").write_text("ghp_" + "Z" * 36)
+        self.assert_stale_from("identities")
+        self.assertNotIn("Z" * 36, onboarding.path(self.loop).read_text())
+
+    def test_a_replaced_app_key_makes_identities_stale(self):
+        (self.root / "app.pem").write_text(APP_KEY + "\n")
+        self.assert_stale_from("identities")
+
+    def test_changing_a_loop_setting_makes_loop_and_later_stages_stale(self):
+        # #1714: a `set` of the gateway host (or base, hook admin, ...) must re-run the checks.
+        for key, value in (("host", "https://elsewhere.example"), ("base", "develop"),
+                           ("hook_admin", "someone-else")):
+            with self.subTest(key=key):
+                before = self.loop.get(key)
+                self.loop[key] = value
+                self.assert_stale_from("loop")
+                self.loop[key] = before
+                if before is None:
+                    del self.loop[key]
+                self.assertEqual(set(self.read().values()), {"passed"})
 
     def test_changing_the_runtime_file_makes_loop_and_later_stages_stale(self):
         self.write_runtime(rust="/other")

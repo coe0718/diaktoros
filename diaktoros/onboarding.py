@@ -8,8 +8,9 @@ Only the record lives here. The checks stay where they are (``selftest``, ``doct
 summary, the outcomes of the checks that decided the status (``deciding_checks``), and a
 *fingerprint* of the stage's inputs.
 
-A fingerprint is a SHA-256 over facts, never a secret: logins and file paths (not file contents),
-a hash of the runtime file, the seats' ``SeatInference.identity()`` (hashed again, because that
+A fingerprint is a SHA-256 over facts, never a secret: logins and file paths, a hash of each
+credential file's contents (#1714), the loop's own settings, a hash of the runtime file, the
+seats' ``SeatInference.identity()`` (hashed again, because that
 tuple carries a digest of the key), a PR number and head SHA, the observed hook state.
 
 ``read`` gives each stage's status. A stage whose inputs no longer hash to its recorded
@@ -162,11 +163,31 @@ def _digest(value) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def _runtime_hash(runtime_file: Path) -> str:
+def _file_hash(file: Path) -> str:
+    """SHA-256 of a file's bytes, or ``"absent"`` when it cannot be read."""
     try:
-        return hashlib.sha256(runtime_file.read_bytes()).hexdigest()
+        return hashlib.sha256(Path(file).expanduser().read_bytes()).hexdigest()
     except OSError:
         return "absent"
+
+
+def _runtime_hash(runtime_file: Path) -> str:
+    return _file_hash(runtime_file)
+
+
+def _credential_hashes(loop: dict) -> dict:
+    """login -> SHA-256 of its credential file's contents (a PAT file or an App key, from
+    ``config.credentials_map``), so a rotated token in the same file is a change (#1714).
+    Only the hash is kept, and ``_digest`` hashes it again: never the credential itself."""
+    return {login: _file_hash(Path(raw)) if raw else "absent"
+            for login, raw in config.credentials_map(loop).items()}
+
+
+def _loop_settings(loop: dict) -> dict:
+    """The loop's own configuration as loaded (``host``, ``base``, ``required_checks``,
+    ``hook_admin``, ``fixer_check``, ...), so a ``set`` or a hand edit of the loop file makes
+    the ``loop`` stage stale (#1714). Credentials appear here as paths, never contents."""
+    return dict(loop)
 
 
 def _resolve_seats(loop: dict, runtime_file: Path, resolver) -> dict:
@@ -235,14 +256,16 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
     """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     if stage == "identities":
-        # Logins and file paths (an App's id and key_file path), never the files' contents, and
-        # which login each role is checked as (selftest's own role -> login list, #1689).
+        # Logins and file paths (an App's id and key_file path), a hash of each credential
+        # file's contents (a rotated token in the same file, #1714), and which login each role
+        # is checked as (selftest's own role -> login list, #1689).
         from . import selftest
         facts = {"repo": loop.get("repo"), "tokens": loop.get("tokens") or {},
-                 "apps": loop.get("apps") or {}, "roles": selftest._roles(loop)}
+                 "apps": loop.get("apps") or {}, "roles": selftest._roles(loop),
+                 "credentials": _credential_hashes(loop)}
     elif stage == "loop":
         from . import seat_model
-        facts = {"runtime": _runtime_hash(runtime_file),
+        facts = {"runtime": _runtime_hash(runtime_file), "settings": _loop_settings(loop),
                  "profiles": {seat: str(config.profile_dir(config.seat_profile(loop, seat)))
                               for seat in seat_model.seats_for(loop)}}
     elif stage == "model":
