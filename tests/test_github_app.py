@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import base64
+import errno
 import json
 import os
 import shutil
@@ -650,6 +651,20 @@ class Push(Base):
                 self.fail("the isolated transport must not start with a partial token")
         self.assertEqual(len(roots), 1)
         self.assertFalse(roots[0].exists())
+
+    def test_a_token_write_error_keeps_its_errno_in_the_refusal(self):
+        # #1915: a full disk must read as ENOSPC in the refusal, not a bare "could not be written".
+        identity = {"name": BOT, "email": f"1+{BOT}@users.noreply.github.com"}
+        full = OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        with mock.patch.object(gh, "token", return_value=self.TOKEN), \
+                mock.patch.object(safe_push.os, "write", side_effect=full), \
+                self.assertRaises(broker.BrokerDenied) as caught:
+            with safe_push._isolated(self.loop, BOT, identity, self.remote):
+                self.fail("the isolated transport must not start without its token")
+        message = str(caught.exception)
+        self.assertIn("the minted token could not be written: ", message)
+        self.assertIn(f"[Errno {errno.ENOSPC}]", message)
+        self.assertIn(os.strerror(errno.ENOSPC), message)
 
     def test_merged_tree_refuses_when_the_token_write_fails(self):
         # merged_tree enters through _isolated: the refusal holds at an entry point,

@@ -342,11 +342,12 @@ def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
                     raise broker.BrokerDenied(f"fixer credential unavailable: {exc}") from None
                 try:
                     util.write_all(fd, minted)
-                except OSError:
+                except OSError as exc:
                     # A write that stops short leaves a partial token in the file: name it here
-                    # rather than let git fail later with an opaque authentication error.
-                    raise broker.BrokerDenied("fixer credential unavailable: "
-                                              "the minted token could not be written") from None
+                    # rather than let git fail later with an opaque authentication error, and
+                    # keep the OSError's text (ENOSPC, EDQUOT, EIO...) as the mint failure does.
+                    raise broker.BrokerDenied("fixer credential unavailable: the minted token "
+                                              f"could not be written: {exc}") from None
             finally:
                 os.close(fd)
         env = {"PATH": "/usr/bin:/bin", "HOME": temp, "XDG_CONFIG_HOME": temp,
