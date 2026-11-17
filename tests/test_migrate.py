@@ -18,7 +18,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, gh, ledger, migrate, run_supervisor  # noqa: E402
+from diaktoros import cli, config, gh, run_supervisor  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
+from diaktoros.state import migrate  # noqa: E402
 from diaktoros.gate import shims as gate_shims  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -316,7 +318,7 @@ class RunsInFlightUnreadable(fg.Base):
         path = self._ledger(b"garbage" * 100)
         args = argparse.Namespace(file="x.tgz", dry_run=False, force=True)
         with mock.patch.object(config, "host_path", return_value=path), \
-             mock.patch("diaktoros.backup.read_manifest", return_value={}), \
+             mock.patch("diaktoros.state.backup.read_manifest", return_value={}), \
              mock.patch.object(cli_lifecycle, "_restore") as restore, \
              contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli_lifecycle.cmd_restore(args), 2)

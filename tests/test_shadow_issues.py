@@ -19,7 +19,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
-from diaktoros import broker, config, gh, ledger, shadow_issues  # noqa: E402
+from diaktoros import broker, config, gh, shadow_issues  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.broker import filing as broker_filing  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402

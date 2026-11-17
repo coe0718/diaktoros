@@ -1140,7 +1140,7 @@ def notify_dead_migrate(held: dict) -> None:
     nothing; a new interrupted migrate is a new notice. A loop whose state directory does not
     exist (its move may be half done) is skipped: writing its observer ledger would recreate
     the directory under the old name, and the re-run would then refuse to move it."""
-    from diaktoros import migrate
+    from diaktoros.state import migrate
     outcome = (f"install paused — {migrate.describe(held)} (marker {migrate.marker_path()}; "
                "run `hermes dk migrate`)")
     identity = migrate_identity(held)
@@ -1159,7 +1159,7 @@ def notify_dead_migrate(held: dict) -> None:
 def paused_by_migrate(args: argparse.Namespace) -> bool:
     """Whether a migration holds the install (#431), saying so once per run (not on a drain).
     A migrate that died holding it also sends its observer notice (#1077)."""
-    from diaktoros import migrate
+    from diaktoros.state import migrate
     held = migrate.migrating()
     if held is None:
         return False

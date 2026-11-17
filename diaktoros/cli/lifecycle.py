@@ -304,7 +304,8 @@ def _move_watchdog_job(*, dry_run: bool) -> list[str]:
 def _in_flight(base: dict) -> str:
     """Why a rename must wait for the loop's runs, or '': runs in flight or uncertain, or a
     ledger that can't be read, which rules none out (#767)."""
-    from .. import migrate, run_supervisor
+    from .. import run_supervisor
+    from ..state import migrate
     try:
         busy = migrate.busy_runs(run_supervisor.production_ledger(), base["repo"])
     except migrate.RunsUnknown as exc:
@@ -326,9 +327,9 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     """
     from .. import (
         hook_ping,
-        migrate,
         pacing,
     )
+    from ..state import migrate
     old_id, sep, new_id = spec.partition("=")
     tag = f"rename-loop: {old_id or '?'} → {new_id or '?'}"
     if not sep or old_id == new_id or not all(migrate.LOOP_ID.match(x or "") for x in (old_id, new_id)):
@@ -437,7 +438,7 @@ def cmd_migrate(args) -> int:
     finished (a run in flight, a shim this plugin did not write, a hook not yet proven);
     re-running finishes what an interrupted run began.
     """
-    from .. import migrate
+    from ..state import migrate
     if args.dry_run:
         return _migrate(args)
     try:
@@ -460,7 +461,9 @@ def _migrate(args, left: dict | None = None) -> int:
 
 
 def _migrate_steps(args, using: contextlib.ExitStack, left: dict | None = None) -> int:
-    from .. import backup, migrate, run_supervisor
+    from .. import run_supervisor
+    from ..state import backup
+    from ..state import migrate
     try:
         loops = config.all_loops()
     except config.ConfigError as exc:
@@ -520,7 +523,7 @@ def _migrate_steps(args, using: contextlib.ExitStack, left: dict | None = None) 
 
 def _verify_backup(args) -> int:
     """``backup --verify FILE`` (#1078): read an archive back and report; writes nothing."""
-    from .. import backup
+    from ..state import backup
     archive = pathlib.Path(args.verify).expanduser()
     try:
         read, problems = backup.verify(archive)
@@ -539,7 +542,7 @@ def _verify_backup(args) -> int:
 def cmd_backup(args) -> int:
     """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``.
     With ``--verify FILE`` it writes nothing and reads an existing archive back (#1078)."""
-    from .. import backup
+    from ..state import backup
     if getattr(args, "verify", None):
         if args.out:
             print("cannot back up: --verify reads an existing archive and takes no --out")
@@ -571,7 +574,7 @@ def _record_future_dated(backup) -> None:
     """Record and name every archive in the backups directory dated past the clock-skew allowance
     (#1905), so ``doctor``'s ``backup:fresh`` never counts it as recent once the clock reaches its
     date. A record that cannot be written is said, never a failed backup: the archive is whole."""
-    from .. import backup_fresh
+    from ..state import backup_fresh
     try:
         found = backup_fresh.record_future_dated()
     except backup_fresh.FutureRecordError as exc:   # left as it is: rewriting it forgets what it named
@@ -593,7 +596,7 @@ def _left_out(archive: pathlib.Path) -> str | None:
     """The line ``backup`` and ``migrate``'s automatic backup both print for the files the archive
     left out (its manifest's ``skipped``: a writer's in-progress temp files, and listed files that
     were gone by the time they were read), or None when it left none out (#1694)."""
-    from .. import backup
+    from ..state import backup
     left_out = backup.read_manifest(archive).get("skipped") or []
     if not left_out:
         return None
@@ -635,7 +638,7 @@ def _pre_restore_snapshot(left: dict | None = None,
     restore is about to write (``writes``) that vanishes while the snapshot reads it fails the
     snapshot, so the restore writes nothing: unlike a plain ``backup`` (#1694), the undo archive
     must hold every listed file the restore can overwrite (#2413)."""
-    from .. import backup
+    from ..state import backup
     try:
         return backup.create(backup.pre_restore_out(), held=True, half_moved=left,
                              must_read=writes)
@@ -647,7 +650,9 @@ def _pre_restore_snapshot(left: dict | None = None,
 
 
 def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = None) -> int:
-    from .. import backup, migrate, restore_checks
+    from ..state import backup
+    from ..state import migrate
+    from ..state import restore_checks
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
     lines += [f"restore: NOT FINISHED — credential file problem: {line}"
@@ -706,7 +711,8 @@ def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = No
 
 def cmd_restore(args) -> int:
     """``restore`` (#496): put a backup back, paused with migrate's marker; see ``backup``."""
-    from .. import backup, migrate
+    from ..state import backup
+    from ..state import migrate
     archive = pathlib.Path(args.file).expanduser()
     try:
         manifest = backup.read_manifest(archive)
