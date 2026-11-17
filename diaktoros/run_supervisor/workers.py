@@ -483,7 +483,7 @@ class WorkerLifecycle:
                            error: str | None = None, *, stopped: bool = True,
                            retry: bool = False, detail: str | None = None,
                            paced_until: float | None = None,
-                           cancel: bool = False) -> str | None:
+                           cancel: bool = False, recorded: bool = False) -> str | None:
         """Record direct worker completion, including after lease expiry.
 
         Never use this for operator guesswork: only the owner after its child
@@ -506,12 +506,9 @@ class WorkerLifecycle:
             con.execute("BEGIN IMMEDIATE")
             ambiguous = con.execute("SELECT 1 FROM review_receipts WHERE run_id=? AND state='claimed'",
                                     (run_id,)).fetchone()
-            held = con.execute("SELECT error FROM runs WHERE id=? AND owner=? AND state='uncertain'",
-                               (run_id, owner)).fetchone()
-            intent = con.execute('SELECT push_intent,retries FROM runs WHERE id=? AND owner=?',
-                                 (run_id, owner)).fetchone()
-            current = con.execute('SELECT error FROM runs WHERE id=? AND owner=?',
-                                  (run_id, owner)).fetchone()
+            intent = current = con.execute('SELECT push_intent,retries,error,state FROM runs '
+                                           'WHERE id=? AND owner=?', (run_id, owner)).fetchone()
+            held = current if current is not None and current['state'] == 'uncertain' else None
             ineligible = (current is not None
                           and (current['error'] or '').startswith(run_supervisor.REVIEWED_PR_INELIGIBLE))
             quarantined = held is not None and (held['error'] or '').startswith('post-write push quarantine: ')
@@ -528,7 +525,8 @@ class WorkerLifecycle:
                          'post-write push quarantine: unresolved push intent') if post_write else error
             elif cancel and error:
                 state = 'cancelled'   # no longer eligible before launch (#723): not a failure
-            elif rc == 0 and error is None:
+            elif recorded or (rc == 0 and error is None):
+                # ``recorded``: the turn's work was recorded before a non-zero exit (#1361)
                 state = 'succeeded'
             elif run_supervisor.policy_hold(error):
                 state = 'cancelled'   # the policy held this turn before it launched (#81)
