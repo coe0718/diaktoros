@@ -28,7 +28,7 @@ from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 class Upheld(ruling.Base):
     def upheld(self):
-        return gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        return gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
 
     def test_only_a_reject_answering_the_newest_shadow_block_upholds_it(self):
         self.assertIsNone(self.upheld())                       # nothing recorded
@@ -52,7 +52,7 @@ class Upheld(ruling.Base):
 
         def held(author="fixer"):
             with mock.patch.object(gh, "pr", return_value={**fg.LIVE, "user": {"login": author}}):
-                kind, text, _note = gate.shadow_state(self.loop, 7, fg.HEAD, db=self.db,
+                kind, text, _note = gate.shadows.shadow_state(self.loop, 7, fg.HEAD, db=self.db,
                                                       marker=marker)
             self.assertEqual(kind, "failure")                  # never ready to merge
             return text
@@ -83,7 +83,7 @@ class Operator(ruling.Base):
         from diaktoros import explain
         pr = {**fg.LIVE, "user": {"login": author}}
         with mock.patch.object(gh, "pr", return_value=pr):
-            held = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db,
+            held = gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db,
                                     marker=self.st.breach_get(7))
             facts = {"pr": pr, "reviews": ruling.APPROVED, "armed": True, "read_at": 0,
                      "shadow_hold": held}
@@ -184,7 +184,7 @@ class Operator(ruling.Base):
         from diaktoros import merge_check, ready
         self.upheld_marker()
         self.escalate_off()
-        self.assertFalse(gate.shadow_fix_owed(self.loop, self.st.breach_get(7), fg.HEAD,
+        self.assertFalse(gate.shadows.shadow_fix_owed(self.loop, self.st.breach_get(7), fg.HEAD,
                                               db=self.db))
         why = self.ready()
         self.assertTrue(any(w.startswith("escalated:") and "a person decides" in w for w in why),
@@ -214,13 +214,13 @@ class Queue(ruling.Base):
         live = {**fg.LIVE, "user": {"login": author}}
         with mock.patch.object(gh, "pr", return_value=live), \
                 mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue:
-            outcome = gate.queue_shadow_fix(self.loop, 7, fg.HEAD, db=self.db)
+            outcome = gate.shadows.queue_shadow_fix(self.loop, 7, fg.HEAD, db=self.db)
         return outcome, enqueue
 
     def test_an_upheld_ruling_queues_one_fixer_turn_keyed_by_the_ruling(self):
         self.shadow("REQUEST_CHANGES")
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         self.loop = {**self.loop, "unattended_fixer_push": True}
         outcome, enqueue = self.queue()
         self.assertEqual(outcome, "enqueued")
@@ -248,7 +248,8 @@ class Queue(ruling.Base):
         for verdict, calls in (("ACCEPT", 0), ("REJECT", 1)):
             with self.subTest(verdict=verdict):
                 launch, _row = self.claim()
-                with mock.patch.object(gate, "queue_shadow_fix", return_value="enqueued") as q:
+                with mock.patch.object(gate.shadows, "queue_shadow_fix",
+                                       return_value="enqueued") as q:
                     self.rule(launch.scope, verdict)
                 self.assertEqual(q.call_count, calls)
                 if calls:
@@ -261,8 +262,8 @@ class Queue(ruling.Base):
 
     def test_the_watchdog_sweep_queues_it_as_a_backstop(self):
         calls = []
-        with mock.patch.object(gate, "shadow_escalation", return_value=""), \
-                mock.patch.object(gate, "queue_shadow_fix",
+        with mock.patch.object(gate.shadows, "shadow_escalation", return_value=""), \
+                mock.patch.object(gate.shadows, "queue_shadow_fix",
                                   side_effect=lambda *a, **k: calls.append(a[1:3]) or "enqueued"):
             self.sweep()                                       # first sweep: snapshot only
             self.sweep()
@@ -297,7 +298,7 @@ class Launch(ruling.Base):
     def test_the_work_order_is_the_shadow_review_and_the_ruling(self):
         self.shadow("REQUEST_CHANGES", body="F1 [test]: a.py:1: the token is logged")
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         launch = self.launch(f"shadow:{int(ruled)}")
         self.assertIn("Your work order: an upheld second review", launch.prompt)
         self.assertIn("F1 [test]: a.py:1: the token is logged", launch.prompt)
@@ -307,7 +308,7 @@ class Launch(ruling.Base):
     def test_a_ruling_no_longer_current_ends_the_run(self):
         self.shadow("REQUEST_CHANGES")
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         self.ruled("ACCEPT")                                   # overruled since it was queued
         with self.assertRaisesRegex(ValueError, "upheld shadow ruling no longer current"):
             self.launch(f"shadow:{int(ruled)}")
@@ -339,7 +340,7 @@ class Claim(ruling.Base):
         self.shadow("REQUEST_CHANGES")
         self.mark_escalated()
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         key = f"shadow:{int(ruled)}"
         self.loop = {**self.loop, "unattended_fixer_push": True}
         sup, _turn = self.row(key)
@@ -364,7 +365,7 @@ class Claim(ruling.Base):
     def test_a_claim_needs_the_ruling_still_standing_not_a_verdict(self):
         self.shadow("REQUEST_CHANGES")
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         read = self.claim_read(f"shadow:{int(ruled)}")
         self.assertFalse(read.superseded or read.read_error or read.refused)   # claimable
         self.ruled("ACCEPT")                                   # overruled before the claim
@@ -387,7 +388,7 @@ class Push(ruling.Base):
     def test_the_push_needs_the_ruling_not_a_verdict(self):
         self.shadow("REQUEST_CHANGES")
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         with mock.patch.object(run_supervisor, "production_ledger", return_value=self.db):
             reason, authorize = self.push(ruled)
         self.assertEqual(reason, "stop here")                  # past the ruling check
@@ -406,9 +407,10 @@ class Push(ruling.Base):
         run_supervisor.Supervisor(self.db)
         self.shadow("REQUEST_CHANGES")
         self.ruled("REJECT")
-        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
         self.assertIsNotNone(ruled)
-        self.assertIsNone(gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD))  # not production's
+        # The ruling is in this ledger, not production's:
+        self.assertIsNone(gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD))
         scope = broker_ipc.RunScope(fg.REPO, 7, fg.HEAD, "fixer", "fix-7", "rid", self.db,
                                     shadow_fix=ruled)
         server = broker_ipc.RunBroker(self.loop, scope, self.root)

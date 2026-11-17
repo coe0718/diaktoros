@@ -328,8 +328,8 @@ def newest_shadow_review(row):
             raise sqlite3.OperationalError("no ledger")
         try:
             # The review the hold judges (#1683): the active reviewer turn's, so the ruling
-            # answers the review ``gate.shadow_state`` waits on, not an older turn's.
-            newest = gate._latest_shadow_review(con, row['repo'], row['pr'], row['head'])
+            # answers the review ``gate.shadows.shadow_state`` waits on, not an older turn's.
+            newest = gate.shadows._latest_shadow_review(con, row['repo'], row['pr'], row['head'])
             found = newest and con.execute("SELECT run_id, model, verdict, body FROM "
                                            "shadow_reviews WHERE run_id=?", (newest[2],)).fetchone()
         finally:

@@ -90,7 +90,7 @@ class SetCommand(unittest.TestCase):
 
 
 class Hold(unittest.TestCase):
-    """``gate.shadow_hold`` against a real run ledger."""
+    """``gate.shadows.shadow_hold`` against a real run ledger."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -115,7 +115,7 @@ class Hold(unittest.TestCase):
                              1, "", 0, time.time() + self.n))
 
     def hold(self):
-        return gate.shadow_hold(self.loop, 7, HEAD, db=self.db)
+        return gate.shadows.shadow_hold(self.loop, 7, HEAD, db=self.db)
 
     def test_a_running_or_pending_shadow_holds(self):
         for state in ("pending", "waiting", "running"):
@@ -166,16 +166,16 @@ class Hold(unittest.TestCase):
         # note, not a hold on every approved PR of a fresh loop. One that exists but can't be
         # read still holds.
         missing = self.db.with_name("missing.sqlite")
-        held, note = gate.shadow_hold(self.loop, 7, HEAD, db=missing)
+        held, note = gate.shadows.shadow_hold(self.loop, 7, HEAD, db=missing)
         self.assertEqual(held, "")
         self.assertIn("no run ledger yet", note)
         broken = self.db.with_name("broken.sqlite")
         broken.write_bytes(b"not a database at all" * 40)
-        held, _ = gate.shadow_hold(self.loop, 7, HEAD, db=broken)
+        held, _ = gate.shadows.shadow_hold(self.loop, 7, HEAD, db=broken)
         self.assertIn("unreadable", held)
         off = config.normalize({**RAW, "shadow": {"profile": "critic", "every": 1}})
         self.shadow_run("running")
-        self.assertEqual(gate.shadow_hold(off, 7, HEAD, db=self.db), ("", ""))
+        self.assertEqual(gate.shadows.shadow_hold(off, 7, HEAD, db=self.db), ("", ""))
 
 
 class ReadyAndExplain(unittest.TestCase):
@@ -193,7 +193,7 @@ class ReadyAndExplain(unittest.TestCase):
             # ready reads the hold with its kind (shadow_state, #1163 M2b).
             return (("pending", "waiting on the shadow review at " + head[:7] + " (running)", "")
                     if number == 2 else ("", "", ""))
-        with mock.patch.object(gate, "shadow_state", side_effect=hold):
+        with mock.patch.object(gate.shadows, "shadow_state", side_effect=hold):
             text = self.run_ready()
         self.assertIn("1. #1", text)
         self.assertIn("shadow review: waiting on the shadow review", text)
@@ -248,7 +248,8 @@ class Wiring(unittest.TestCase):
     def test_explain_facts_asks_shadow_hold_about_the_live_head(self):
         with mock.patch.object(gate.gh, "fetch", side_effect=[(mt.PR, ""), ([], "")]), \
                 mock.patch.object(gate, "hooks_read", return_value=(True, "")), \
-                mock.patch.object(gate, "shadow_hold", return_value=("held here", "")) as hold:
+                mock.patch.object(gate.shadows, "shadow_hold",
+                                  return_value=("held here", "")) as hold:
             facts = explain.explain_facts(mt.LOOP, 7)
         self.assertEqual(hold.call_args.args, (mt.LOOP, 7, mt.HEAD))
         self.assertIn("marker", hold.call_args.kwargs)        # part 2: rulings need the marker

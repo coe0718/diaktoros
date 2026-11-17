@@ -315,7 +315,7 @@ def explain_facts(loop: dict, number: int) -> dict:
         breach_marker = state_mod.state_for(loop).breach_get(number)
     except Exception:
         breach_marker = None               # no marker read: an unruled hold, never an error
-    shadow = (gate.shadow_hold(loop, number, head, marker=breach_marker)
+    shadow = (gate.shadows.shadow_hold(loop, number, head, marker=breach_marker)
               if isinstance(head, str) and head else ("", ""))
     from . import shadow_choice
     choice = shadow_choice.explain_line(loop, number, head) if isinstance(head, str) else ""
@@ -570,7 +570,7 @@ def _local_state(c) -> None:
         c.parked, c.ruled = False, None
     # #1004 part 3 (#1353): an upheld shadow review the fixer answers waits on no person; the
     # shadow hold says the fixer answers it, and the next event is the fixer's.
-    c.shadow_fix = gate.shadow_fix_owed(c.loop, c.marker, c.head)
+    c.shadow_fix = gate.shadows.shadow_fix_owed(c.loop, c.marker, c.head)
     if c.shadow_fix:
         c.parked, c.ruled = False, None
 

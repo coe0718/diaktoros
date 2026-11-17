@@ -742,7 +742,7 @@ def _before_attempt(loop: dict, *, repo: str, number: int, head: str, role: str,
         # #1004 part 3: the work order is the adjudicator's REJECT of an upheld shadow review,
         # not a changes-requested review (the head is approved): it must still stand here.
         from . import gate
-        if gate.upheld_shadow_ruling(loop, number, head, db=ledger_db) != shadow_fix:
+        if gate.shadows.upheld_shadow_ruling(loop, number, head, db=ledger_db) != shadow_fix:
             raise broker.BrokerDenied("upheld shadow ruling no longer current")
     login = broker.authorize(loop, repo=repo, number=number, head=head,
                              role=role, branch=branch, operation="push", require_verdict=verdict)
