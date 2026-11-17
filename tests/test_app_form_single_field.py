@@ -30,6 +30,7 @@ import test_token_file_settings as tfs  # noqa: E402
 from test_app_cli import Base  # noqa: E402
 from diaktoros import config, github_app  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
+from diaktoros.cli import route_sync  # noqa: E402
 
 ROLES = ("reviewer", "fixer", "adjudicator")
 BOTS = {"reviewer": "acme-reviewer[bot]", "fixer": "acme-fixer[bot]",
@@ -81,6 +82,50 @@ class AppFormSingleField(Base):
         form[f"{role}_{field}"] = new_value
         return form, new_value
 
+    def assert_dry_run_names_only(self, role, form, old, new):
+        """Dry run: the diff names this seat's credential, old tuple to new, names no other
+        seat, and writes nothing (#1921: an unchanged seat reported as moved must fail here)."""
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"], form)
+        self.assertNotIn("already matches", out)
+        self.assertIn(f"{role} credential ({BOTS[role]}): App {old[0]}, key {old[1]} → "
+                      f"App {new[0]}, key {new[1]}", out)
+        self.assertEqual(out.count(" credential ("), 1, out)
+        for other in ROLES:
+            if other != role:
+                self.assertNotIn(BOTS[other], out, other)
+        self.assertIn("dry run — nothing written", out)
+
+    def test_a_spurious_unchanged_seat_in_the_diff_is_caught(self):
+        # #1921: a diff that also reports an untouched seat's credential as moved ("App 22, key
+        # X → App 22, key X") must fail the one-field test itself, in every role/field case and
+        # at its dry-run check, not only the adjudicator's (where the busy check caught it
+        # incidentally). The real test method is run, not the helper alone, so going back to
+        # the old assertIn-only dry-run check (in the helper or at its call) turns this red.
+        real = route_sync._seat_diffs
+
+        def spurious(was, now):
+            diffs, touched = real(was, now)
+            if diffs:
+                loop = config.load_id("widgets")
+                for other in ROLES:
+                    label = f"{other} credential ({BOTS[other]})"
+                    if not any(d[0] == label for d in diffs):
+                        same = cli_common._credential_label(loop, BOTS[other])
+                        diffs.append((label, same, same))
+            return diffs, touched
+
+        inner = AppFormSingleField("test_one_field_alone_is_a_diff_a_write_and_the_right_busy_check")
+        result = unittest.TestResult()
+        with patch.object(route_sync, "_seat_diffs", side_effect=spurious):
+            inner.run(result)
+        self.assertEqual(result.errors, [])
+        failed = {(case.params["role"], case.params["field"]): trace
+                  for case, trace in result.failures}
+        self.assertEqual(set(failed), set(itertools.product(ROLES, FIELDS)), result.failures)
+        for case, trace in failed.items():
+            # Caught by the dry-run check, before the write and the busy check.
+            self.assertIn("assert_dry_run_names_only", trace, case)
+
     def test_complete_form_over_a_complete_tuple_matches(self):
         # The baseline every case below departs from by exactly one field.
         rc, out = self.run_cli(["apply", "--loop", "widgets"], self.complete_form())
@@ -97,12 +142,7 @@ class AppFormSingleField(Base):
                 new_key = new_value if field == "app_key_file" else old_key
                 bytes_before = self.loop_file().read_bytes()
 
-                # Dry run: the diff names this seat's credential, old tuple to new, and writes nothing.
-                rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"], form)
-                self.assertNotIn("already matches", out)
-                self.assertIn(f"{role} credential ({BOTS[role]}): App {old_id}, key {old_key} → "
-                              f"App {new_id}, key {new_key}", out)
-                self.assertIn("dry run — nothing written", out)
+                self.assert_dry_run_names_only(role, form, (old_id, old_key), (new_id, new_key))
                 self.assertEqual(self.loop_file().read_bytes(), bytes_before)
 
                 # The enforcing path: a seat in flight refuses; the adjudicator has no run.
@@ -112,7 +152,7 @@ class AppFormSingleField(Base):
                 if role in BUSY_CHECKED:
                     self.assertEqual(rc, 2, out)
                     self.assertIn("refused: a seat is in flight", out)
-                    self.assertIn(role, busy.call_args.args[1])
+                    self.assertEqual(set(busy.call_args.args[1]), {role})
                     self.assertEqual(self.loop_file().read_bytes(), bytes_before)
                     with patch.object(cli_common, "_busy_seats", return_value=busy_lines):
                         rc, out = self.run_cli(["apply", "--loop", "widgets", "--while-busy"], form)
