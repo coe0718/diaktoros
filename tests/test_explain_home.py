@@ -47,8 +47,10 @@ def top_level(path: pathlib.Path, imports: bool = False) -> set[str]:
 GATE = ROOT / "diaktoros/gate/__init__.py"
 # #1502: the alias forms the first scan missed (it saw only def/class and plain assignments).
 # gate is the package ``diaktoros.gate`` now, so ``..explain`` is ``diaktoros/explain.py``.
+# ``async def`` binds a name as ``def`` does, so it is a re-export too (the scan's
+# AsyncFunctionDef branch; without it this alias leaves the static guard green).
 ALIASES = ("from ..explain import explain", "from ..explain import LIVE_TURN as LIVE_TURN",
-           "explain: object = None")
+           "explain: object = None", "async def explain():\n    pass")
 STATIC_GUARD = "test_each_moved_name_is_defined_in_explain_only"
 RUNTIME_GUARD = "test_gate_does_not_expose_a_moved_name_at_runtime"
 
