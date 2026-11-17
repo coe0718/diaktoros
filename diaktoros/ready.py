@@ -261,7 +261,7 @@ def _escalation(loop: dict, number: int, head: str, marker,
     if not (gate.escalated(marker, head) or parked and (
             spent is None or gate.breach_holds(marker, head, spent, loop["cap"]))):
         return []
-    ruled = explain._ruled(loop, number, head)
+    ruled = explain._ruled(loop, number, head, marker)
     if ruled:
         return [(FAILURE, f"escalated: the adjudicator ruled {ruled} at head {head[:7]}; a person "
                           "decides (merge, close, or push a new head)")]
