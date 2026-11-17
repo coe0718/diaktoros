@@ -14,7 +14,8 @@ import re
 import sqlite3
 from pathlib import Path
 
-from . import ci, ci_cache, config, gh, ledger
+from . import ci, ci_cache, config, gh
+from .state import ledger
 
 # The ledger turn key of a CI-fix turn. One head, one key, so one turn per head.
 KEY = "cifix:"

@@ -33,16 +33,16 @@ DIFFERENT = {
     "diaktoros/routes.py::_write_registry": (
         "RegistryDurabilityError: published, directory unsynced",
         {"tempfile.mkstemp": 1, "os.replace": 1}),
-    "diaktoros/backup.py::_swap_in": (
+    "diaktoros/state/backup.py::_swap_in": (
         "a restore swaps staged members in, journalling each displaced file aside (#1049)",
         {"os.rename": 1, "os.replace": 1}),
-    "diaktoros/backup.py::_roll_back": ("a failed restore puts the displaced files back",
+    "diaktoros/state/backup.py::_roll_back": ("a failed restore puts the displaced files back",
                                         {"os.replace": 1}),
-    "diaktoros/migrate.py::move_state_dir": (
+    "diaktoros/state/migrate.py::move_state_dir": (
         "renames a loop's state directory; nothing is written", {"os.rename": 1}),
-    "diaktoros/migrate.py::_move_ledger_file": (
+    "diaktoros/state/migrate.py::_move_ledger_file": (
         "renames a ledger file and its sidecar; nothing is written", {"os.rename": 2}),
-    "diaktoros/migrate.py::files_step": ("renames a loop's files; nothing is written",
+    "diaktoros/state/migrate.py::files_step": ("renames a loop's files; nothing is written",
                                          {"os.rename": 1}),
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": (
         "rotates a worker log", {"os.replace": 1}),
@@ -53,7 +53,7 @@ DIFFERENT = {
 CALLERS = {
     "diaktoros/app_manifest.py::save_session", "diaktoros/app_tokens.py::save",
     # The record of future-dated archives (#1905).
-    "diaktoros/backup_fresh.py::record_future_dated",
+    "diaktoros/state/backup_fresh.py::record_future_dated",
     "diaktoros/ci_cache.py::save", "diaktoros/cli/common.py::_write_config_locked",
     "diaktoros/cli/common.py::_restore_config_locked",
     "diaktoros/gate/shims.py::_write", "diaktoros/gate/shims.py::heal_watchdog_shim",

@@ -20,7 +20,7 @@ import sys
 import time
 import tempfile
 
-from ..ledger import LOCK_WAIT_S
+from ..state.ledger import LOCK_WAIT_S
 from ..config import settings_form
 from .. import (
     attribution,
