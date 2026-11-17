@@ -52,7 +52,8 @@ class Review(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("#7 @ aaaaaaa: review queued for the isolated worker", out)
         self.assertNotIn("waiting", out)
-        from diaktoros import ledger, run_supervisor
+        from diaktoros import run_supervisor
+        from diaktoros.state import ledger
         with ledger.connect(run_supervisor.production_ledger()) as con:   # the report's (#678)
             self.assertIn((t.REPO, 7, "review"),
                           con.execute("SELECT repo, pr, action FROM operator_actions").fetchall())

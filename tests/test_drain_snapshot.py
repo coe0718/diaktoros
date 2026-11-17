@@ -185,7 +185,7 @@ class Drain(unittest.TestCase):
         self.queue(7)
         with self.answer():
             self.assertEqual(actions.drain_confirmed(self.loop(), "triage", [])["status"], "refused")
-            with mock.patch("diaktoros.migrate.migrating", return_value={"from": "x"}):
+            with mock.patch("diaktoros.state.migrate.migrating", return_value={"from": "x"}):
                 result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
         self.assertEqual(result["status"], "refused")
         self.assertIn("migration", result["outcomes"][0]["why"])

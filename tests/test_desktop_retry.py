@@ -22,7 +22,8 @@ import time
 import unittest
 from unittest import mock
 
-from diaktoros import config, desktop_api, ledger, retry_action, run_supervisor
+from diaktoros import config, desktop_api, retry_action, run_supervisor
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, Supervisor
 

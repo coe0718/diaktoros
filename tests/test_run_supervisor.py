@@ -18,8 +18,9 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 
-from diaktoros import (broker, config, gate, ledger, run_supervisor, seat_model,
+from diaktoros import (broker, config, gate, run_supervisor, seat_model,
                          trusted_turn)
+from diaktoros.state import ledger
 from diaktoros.broker import ipc as broker_ipc
 from diaktoros.run_supervisor import ledger_schema, views
 from diaktoros.config import host_guards  # noqa: E402

@@ -35,7 +35,8 @@ import time
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
-from diaktoros import ledger, run_supervisor
+from diaktoros import run_supervisor
+from diaktoros.state import ledger
 from diaktoros.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
