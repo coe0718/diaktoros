@@ -224,6 +224,30 @@ class Between(Base):
             outcome = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED, db=self.db)
         self.assertEqual((outcome, [c.args[3] for c in wake.call_args_list]), ("new", [2]))
 
+    def test_explain_and_ready_keep_a_second_review_parked_after_the_first_ones_accept(self):
+        # #1144: explain's ruled/parked read (and ready's escalation line) count the ACCEPT
+        # against the shown review only, as the shadow hold does: s2 still awaits its ruling.
+        from diaktoros import ready
+        self.shadow("REQUEST_CHANGES", body="F1: the first review", at=time.time() - 100)
+        launch, _row = self.claim()
+        self.shadow("REQUEST_CHANGES", body="F2: lands mid-turn", at=time.time())
+        self.assertEqual(self.rule(launch.scope), {"accepted": True})
+        marker = self.st.breach_get(7)
+        hold = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        facts = {"pr": fg.LIVE, "reviews": APPROVED, "armed": True, "read_at": 0,
+                 "shadow_hold": hold}
+        report = explain.explain(self.loop, self.st, 7, facts)
+        self.assertTrue(any(b.startswith("escalated:") for b in report["blockers"]),
+                        report["blockers"])
+        self.assertFalse(any(b.startswith("ruled:") for b in report["blockers"]),
+                         report["blockers"])
+        self.assertIsNone(explain._ruled(self.loop, 7, fg.HEAD, marker))
+        pr = {**fg.LIVE, "user": {"login": "fixer"}}
+        with mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            why = ready.assess(self.loop, self.st, pr, APPROVED, None, None)
+        self.assertTrue(any(w.startswith("escalated: parked awaiting adjudication") for w in why), why)
+        self.assertFalse(any("ruled ACCEPT" in w for w in why), why)
+
     def test_an_accept_of_the_review_it_was_shown_still_overrules_it(self):
         self.shadow("REQUEST_CHANGES", at=time.time() - 100)
         launch, _row = self.claim()
