@@ -62,13 +62,14 @@ class LightPoll(sm.Base):
             con.execute("UPDATE runs SET state='pending', retry_at=NULL, owner=NULL, "
                         "error=?", (f"{CI_HOLD} on {HEAD[:7]} — 1 check(s) still running or not reported",))
 
-    def claim(self, marker=None, holds=None, events=(), breach_error=None):
+    def claim(self, marker=None, holds=None, events=(), breach_error=None, events_error=""):
         self.calls.clear()
         with mock.patch.object(config, "by_repo", return_value=self.loop), \
              mock.patch.object(gh, "api", side_effect=self.fake_api), \
              mock.patch.object(gh, "reviews", side_effect=lambda *a, **k: self.calls.append("reviews") or []), \
              mock.patch.object(gh, "issue_events_read",
-                               side_effect=lambda *a, **k: self.calls.append("events") or (list(events), "")), \
+                               side_effect=lambda *a, **k: self.calls.append("events")
+                               or ((None, events_error) if events_error else (list(events), ""))), \
              mock.patch.object(gh, "issue_comments_read",
                                side_effect=lambda *a, **k: self.calls.append("comments") or ([], "")), \
              mock.patch("diaktoros.state.state_for") as state_for, \
@@ -260,6 +261,21 @@ class LightPoll(sm.Base):
         self.assertFalse(error.startswith(CI_HOLD), error)
         self.assertTrue(error.startswith(run_supervisor.CLAIM_READ_FAILED), error)
         self.assertIn("breach file unreadable", error)
+
+    def test_an_unreadable_live_hold_takes_the_full_claim(self):
+        """#1708 (review F3): a due live hold read that fails is not "not held": the row leaves
+        the CI hold for the full claim, whose own hold read backs it off as a failed claim
+        read, rather than being re-timed as a CI hold."""
+        self.hold()
+        self.age(run_supervisor.CI_HOLD_READ_S + 5)
+        self.assertIsNone(self.claim(events_error="HTTP 502 on issue events"))
+        self.assertNotIn("/commits/" + HEAD + "/check-runs", self.calls)   # no CI read spent
+        self.assertEqual(self.calls.count("events"), 2, self.calls)       # the poll's, the claim's
+        state, error, _ = self.row()
+        self.assertEqual(state, "waiting")
+        self.assertFalse(error.startswith(CI_HOLD), error)
+        self.assertTrue(error.startswith(run_supervisor.CLAIM_READ_FAILED), error)
+        self.assertIn("HTTP 502 on issue events", error)
 
 
 if __name__ == "__main__":
