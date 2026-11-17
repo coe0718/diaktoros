@@ -9,7 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from diaktoros import broker, gh, ledger, review_receipt
+from diaktoros import broker, gh, review_receipt
+from diaktoros.state import ledger
 from diaktoros.broker import ipc as broker_ipc
 from diaktoros.run_supervisor import Supervisor
 

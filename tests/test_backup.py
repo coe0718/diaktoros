@@ -27,8 +27,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
-from diaktoros import conflict_scan, onboarding, restore_checks, util  # noqa: E402
+from diaktoros import cli, config, routes  # noqa: E402
+from diaktoros.state import backup  # noqa: E402
+from diaktoros.state import migrate  # noqa: E402
+from diaktoros import conflict_scan, onboarding, util  # noqa: E402
+from diaktoros.state import restore_checks  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -1028,7 +1031,7 @@ class LockInventory(unittest.TestCase):
                  "state directory; observer's and routes' are named in full or registered",
     }
 
-    def named(self, root=Path(backup.__file__).parent):
+    def named(self, root=Path(backup.__file__).parents[1]):
         found = {}
         for path in sorted(root.rglob("*.py")):
             module = ".".join(path.relative_to(root.parent).with_suffix("").parts)
@@ -1042,7 +1045,7 @@ class LockInventory(unittest.TestCase):
         """``backup._LOCK_NAMES`` as a fresh backup process has them: nothing but ``backup`` is
         imported by this interpreter, so only what ``backup`` itself loads can register."""
         code = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
-                "from diaktoros import backup; print(json.dumps(sorted(backup._LOCK_NAMES)))")
+                "from diaktoros.state import backup; print(json.dumps(sorted(backup._LOCK_NAMES)))")
         done = subprocess.run([sys.executable, "-P", "-c", code, str(package_parent)],
                               capture_output=True, text=True, timeout=120,
                               env={**os.environ, "PYTHONPATH": ""})
@@ -1052,7 +1055,7 @@ class LockInventory(unittest.TestCase):
     def test_every_lock_name_in_the_package_is_registered_or_accounted_for(self):
         """Judged on the registry a fresh process builds, not on one this test filled by
         importing the writers itself (review: a module ``backup`` never loads would pass)."""
-        production = self.fresh_lock_names(Path(backup.__file__).parent.parent)
+        production = self.fresh_lock_names(Path(backup.__file__).parents[2])
         for name, modules in self.named().items():
             if name not in self.ELSEWHERE:
                 self.assertIn(name, production, f"{name} in {sorted(modules)} is not registered")
@@ -1060,7 +1063,7 @@ class LockInventory(unittest.TestCase):
     def test_a_new_writer_module_is_found_by_a_fresh_backup_process(self):
         with tempfile.TemporaryDirectory() as tmp:
             copy = Path(tmp) / "diaktoros"
-            shutil.copytree(Path(backup.__file__).parent, copy,
+            shutil.copytree(Path(backup.__file__).parents[1], copy,
                             ignore=shutil.ignore_patterns("__pycache__"))
             self.assertNotIn("new-worker.lock", self.fresh_lock_names(tmp))
             (copy / "new_worker.py").write_text(
@@ -1072,7 +1075,7 @@ class LockInventory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "newwriter.py").write_text('LOCK = "brand-new.lock"\n')
             found = self.named(Path(tmp))
-        production = self.fresh_lock_names(Path(backup.__file__).parent.parent)
+        production = self.fresh_lock_names(Path(backup.__file__).parents[2])
         self.assertEqual(set(found) - production - set(self.ELSEWHERE), {"brand-new.lock"})
 
     def test_a_lock_name_is_registered_by_the_module_that_names_it(self):
