@@ -33,7 +33,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from diaktoros import ledger  # noqa: E402 - importable only once ROOT is on the path
+from diaktoros.state import ledger  # noqa: E402 - importable only once ROOT is on the path
 
 # Fixtures must not inherit the source checkout's Git owner: cleanup correctly
 # refuses to delete artifacts under an unrelated repository, even a test repo.

@@ -10,7 +10,7 @@ import threading
 import time
 import unittest
 
-from diaktoros import ledger
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import Supervisor
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -12,7 +12,8 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import config, gate, gh, ledger, run_supervisor, stats  # noqa: E402
+from diaktoros import config, gate, gh, run_supervisor, stats  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
