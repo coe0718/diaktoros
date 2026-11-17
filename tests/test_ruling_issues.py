@@ -20,7 +20,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
-from diaktoros import broker, config, gh, ledger, ruling_issues  # noqa: E402
+from diaktoros import broker, config, gh, ruling_issues  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, turn_prompts  # noqa: E402

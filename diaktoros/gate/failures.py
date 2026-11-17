@@ -81,7 +81,7 @@ DEFERRED = "deferred"
 def _migration() -> dict | None:
     """The migration marker's facts, or ``None``; never raises (an unreadable check acts)."""
     try:
-        from .. import migrate
+        from ..state import migrate
         return migrate.migrating()
     except Exception as err:  # noqa: BLE001
         log(f"migration marker check failed: {type(err).__name__}: {err}")
@@ -1292,7 +1292,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         message = "; ".join(f"{m} {p}: {e}" for m, p, e in failed_reads[:4])
         trace = ""
     elif kind == DEFERRED:
-        from .. import migrate
+        from ..state import migrate
         error_type = "MigrationInProgress"
         message = f"deferred: {migrate.describe(paused)}"
         trace = ""

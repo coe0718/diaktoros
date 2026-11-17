@@ -239,7 +239,7 @@ class ConfirmedActions(fixtures.Base):
     def test_cli_drain_exit_0_when_a_migration_holds_the_install_says_nothing_swept(self):
         watchdog = self._real_watchdog(drain=mock.Mock())
         with mock.patch.object(actions, "_script", return_value=watchdog), \
-                mock.patch("diaktoros.migrate.migrating", return_value={"started": 1.0}):
+                mock.patch("diaktoros.state.migrate.migrating", return_value={"started": 1.0}):
             result = actions.perform_drain(self.loop, "reviewer")
         watchdog.drain.assert_not_called()
         self.assertEqual(result["code"], 0, result)
@@ -318,7 +318,8 @@ class ConfirmedActions(fixtures.Base):
         self.assertEqual({sig: signal.getsignal(sig) for sig in handlers}, handlers)
 
     def test_unknown_outcome_and_host_paths_never_become_offers(self):
-        from diaktoros import ledger, run_supervisor
+        from diaktoros import run_supervisor
+        from diaktoros.state import ledger
         sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
         with mock.patch.object(sup, '_spawn'):
             sup.enqueue('unknown-target', self.loop['repo'], 7, fixtures.HEAD, 'reviewer')
@@ -400,7 +401,7 @@ class DrainExitCodeDocs(unittest.TestCase):
             with open(os.path.join(root, "bad.json"), "w") as handle:
                 handle.write("{not json")
             with mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": root}), \
-                    mock.patch("diaktoros.migrate.migrating", return_value=None), \
+                    mock.patch("diaktoros.state.migrate.migrating", return_value=None), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                 try:
                     watchdog.run(args, 30)

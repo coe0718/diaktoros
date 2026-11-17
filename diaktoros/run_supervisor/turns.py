@@ -17,7 +17,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .. import claimant, ledger, run_supervisor, runtime_detect, util
+from .. import claimant, run_supervisor, runtime_detect, util
+from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
 
@@ -219,7 +220,7 @@ class ClaimAndLaunch:
     def _claim(self):
         # A migration holds the install (#431): no run starts under names being moved. The
         # pending rows wait where they are; the worker that finds nothing here exits as usual.
-        from .. import migrate
+        from ..state import migrate
         if migrate.migrating() is not None:
             return None
         # Code older than the install never claims (#1337): a process that loaded the plugin

@@ -21,7 +21,8 @@ import urllib.request
 from .. import hostdirs
 from ..hostdirs import WORKER_ENV, HostStateGone
 
-from .. import ledger, util
+from .. import util
+from ..state import ledger
 from ..config import DEFAULT_TURN_BUDGET_S
 from .. import envnames
 from . import records   # Supervisor's record-table methods: records.LedgerRecords, inherited

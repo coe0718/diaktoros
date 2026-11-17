@@ -22,7 +22,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import ledger  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import (broker_client, config, gh, review_receipt,  # noqa: E402
                          trusted_turn)

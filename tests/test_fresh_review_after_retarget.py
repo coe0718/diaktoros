@@ -21,7 +21,8 @@ import unittest
 import uuid
 from unittest import mock
 
-from diaktoros import explain, gate, ledger, transition, state as state_mod
+from diaktoros import explain, gate, transition, state as state_mod
+from diaktoros.state import ledger
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog

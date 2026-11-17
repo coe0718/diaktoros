@@ -63,7 +63,7 @@ def where(exc: BaseException) -> str:
     using the ledger, so a recurrence is diagnosable from the log alone (#601). '' otherwise."""
     if not locked(exc):
         return ""
-    package = Path(__file__).resolve().parent
+    package = Path(__file__).resolve().parents[1]   # the plugin, not this state/ package
     name = ""
     for frame, _ in traceback.walk_tb(exc.__traceback__):
         code = frame.f_code
