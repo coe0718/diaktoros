@@ -27,6 +27,7 @@ from ..config import DEFAULT_TURN_BUDGET_S
 from .. import envnames
 from . import records   # Supervisor's record-table methods: records.LedgerRecords, inherited
 from . import turns   # Supervisor's claim and turn methods: turns.ClaimAndLaunch, inherited (#758)
+from . import shadow_turns   # the shadow's turn steps: shadow_turns.ShadowTurns, inherited
 from . import notices   # Supervisor's operator notices: notices.OperatorNotices, inherited (#1349)
 from . import intake   # Supervisor's intake, retry and cancel: intake.RunIntake, inherited (#1349)
 from . import workers   # Supervisor's worker lifecycle and recovery: workers.WorkerLifecycle, inherited (#1349)
@@ -688,8 +689,8 @@ def _pid_reused(pid: int, launched: float | None) -> bool:
     return started > launched + 2.0
 
 
-class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNotices,
-                 intake.RunIntake, workers.WorkerLifecycle):
+class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.ShadowTurns,
+                 notices.OperatorNotices, intake.RunIntake, workers.WorkerLifecycle):
     def __init__(self, db: str | Path, *, fixture_command: list[str] | None = None,
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
                  lease_seconds: float = 60, child_timeout: float = DEFAULT_TURN_BUDGET_S,
