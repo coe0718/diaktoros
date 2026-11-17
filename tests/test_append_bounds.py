@@ -72,7 +72,7 @@ from diaktoros import corpus, state  # noqa: E402
 from diaktoros.gate import decisions as gate_decisions  # noqa: E402
 
 APPENDS = {
-    "diaktoros/state.py::LoopState.note":
+    "diaktoros/state/__init__.py::LoopState.note":
         "watchdog.log: past LOG_PRUNE_BYTES, cut to its last LOG_KEEP lines that fit in that many "
         "bytes, under _log_lock (LoopState._prune_log)",
     "diaktoros/gate/decisions.py::record":
@@ -96,7 +96,7 @@ APPENDS = {
 
 # The behaviour test that writes past each APPENDS entry's bound and asserts it held.
 PROOF = {
-    "diaktoros/state.py::LoopState.note": "test_append_bounds.Bounds.test_watchdog_log_is_pruned",
+    "diaktoros/state/__init__.py::LoopState.note": "test_append_bounds.Bounds.test_watchdog_log_is_pruned",
     "diaktoros/gate/decisions.py::record": "test_append_bounds.Bounds.test_gate_decisions_are_pruned",
     "diaktoros/corpus.py::record": "test_append_bounds.Bounds.test_corpus_scores_are_pruned",
     "diaktoros/util.py::append_keeping": "test_append_bounds.Bounds.test_append_keeping_prunes",
@@ -118,7 +118,7 @@ UNBOUNDED = {
 }
 
 NOT_LOGS = {
-    "diaktoros/state.py::LoopState._transition_write": "stack-transitions.lock: a flock file, empty",
+    "diaktoros/state/__init__.py::LoopState._transition_write": "stack-transitions.lock: a flock file, empty",
     "diaktoros/gate/failures.py::Ledger._locked": "the gate-failure ledger's flock file, empty",
     "diaktoros/seat_model.py::profile_lock": "a per-profile flock file in diaktoros-seat-locks/",
     "diaktoros/app_tokens.py::held": "an App token file's flock file, empty",

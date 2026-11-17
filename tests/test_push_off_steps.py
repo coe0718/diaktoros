@@ -391,8 +391,8 @@ class AfterEnabling(Steps):
         self.assertEqual(states, {"": "uncertain", shadow: "pending"})
 
     def test_a_lock_or_mark_over_an_ended_run_follows_the_ledger_not_the_mark(self):
-        # #1510 review F5: a mark or lock can outlive its run (state.py keeps them until cleared
-        # or expired); the started-turn step promised retry for a row retry has nothing for.
+        # #1510 review F5: a mark or lock can outlive its run (the state package keeps them until
+        # cleared or expired); the started-turn step promised retry for a row retry has nothing for.
         held = {"fixer": {"head": fg.HEAD, "at": time.time()}}
         for state, kw, expect in (("succeeded", {"inflight_fix": True}, "nothing to retry — fixer succeeded"),
                                   ("uncertain", {"held": held}, "reconcile it first"),
