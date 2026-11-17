@@ -26,7 +26,12 @@ PRE_EXISTING = (
     "test_without_the_setting_the_agents_comment_is_left_out",
     "test_an_agents_hold_counts_and_explain_names_it",
     "test_cmd_explain_prints_the_authorship_line",
+    "test_cmd_explain_prints_no_authorship_line_when_all_is_well",
+    "test_cmd_explain_names_the_operator_agents",
 )
+
+# The module that holds them: every test it defines is one of PRE_EXISTING (#1935).
+HOME_MODULE = TESTS / "test_operator_agents_explain.py"
 
 # Run in the child: make ``diaktoros.authorship`` unimportable, then import the module named in
 # argv[1]. A module-level import of it raises ImportError and the child exits non-zero.
@@ -63,6 +68,15 @@ class Placement(unittest.TestCase):
                     self.assertEqual(result.returncode, 0,
                                      f"{module} (defines {name}) does not import without "
                                      f"diaktoros.authorship:\n{result.stderr[-600:]}")
+
+    def test_every_test_in_the_home_module_is_guarded(self):
+        """#1935: each test ``test_operator_agents_explain`` defines is named in PRE_EXISTING, so
+        the guard follows it if it is later moved into a module that imports ``authorship``."""
+        source = HOME_MODULE.read_text(encoding="utf-8")
+        defined = set(re.findall(r"^\s+def (test_\w+)\(", source, re.M))
+        self.assertTrue(defined, f"no tests found in {HOME_MODULE.name}")
+        self.assertEqual(sorted(defined - set(PRE_EXISTING)), [],
+                         f"tests in {HOME_MODULE.name} missing from PRE_EXISTING")
 
     def test_the_guard_sees_a_module_that_imports_authorship(self):
         """The block is real: ``test_authorship`` imports ``authorship`` and fails here."""
