@@ -20,7 +20,8 @@ import os
 import pathlib
 import time
 
-from . import backup, util
+from . import backup
+from .. import util
 
 FRESH_DAYS = 30         # doctor's backup:fresh warns when the newest archive is older than this
 CLOCK_SKEW_S = 86400    # an archive dated further ahead than this is not trusted as recent (#1875)

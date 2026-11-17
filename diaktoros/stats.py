@@ -1,7 +1,7 @@
 """``hermes dk stats``: what one loop did over a window, and how long it took.
 
-Two sources. The run ledger (local, read-only) knows every seat turn: how it ended, how long it
-ran and how long it waited to start — GitHub cannot say how long a turn took. GitHub (``--github``,
+Two sources. The run ledger (local, read-only) has every seat turn: how it ended, how long it
+ran and how long it waited to start — GitHub can't say how long a turn took. GitHub (``--github``,
 read as the reader) knows the PRs: opened, merged, open-to-merge time, time to first review and
 review rounds. Output is totals and timings only: no error text, path, prompt or token, so the
 JSON and HTML forms are safe to publish.
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import config, gate
 from .config import prices
-from .ledger import read_only
+from .state.ledger import read_only
 
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
 STATES = ("succeeded", "failed", "waiting", "cancelled", "uncertain")

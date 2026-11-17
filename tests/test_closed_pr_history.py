@@ -19,7 +19,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_issue_fix import BASE, LABEL, REPO, Base, issue  # noqa: E402
 
-from diaktoros import cli, config, gh, ledger, observer, run_supervisor, seat_model  # noqa: E402
+from diaktoros import cli, config, gh, observer, run_supervisor, seat_model  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros import state as state_mod, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402

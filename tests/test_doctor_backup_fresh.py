@@ -20,7 +20,9 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import backup, backup_fresh, config, doctor  # noqa: E402
+from diaktoros import config, doctor  # noqa: E402
+from diaktoros.state import backup  # noqa: E402
+from diaktoros.state import backup_fresh  # noqa: E402
 from diaktoros.doctor import backup_checks  # noqa: E402
 
 DAY = 86400
