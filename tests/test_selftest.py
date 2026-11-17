@@ -1113,13 +1113,40 @@ class OnboardingRecordTests(SelftestBase):
             token.write_text("ghp_" + "N" * 36 + "\n")
         with mock.patch.object(selftest, "check_identities", side_effect=check_then_rotate):
             rc, text = self.run_selftest(model=False)
-        self.assertEqual(rc, 0, text)                     # the checks themselves passed
+        # #1714 review F3: the checks passed for the old token, so the run itself fails.
+        self.assertEqual(rc, 1, text)
+        self.assertIn("inputs:changed", text)
+        self.assertIn("changed while the checks ran: identities", text)
+        self.assertNotIn("the isolated path is ready", text)
         stored = self.stored()
         self.assertEqual(stored["identities"]["status"], "failed", stored)
         self.assertEqual(stored["identities"]["fingerprint"], "")
         rows = onboarding.read(self.fx.loop, runtime_file=self.fx.runtime_file)
         self.assertNotEqual(rows["identities"], "passed")
         self.assertEqual(stored["loop"]["status"], "passed")   # its inputs did not change
+
+    def test_a_token_rotated_during_selftest_stops_setup_before_arming(self):
+        # #1714 review F3: setup's check step runs the real selftest (doctor stubbed); a PAT
+        # rotated after the identity check must stop setup before it can arm.
+        from diaktoros.cli import setup_command
+        real = selftest.check_identities
+        token = pathlib.Path(self.fx.loop["tokens"]["reviewer"])
+
+        def check_then_rotate(report, loop):
+            real(report, loop)
+            token.write_text("ghp_" + "S" * 36 + "\n")
+
+        def verb(name, *argv):
+            return self.run_selftest(model=False)[0] if name == "selftest" else 0
+        out = io.StringIO()
+        with mock.patch.object(selftest, "check_identities", side_effect=check_then_rotate), \
+                mock.patch.object(setup_command, "_verb", side_effect=verb), \
+                mock.patch.object(setup_command.config, "load_id", return_value=self.fx.loop), \
+                mock.patch("sys.stdout", out):
+            stop = setup_command._setup_checks(self.fx.loop["repo"], self.fx.loop["id"],
+                                               scheduled=True, runtime_ok=True)
+        self.assertEqual(stop, 1, out.getvalue())
+        self.assertIn("setup stopped before arming", out.getvalue())
 
     def test_a_failed_hook_signature_keeps_the_loop_stage_from_passed(self):
         # #1714 review F2: the recheck a changed host triggers fails on the hook signature; the

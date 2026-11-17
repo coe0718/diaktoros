@@ -491,7 +491,10 @@ edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_c
 makes `loop` stale, and a new token or App key written into the same credential file makes
 `identities` stale (only a hash of the file is kept, never its contents). A change outside the
 loop file, the runtime file, the credential files and the seats' models (a gateway that moved
-while `host` stayed the same, a token revoked on GitHub) is not seen.
+while `host` stayed the same, a token revoked on GitHub) is not seen. If a token, key, setting
+or the runtime file changes while `selftest` runs, it fails `inputs:changed` and exits `1`
+(what passed was the old input), so `setup` stops before arming; that stage is not recorded
+as current.
 `setup` never changes `unattended_fixer_push`.
 
 `setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes

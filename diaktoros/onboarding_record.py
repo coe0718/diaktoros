@@ -77,6 +77,14 @@ def inputs_before(loop: dict, *, runtime_file: Path, resolver=None) -> dict:
             for stage in ("identities", "loop", "model")}
 
 
+def changed_during_run(loop: dict, inputs: dict, *, runtime_file: Path, resolver=None) -> list:
+    """The stages in ``inputs`` (``inputs_before``'s answer) whose inputs no longer hash to it:
+    a token, key, setting or runtime file that changed while the checks ran (#1714 review F3).
+    The checks saw the old inputs, so the run must not end as a pass on the new ones."""
+    now = inputs_before(loop, runtime_file=runtime_file, resolver=resolver)
+    return [stage for stage, before in inputs.items() if now.get(stage) != before]
+
+
 def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | None,
                     model: bool, live_turn: bool, seats: dict | None,
                     runtime_file: Path, resolver=None, inputs: dict | None = None) -> list:
