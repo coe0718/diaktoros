@@ -58,6 +58,7 @@ class _Turn:
     row: sqlite3.Row | None = None
     loop: dict | None = None
     launched: bool = False     # its merge check says it is running (#753)
+    recorded: bool | None = None   # a shadow's submission written (#1361); None: not tried yet
 
 
 class _Launch(NamedTuple):
@@ -656,7 +657,7 @@ class ClaimAndLaunch:
         if turn.rc == 0:
             pacing.clear_unavailable(account)
             return
-        done = _verdict_in(turn, seat)
+        done = seat == run_supervisor.SHADOW and self._shadow_verdict_recorded(turn)
         limited = turn.observed.get('rate_limited_until')
         if isinstance(limited, (int, float)) and limited > time.time():
             # The provider said its window is closed (#219): hold the account, and this run
@@ -674,12 +675,27 @@ class ClaimAndLaunch:
             if detail is not None:
                 until = pacing.hold_unavailable(account, detail)
             elif done or (until := _provider_strike(turn, account)) is None:
-                return      # a shadow whose verdict is in is no provider failure (#1361)
+                return      # a shadow whose verdict is recorded is no provider failure (#1361)
             reason = (pacing.held(account) or (0, ""))[1]
         if done:
             return          # the account's hold stands for its next turn; this run is done (#1361)
         turn.paced_until = until
         turn.error = pacing.hold_line(seat, provider, until, reason)
+
+    def _shadow_verdict_recorded(self, turn: _Turn) -> bool:
+        """Record what a shadow turn would have submitted (#218), once, while the run is still
+        live, and escalate a dissent. Answers whether a verdict the broker authorized is now
+        recorded (#1361): pacing asks first, so a turn whose write failed is paced as before."""
+        if turn.recorded is None:
+            turn.recorded = False
+            submissions = turn.observed.get('submissions') or []
+            try:
+                if submissions and self.record_shadow(turn.run_id, turn.owner, submissions[-1]):
+                    turn.recorded = True
+                    self._shadow_escalation(turn)
+            except Exception:
+                pass    # a lost record must not change how the turn ends
+        return turn.recorded and _verdict_in(turn, run_supervisor.SHADOW)
 
     def _pacing_hold(self, turn: _Turn, provider: str, account: str) -> bool:
         """Pacing (#219): an account whose usage window is closed, or a seat past its daily
@@ -1290,16 +1306,10 @@ class ClaimAndLaunch:
             # first live one spent four whole turns' tokens to record nothing). A closed usage
             # window still waits for its reset, which costs nothing.
             turn.retry = False
-            # What the shadow would have submitted (#218), recorded while the run is still live.
-            submissions = observed.get('submissions') or []
-            try:
-                if submissions and self.record_shadow(run_id, owner, submissions[-1]):
-                    recorded = _verdict_in(turn, run_supervisor.SHADOW)
-                    self._shadow_escalation(turn)
-            except Exception:
-                pass    # a lost record must not change how the turn ends
-            # #1361: the shadow did its job (``_verdict_in``), so it succeeds; the exit is kept.
-            recorded = recorded and turn.rc not in (None, 0) and turn.error is None
+            # #1361: a shadow whose verdict is recorded did its job, so it succeeds; the exit
+            # is kept.
+            recorded = (self._shadow_verdict_recorded(turn) and turn.rc not in (None, 0)
+                        and turn.error is None)
             if recorded:
                 turn.error = (f"verdict recorded, then the turn exited with status {turn.rc} "
                               "(its output is in the run's detail)")

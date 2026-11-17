@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, nullcontext
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -606,31 +606,42 @@ class ProductionTurn(unittest.TestCase):
                 self.assertIn(error, row["error"])
                 self.assertEqual([r["authorized"] for r in sup.shadow_reviews()], [int(authorized)])
 
-    def test_a_shadow_whose_verdict_is_in_spends_no_provider_strike_and_never_waits(self):
+    def test_a_shadow_whose_verdict_is_recorded_spends_no_provider_strike_and_never_waits(self):
         # #1361 review F1: the provider error that ended the process came after the verdict, so
         # it is no strike against the account (#1155), and the run never waits on a hold. A 429's
-        # hold still stands for the account's next turn. A refused verdict still counts a strike.
+        # hold still stands for the account's next turn. A refused verdict still counts a strike,
+        # and so does one whose write failed (F3): no verdict is recorded, so it is paced as before.
         from diaktoros import pacing
         error = {"provider_error": "HTTP 503: overloaded"}
         later = {"rate_limited_until": time.time() + 600}
-        for name, limit, observed, authorized, state in (
-                ("under the breaker", 3, error, True, "succeeded"),
-                ("trips the breaker", 1, error, True, "succeeded"),
-                ("429", 3, later, True, "succeeded"),
-                ("refused", 3, error, False, "failed")):
+        lost = sqlite3.OperationalError("database is locked")
+        for name, limit, observed, authorized, write, state, strikes in (
+                ("under the breaker", 3, error, True, None, "succeeded", 0),
+                ("trips the breaker", 1, error, True, None, "succeeded", 0),
+                ("429", 3, later, True, None, "succeeded", 0),
+                ("refused", 3, error, False, None, "failed", 1),
+                ("write refused", 3, error, True, False, "failed", 1),
+                ("write raised, 429", 3, later, True, lost, "waiting", 0),
+                ("write refused, 429", 3, later, True, False, "waiting", 0)):
             with self.subTest(name):
                 self.setUp()
                 self.loop = {**self.loop, "provider_breaker_failures": limit}
-                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
-                                             "authorized": authorized, "denial": ""}],
-                                           rc=1, observed=observed)
-                self.assertEqual((row["state"], row["retries"], row["retry_at"]),
-                                 (state, 0, None), row)
+                fails = (mock.patch.object(Supervisor, "record_shadow",
+                                           **({"side_effect": write} if isinstance(write, Exception)
+                                              else {"return_value": write}))
+                         if write is not None else nullcontext())
+                with fails:
+                    sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
+                                                 "authorized": authorized, "denial": ""}],
+                                               rc=1, observed=observed)
+                self.assertEqual((row["state"], row["retries"]), (state, 0), row)
+                self.assertEqual(row["retry_at"] is not None, state == "waiting", row)
+                self.assertEqual(len(sup.shadow_reviews()), 1 if write is None else 0)
                 stored = pacing._load(pacing.path())
-                strikes = sum(entry.get("count", 0) if isinstance(entry, dict) else entry
+                counted = sum(entry.get("count", 0) if isinstance(entry, dict) else entry
                               for entry in (stored.get("provider_failures") or {}).values())
-                self.assertEqual(strikes, 0 if authorized else 1)
-                self.assertEqual(bool(stored.get("holds")), name in ("429",), stored)
+                self.assertEqual(counted, strikes)
+                self.assertEqual(bool(stored.get("holds")), "429" in name, stored)
 
     def test_a_head_the_reviewer_sent_back_gets_no_shadow_and_spends_nothing(self):
         # #1647: on a change-requested head the shadow decides nothing, so it never runs.
