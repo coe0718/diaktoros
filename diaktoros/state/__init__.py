@@ -32,9 +32,9 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import config, hostdirs
-from .config import settings_form
-from .util import atomic_write, finite_time, log, now_iso, register_lock
+from .. import config, hostdirs
+from ..config import settings_form
+from ..util import atomic_write, finite_time, log, now_iso, register_lock
 
 # The flock files this module keeps in a loop's state directory, each registered by its writer
 # (``util.register_lock``): ``backup`` leaves out what was registered, from no list of its own.

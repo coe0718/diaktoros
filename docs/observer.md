@@ -275,5 +275,5 @@ or an observer message as evidence of a completed write, a successful build, or 
 
 Implementation boundaries: `diaktoros/observer.py` (`route_contract`, `_target`,
 `notify`, `_deliver`, `retry`, `flush`), `scripts/observe.py`, CLI observer setters,
-`diaktoros/state.py` receipt paths, and `scripts/watchdog.py` sweep callers.
+`diaktoros/state/__init__.py` receipt paths, and `scripts/watchdog.py` sweep callers.
 For run recovery rather than feed recovery, see [operations](operations.md#when-an-isolated-run-fails).
