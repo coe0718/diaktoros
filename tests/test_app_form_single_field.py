@@ -97,8 +97,10 @@ class AppFormSingleField(Base):
 
     def test_a_spurious_unchanged_seat_in_the_diff_is_caught(self):
         # #1921: a diff that also reports an untouched seat's credential as moved ("App 22, key
-        # X → App 22, key X") must fail the dry-run check for every one-field case, not only
-        # the adjudicator's (where the busy check caught it incidentally).
+        # X → App 22, key X") must fail the one-field test itself, in every role/field case and
+        # at its dry-run check, not only the adjudicator's (where the busy check caught it
+        # incidentally). The real test method is run, not the helper alone, so going back to
+        # the old assertIn-only dry-run check (in the helper or at its call) turns this red.
         real = route_sync._seat_diffs
 
         def spurious(was, now):
@@ -112,15 +114,17 @@ class AppFormSingleField(Base):
                         diffs.append((label, same, same))
             return diffs, touched
 
-        for role, field in itertools.product(ROLES, FIELDS):
-            with self.subTest(role=role, field=field):
-                form, new_value = self.changed_form(role, field)
-                old_id, old_key = self.effective(role)
-                new = (NEW_ID if field == "app_id" else old_id,
-                       new_value if field == "app_key_file" else old_key)
-                with patch.object(route_sync, "_seat_diffs", side_effect=spurious):
-                    with self.assertRaises(self.failureException):
-                        self.assert_dry_run_names_only(role, form, (old_id, old_key), new)
+        inner = AppFormSingleField("test_one_field_alone_is_a_diff_a_write_and_the_right_busy_check")
+        result = unittest.TestResult()
+        with patch.object(route_sync, "_seat_diffs", side_effect=spurious):
+            inner.run(result)
+        self.assertEqual(result.errors, [])
+        failed = {(case.params["role"], case.params["field"]): trace
+                  for case, trace in result.failures}
+        self.assertEqual(set(failed), set(itertools.product(ROLES, FIELDS)), result.failures)
+        for case, trace in failed.items():
+            # Caught by the dry-run check, before the write and the busy check.
+            self.assertIn("assert_dry_run_names_only", trace, case)
 
     def test_complete_form_over_a_complete_tuple_matches(self):
         # The baseline every case below departs from by exactly one field.
