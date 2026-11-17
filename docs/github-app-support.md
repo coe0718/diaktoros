@@ -44,8 +44,12 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     is GitHub's `message` (or a text answer) and nothing else of the body, cut to 240 characters.
     Before it is printed, anything shaped like a credential (a `ghp_`/`ghs_`/`github_pat_` token,
     an `Authorization` header value or a `Bearer` value of any length, a `token` value that has a
-    digit or is 20 or more characters, an App JWT, a private key) and every token this run holds, the
-    person's included, is replaced by `[REDACTED]`. A credential GitHub echoes in some other shape
+    digit or is 20 or more characters, a bare `Basic` value that decodes as base64 to something
+    holding a `:` (a `user:password`, however short) or that has a digit, `+`, `/` or `=`, a
+    capital after its first letter or is 20 or more characters, an App JWT, a private key) and
+    every token this run holds, the person's included, is replaced by `[REDACTED]`. "Basic" followed
+    by an ordinary word ("Basic authentication failed") is kept. A credential
+    GitHub echoes in some other shape
     that this run does not hold would not be recognised: the log is still a spike's, read before
     it is shared. The review, reviewer-request and check-run steps are
     not covered by this: they still print the status they got, and a refused review or check run
