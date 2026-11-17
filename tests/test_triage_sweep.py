@@ -301,6 +301,15 @@ class Sweep(fg.Base):
         self.assertEqual(sorted(self.st.late_triage()), [7])     # the line stays
         self.assertEqual([line for line in lines if "queued late" in line], [])
 
+    def test_with_no_late_entries_the_sweep_reads_the_ledger_once(self):
+        # #1731: with nothing noted, resolve_late makes no ledger call; only the sweep's own
+        # fetch of the queued triage seats reads it.
+        self.assertEqual(self.st.late_triage(), {})
+        with mock.patch.object(self.sup, "seat_numbers", wraps=self.sup.seat_numbers) as seats:
+            self.sweep([])
+        self.assertEqual([call.args for call in seats.call_args_list],
+                         [(self.loop["repo"], "triage")])
+
     def test_status_names_an_issue_the_sweep_queued_late(self):
         self.sweep([issue(7)])
         out = io.StringIO()
