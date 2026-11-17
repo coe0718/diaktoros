@@ -53,7 +53,7 @@ from .util import atomic_write, log, now_iso, register_lock
 EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed",
           "triaged", "fixing", "fixed", "failed", "held", "conflict", "ci_failed", "updated",
           "main_red", "stale_approval", "human_paths", "ready_set", "protection", "ci_declined",
-          "main_flaked")
+          "main_flaked", "granted")
 # The issue-side events (#231) name an issue, not a PR: their link is /issues/N and they carry no
 # head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
 # the run was about.
@@ -68,9 +68,10 @@ OUTCOME_KINDS = {"fixing": ("queued", "held")}
 # with a digest set, and to ``urgent_route`` when one is configured. Everything else is
 # progress and is batched when ``digest_min`` is set. The tier is fixed per event, here; an
 # ``uncertain`` outcome is urgent whatever its event. ``stall`` and ``conflict`` ask the
-# operator to act ("next: you"), so they are urgent too.
+# operator to act ("next: you"), so they are urgent too, and so is ``granted``: a maintainer's
+# GitHub re-request bought a review past the cap (#2496), which no digest may hold back.
 URGENT_EVENTS = frozenset({"failed", "held", "escalation", "ruling", "stall", "conflict", "main_red",
-                         "stale_approval", "human_paths", "protection", "ci_declined"})
+                         "stale_approval", "human_paths", "protection", "ci_declined", "granted"})
 ROUTINE_EVENTS = frozenset(EVENTS) - URGENT_EVENTS
 
 
@@ -89,7 +90,7 @@ EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "�
          "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌", "held": "⏸",
          "conflict": "🔀", "ci_failed": "🔴", "updated": "🔁", "main_red": "🚨",
          "stale_approval": "🕸", "human_paths": "🧑", "ready_set": "🚦", "protection": "🛡",
-         "ci_declined": "🙅", "main_flaked": "🎲"}
+         "ci_declined": "🙅", "main_flaked": "🎲", "granted": "🎟"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
          "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
@@ -102,7 +103,7 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
          "stale_approval": "approval is stale", "human_paths": "needs a human approval",
          "ready_set": "ready-to-merge set changed", "protection": "base protection changed",
          "ci_declined": "CI fix declined, no push",
-         "main_flaked": "main flaked — rerun green"}
+         "main_flaked": "main flaked — rerun green", "granted": "another round granted"}
 
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.
@@ -153,19 +154,22 @@ def configured(loop: dict) -> str:
     return ""
 
 
-def unusable(loop: dict) -> str:
+def unusable(loop: dict, urgent: bool = False) -> str:
     """Why this loop's feed cannot deliver, or ``""`` when it can.
 
     Everything :func:`configured` knows, plus the registry: whether the route the gateway needs
     is actually there and carries a secret and a URL. Local reads only (no network, no lock), so
-    ``status`` and every call site can afford to ask.
+    ``status`` and every call site can afford to ask. ``urgent``: the route an urgent notice
+    takes, ``urgent_route`` when one is set (as :func:`_post` picks it, #2501 review, F6).
     """
     reason = configured(loop)
     if reason:
         return reason
     observer = loop.get("observer") or {}
-    if _target(loop) is None:
-        return (f"route {observer.get('route')!r} is missing from the gateway's subscriptions, "
+    urgent = bool(urgent and observer.get("urgent_route"))
+    if _target(loop, urgent) is None:
+        route = observer.get("urgent_route" if urgent else "route")
+        return (f"route {route!r} is missing from the gateway's subscriptions, "
                 f"has no secret/url, or does not match the observer delivery-only contract")
     return ""
 
@@ -342,6 +346,13 @@ def owed_entries(st) -> list:
     rows = [(k, dict(e)) for k, e in data["entries"].items()
             if isinstance(e, dict) and e.get("status") == "uncertain"]
     return sorted(rows, key=lambda row: state.mark_at(row[1]) or 0)
+
+
+def recorded(st, key: str) -> dict:
+    """A copy of the ledger's entry for ``key``, or ``{}``: what became of that notice."""
+    with _lock(st.observations):
+        entry = _read(st.observations)["entries"].get(key)
+    return dict(entry) if isinstance(entry, dict) else {}
 
 
 class SettleError(ValueError):
@@ -969,6 +980,23 @@ def retry(loop: dict, st) -> int:
         log(f"observer retry scan failed: {type(exc).__name__}: {exc}")
         return 0
     return _resend(loop, st, pending, now)
+
+
+def resend(loop: dict, st, key: str) -> bool:
+    """Send one notice whose POST definitely failed again, now, at a person's request (#2501
+    review, F7): only a ``failed`` entry marked ``retryable`` (it never reached the gateway, so
+    no copy can land twice), not a digest's, and whatever its attempts, so a route fixed after
+    ``retry`` gave up still gets it. An ``uncertain`` one is never replayed. True if delivered."""
+    now = time.time()
+    with _lock(st.observations):
+        data = _read(st.observations)
+        entry = data["entries"].get(key)
+        if (not isinstance(entry, dict) or entry.get("status") != "failed"
+                or entry.get("retryable") is not True or entry.get("batch")):
+            return False
+        data["entries"][key] = claim = {**_claim(entry), "at": now}
+        _save(st.observations, data)
+    return _resend(loop, st, [(key, claim)], now) == 1
 
 
 def _resend(loop: dict, st, pending: list, now: float) -> int:

@@ -75,7 +75,8 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
             ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found; off stops it"),
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer; off stops it"),
             ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice; off stops it"),
-            ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed; needs unattended fixer pushes; off stops it")):
+            ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed; needs unattended fixer pushes; off stops it"),
+            ("--review-only-rerequest-grants", "a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does; off leaves only `--another-round`")):
         change.add_argument(flag, choices=("on", "off"), default=None, help=text)
 
 
@@ -220,7 +221,7 @@ def _set_observer_flags(change) -> None:  # noqa: ANN001
     change.add_argument("--observer-events", default=None,
                         help="comma-separated transitions to send, from "
                              "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked "
+                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked,granted "
                              "(blank = all)")
     change.add_argument("--observer-digest-min", type=int, default=None,
                         help="batch the feed into one message per N minutes (0 = per "

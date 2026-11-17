@@ -63,6 +63,7 @@ PUSHES = {
     "review_only": "someone",
     "operator_agents": "docs-agent, bug-hunter",
     "review_only_cap": "5",
+    "review_only_rerequest_grants": True,
     "observer_weekly_report": "tue 08:00",
     "ci_fix_cap": "2",
     "review_only_daily": "7",

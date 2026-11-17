@@ -268,6 +268,7 @@ DEFAULTS: dict = {
     "operator_agents": [],    # agents that post as the operator's account (#757); [] = none named
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
+    "review_only_rerequest_grants": False,  # a maintainer's re-request at the cap grants (#2496)
     "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
     "ci_fix_cap": None,       # CI-fix turns per PR before a red head's review waits; None = 3
     "fixer_scope_lock": False,  # hold a fix round that changes files its findings do not name (#482)

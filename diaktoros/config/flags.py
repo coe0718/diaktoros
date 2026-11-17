@@ -5,7 +5,7 @@ from __future__ import annotations
 # the form's checkbox): one list, so a new switch is added once for all three (#323).
 SWITCHES = ("review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
             "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof",
-            "main_flake_rerun", "update_behind", "review_only_update")
+            "main_flake_rerun", "update_behind", "review_only_update", "review_only_rerequest_grants")
 
 # key -> what the message says after "must be a JSON boolean"
 _BOOLEANS = {
@@ -13,6 +13,8 @@ _BOOLEANS = {
     "review_after_ci": " (true holds a review until the head's checks finish)",
     "review_only_update": " (true lets the host push a clean merge of the base into a "
                           "review-only PR)",
+    "review_only_rerequest_grants": " (true lets a maintainer's GitHub re-request at a review-only "
+                                    "PR's cap grant one more verdict)",
     "fixer_scope_lock": " (true holds a fix round that changes files its findings do not name)",
     "adjudicator_approves": " (true lets an ACCEPT ruling approve as the adjudicator and "
                             "dismiss the change request it overruled)",

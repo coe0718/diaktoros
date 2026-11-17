@@ -262,7 +262,7 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
                           "fixer_scope_lock",
                           "adjudicator_approves",
                           "adjudicator_file_issues", "change_proof", "main_flake_rerun",
-                          "update_behind"))
+                          "update_behind", "review_only_rerequest_grants"))
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     argv += _given(args, seat_flags.forwarded())
@@ -680,6 +680,7 @@ def _setup_switch_flags(first) -> None:  # noqa: ANN001
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer", "off"),
             ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice", "off"),
             ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed", "off"),
+            ("--review-only-rerequest-grants", "a maintainer's GitHub re-request at a review-only PR's cap grants one more verdict", "off"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'", "on")):
         first.add_argument(flag, choices=("on", "off"), default=None,
                            help=f"{text} (default: the plugin setting, {default})")
