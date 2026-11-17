@@ -21,7 +21,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import ci, cli, config, ledger, observer, run_supervisor  # noqa: E402
+from diaktoros import ci, cli, config, observer, run_supervisor  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 

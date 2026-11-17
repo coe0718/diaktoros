@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from diaktoros import ledger
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor, views, claims
 
 

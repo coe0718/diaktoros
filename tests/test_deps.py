@@ -16,7 +16,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from diaktoros import contained, deps, ledger  # noqa: E402
+from diaktoros import contained, deps  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 

@@ -18,7 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_answers as base  # noqa: E402
-from diaktoros import broker_client, ci_decline, explain, ledger, observer, prompts  # noqa: E402
+from diaktoros import broker_client, ci_decline, explain, observer, prompts  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros import run_supervisor  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 

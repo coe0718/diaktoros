@@ -15,7 +15,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from diaktoros import broker, continue_run, gh, ledger, safe_push  # noqa: E402
+from diaktoros import broker, continue_run, gh, safe_push  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.cli import operations  # noqa: E402
 from diaktoros import config  # noqa: E402
 from test_issue_fix import Base, BASE, REPO, issue  # noqa: E402

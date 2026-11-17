@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from diaktoros import ledger
+from diaktoros.state import ledger
 from diaktoros.config import host_guards  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]

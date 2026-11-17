@@ -25,7 +25,7 @@ import sys
 import tempfile
 import textwrap
 
-from .ledger import LOCK_WAIT_S, read_only
+from .state.ledger import LOCK_WAIT_S, read_only
 from . import config, gh, route_intent, routes, util
 from . import envnames
 from .util import logged
