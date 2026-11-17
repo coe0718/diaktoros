@@ -318,26 +318,37 @@ def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float |
     """When the adjudicator upheld this head's newest shadow review (#1004 part 3): the REJECT
     ruling that answers that review (``ruling_answers``), as its time; None otherwise, or when the
     ledger cannot be read. One rule for queueing the fix, launching it, and its push."""
+    dissent, ruling = shadow_dissent_ruling(loop, number, head, db=db)
+    return float(ruling[1]) if dissent and ruling is not None and str(ruling[0]) == "REJECT" else None
+
+
+def shadow_dissent_ruling(loop: dict, number: int, head: str, db=None) -> tuple[bool, tuple | None]:
+    """``(dissent, ruling)``: whether this head's newest shadow review requested changes, and the
+    ruling that answers that review (``ruling_answers``: the one its prompt showed, #1112) as a
+    ``_rulings_at`` row, or None while none does. ``(False, None)`` when the newest review is
+    not a dissent, or the ledger is absent or cannot be read. One rule for the upheld fix
+    (``upheld_shadow_ruling``) and for the ruling ``ready`` and ``explain`` report on a shadow
+    escalation (#1144), so an ACCEPT of an earlier review never reads as this one's."""
     import sqlite3
     from pathlib import Path
     from .. import run_supervisor
     path = Path(db or run_supervisor.production_ledger())
     if not path.exists():
-        return None
+        return False, None
     con = run_supervisor.views.read_only_connect(path)
     if con is None:
-        return None
+        return False, None
     try:
         review = _latest_shadow_review(con, loop["repo"], number, head)
         if review is None or str(review[0]) != "REQUEST_CHANGES":
-            return None
+            return False, None
         ruling = next((r for r in _rulings_at(con, loop["repo"], number, head)
                        if ruling_answers(r, review[2], review[1])), None)
     except sqlite3.Error:
-        return None
+        return False, None
     finally:
         con.close()
-    return float(ruling[1]) if ruling is not None and str(ruling[0]) == "REJECT" else None
+    return True, ruling
 
 
 def queue_shadow_fix(loop: dict, number: int, head: str, db=None) -> str:

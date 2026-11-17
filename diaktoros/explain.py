@@ -95,9 +95,22 @@ def _adjudication_next(loop: dict, head: str, escalated_by: str = "") -> str:
             escalated_by, f"an escalation ({escalated_by}) holds this head below the cap")
     return f"human adjudication: the adjudicator rules at head {short} and reports; {held}"
 
-def _ruled(loop: dict, number: int, head: str) -> str | None:
-    """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same)."""
+def _ruled(loop: dict, number: int, head: str, marker=None) -> str | None:
+    """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same).
+
+    On a shadow escalation at this head (``marker``) whose newest shadow review requested
+    changes, only the ruling that answers that review counts (``gate.shadows.shadow_dissent_ruling``,
+    #1144): an ACCEPT of an earlier review, shown before a second one landed mid-turn, leaves
+    this one awaiting its own ruling, as the shadow hold says.
+    """
     from .run_supervisor import views
+    m = marker if isinstance(marker, dict) else {}
+    if str(m.get("head") or "") == head and (
+            (m.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION):
+        dissent, ruling = gate.shadows.shadow_dissent_ruling(loop, number, head,
+                                                             db=config.host_path("ledger"))
+        if dissent:
+            return str(ruling[0]) if ruling is not None else None
     return views.ruling_at(config.host_path("ledger"), loop["repo"], number, head)
 
 
@@ -561,7 +574,7 @@ def _local_state(c) -> None:
     # review even when the marker still says awaiting-adjudication/adjudicating.
     c.parked = c.local["parked"] and (c.cap_spent or gate.escalated(c.marker, c.head))
     # A ruling at this head ends adjudication: the marker stays, and the decision is a person's.
-    c.ruled = _ruled(c.loop, c.number, c.head) if c.parked else None
+    c.ruled = _ruled(c.loop, c.number, c.head, c.marker) if c.parked else None
     if c.parked and c.ruled == "ACCEPT" and (((c.marker or {}).get("escalated") or {}).get(
             "by") == gate.SHADOW_ESCALATION or gate.is_ruled_approval(getattr(c, "latest", None),
                                                                      c.loop)):
