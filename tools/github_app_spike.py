@@ -69,18 +69,44 @@ ERROR_LIMIT = 240  # characters of a failed step's ``error`` that reach the log
 # ``Authorization:`` and ``Bearer`` is a credential whatever its length: a proxy can echo a short
 # one that this run does not hold. A bare ``token`` is also ordinary English ("a JSON web token
 # could not be decoded"), so there only a value that has a digit or is 20+ characters is cut. A
-# bare ``Basic`` value (base64 of ``user:password``, #1899) is cut when it has a digit, ``+``,
-# ``/`` or ``=``, a capital after its first letter, or is 20+ characters, so "Basic
-# authentication failed" and "Basic Authentication" stay readable.
+# bare ``Basic`` value (#1899) is matched by ``_BARE_BASIC`` and judged by ``_is_basic_credential``.
 _CREDENTIAL_SHAPES = re.compile(
     r"\b(?:gh[pousr]_|github_pat_)\w+"
     r"|(?i:\bAuthorization\b[\"']?\s*[:=]\s*[\"']?(?:(?:token|bearer|basic)\s+)?[^\s\"',;]+)"
     r"|(?i:\bbearer\s+)[A-Za-z0-9_.~+/=-]+"
     r"|(?i:\btoken\s+)(?=[A-Za-z0-9_.~+/=-]*\d|[A-Za-z0-9_.~+/=-]{20})[A-Za-z0-9_.~+/=-]+"
-    r"|(?i:\bbasic\s+)(?=[A-Za-z0-9+/=]*[\d+/=]|[A-Za-z0-9+/=]+[A-Z]|[A-Za-z0-9+/=]{20})"
-    r"[A-Za-z0-9+/=]+"
     r"|\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}"
     r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*)")
+
+# A bare ``Basic`` scheme and the word after it. "Basic" is also ordinary English ("Basic
+# authentication failed"), so the word is cut only when ``_is_basic_credential`` says so.
+_BARE_BASIC = re.compile(r"(?i:\bbasic\s+)([A-Za-z0-9+/=]+)")
+_BASIC_SHAPE = re.compile(r"[\d+/=]|.[A-Z]|.{20}")
+
+
+def _is_basic_credential(value: str) -> bool:
+    """Whether ``value``, the word after a bare ``Basic``, is to be taken for a credential.
+
+    A Basic credential is base64 of ``user:password``, so a value that decodes to bytes holding a
+    ``:`` is one whatever its letters (``ajphamdh`` is ``j:ajga``, #2516 F1). A value that does not
+    decode that way (cut short by the proxy, say) is still cut when it looks like base64 rather
+    than a word: a digit, ``+``, ``/`` or ``=``, a capital after its first letter, or 20+
+    characters."""
+    if _BASIC_SHAPE.search(value):
+        return True
+    try:
+        decoded = base64.b64decode(value + "=" * (-len(value) % 4), validate=True)
+    except ValueError:  # binascii.Error is a ValueError
+        return False
+    return b":" in decoded
+
+
+def _redact_bare_basic(match: re.Match) -> str:
+    """The ``_BARE_BASIC`` match with its value replaced when it is a credential."""
+    value = match.group(1)
+    if not _is_basic_credential(value):
+        return match.group(0)
+    return match.group(0)[: match.start(1) - match.start(0)] + "[REDACTED]"
 
 
 def scrub(text: str, secrets=()) -> str:
@@ -90,7 +116,8 @@ def scrub(text: str, secrets=()) -> str:
     for secret in sorted({s.strip() for s in secrets if isinstance(s, str) and len(s.strip()) >= 4},
                          key=len, reverse=True):
         text = text.replace(secret, "[REDACTED]")
-    return _CREDENTIAL_SHAPES.sub("[REDACTED]", text)
+    text = _CREDENTIAL_SHAPES.sub("[REDACTED]", text)
+    return _BARE_BASIC.sub(_redact_bare_basic, text)
 
 
 class StepFailed(Exception):

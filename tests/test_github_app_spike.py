@@ -581,6 +581,17 @@ class NoCredentialInTheError(unittest.TestCase):
         ("bare Basic value (#1899)", "denied by proxy: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
         ("bare basic value in lower case", "denied: basic YWRtaW46aHVudGVyMg==",
          "YWRtaW46aHVudGVyMg"),
+        # #2516 F1: base64 of ``j:ajga``, all lower-case letters, short: known by its ``:``.
+        ("short lower-case Basic value", "denied by proxy: Basic ajphamdh", "ajphamdh"),
+        # #2516 F2: each value below holds one selection condition only and does not decode to
+        # ``user:password``, so each case fails when its own condition is removed.
+        ("Basic value with a digit only", "denied: Basic abc1defg", "abc1defg"),
+        ("Basic value with a plus only", "denied: Basic abc+defg", "abc+defg"),
+        ("Basic value with a slash only", "denied: Basic abc/defg", "abc/defg"),
+        ("Basic value with padding only", "denied: Basic abcdefg= now", "abcdefg"),
+        ("Basic value with an inner capital only", "denied: Basic abcDefgh", "abcDefgh"),
+        ("Basic value of 20 lower-case letters", "denied: Basic abcdefghijklmnopqrst",
+         "abcdefghijklmnopqrst"),
         ("app JWT", "bad jwt eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjE2MDAwMDAwMDB9.c2lnbmF0dXJlLWJ5dGVz",
          "eyJhbGciOiJSUzI1NiJ9"),
         ("private key", "key -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n"
