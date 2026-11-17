@@ -26,7 +26,8 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_issue_fix as fixture  # noqa: E402
-from diaktoros import config, ledger, observer, run_supervisor  # noqa: E402
+from diaktoros import config, observer, run_supervisor  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.broker import issues as broker_issues  # noqa: E402
 from diaktoros.state import LoopState  # noqa: E402
