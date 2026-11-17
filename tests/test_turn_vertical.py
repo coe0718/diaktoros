@@ -16,7 +16,8 @@ import threading
 import unittest
 from unittest import mock
 
-from diaktoros import contained, gh, ledger, review_receipt, trusted_fetch, trusted_turn
+from diaktoros import contained, gh, review_receipt, trusted_fetch, trusted_turn
+from diaktoros.state import ledger
 from diaktoros.broker.ipc import RunScope
 from diaktoros.run_supervisor import Supervisor
 from diaktoros.inference_proxy import PATH

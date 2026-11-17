@@ -7,7 +7,8 @@ import json
 import re
 import time
 
-from . import gh, ledger
+from . import gh
+from .state import ledger
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 REF_NAME = re.compile(r'[A-Za-z0-9._/-]{1,60}\Z')

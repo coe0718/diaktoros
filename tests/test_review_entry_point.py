@@ -94,7 +94,7 @@ class EntryPoint(Harness):
 
     def test_a_migration_holds_the_review(self):
         t.reset(prs={"7": t.pr(7)})
-        with mock.patch("diaktoros.migrate.migrating", return_value={"from": "x"}), \
+        with mock.patch("diaktoros.state.migrate.migrating", return_value={"from": "x"}), \
                 mock.patch.object(actions, "_run_reviewer") as gate_call:
             result = actions.review(self.loop(), 7)
         self.assertEqual(result["code"], 2)
@@ -189,7 +189,8 @@ class Reconsider(Harness):
         self.assertEqual(entry["reason"], "the requirement in the issue must be met, not deferred")
 
     def test_a_queued_reconsider_is_recorded_as_an_operator_step(self):
-        from diaktoros import ledger, run_supervisor
+        from diaktoros import run_supervisor
+        from diaktoros.state import ledger
         t.reset(prs={"7": approved()})
         # The reconsider check, the count before the gate, after it, and the reconsider turn the
         # reason is kept for (#1384).
@@ -338,7 +339,8 @@ class Reconsider(Harness):
         self.assertEqual(self.reason_stored()["reason"], "a newer reason")
 
     def operator_actions(self):
-        from diaktoros import ledger, run_supervisor
+        from diaktoros import run_supervisor
+        from diaktoros.state import ledger
         path = run_supervisor.production_ledger()
         if not pathlib.Path(path).exists():
             return []              # nothing was ever recorded: no ledger was created
@@ -698,7 +700,7 @@ class ExitTwoDocumented(Harness):
         self.assertIn(phrase, review_section())
 
     def test_a_migration_hold_is_documented(self):
-        with mock.patch("diaktoros.migrate.migrating", return_value={"from": "x"}):
+        with mock.patch("diaktoros.state.migrate.migrating", return_value={"from": "x"}):
             result = actions.review(self.loop(), 7)
         self.assertEqual(result["code"], 2)
         self.assertIn("a migration holds the install — nothing started; ask again after it",

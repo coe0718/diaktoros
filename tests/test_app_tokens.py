@@ -131,7 +131,8 @@ class Shared(Fixture):
         self.assertEqual(self.mints, 2)
 
     def test_a_backup_never_takes_a_token_even_from_a_state_dir_set_to_state_itself(self):
-        from diaktoros import backup, config
+        from diaktoros import config
+        from diaktoros.state import backup
         gh.token(self.loop, BOT)
         state = config.home() / "state"
         kept = state / "loop-state.json"
