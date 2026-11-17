@@ -927,7 +927,7 @@ def check_host_names() -> Check:
            if (config.home() / config.HOST_FILES[key][1]).exists()]
     # The ledger's side files (its "a ledger existed" marker, the worker log) carry its old name
     # too, and are left behind if only the ledger moved.
-    from ..migrate import ledger_sides
+    from ..state.migrate import ledger_sides
     ledger_old = config.home() / config.HOST_FILES["ledger"][1]
     old += [str(side.relative_to(config.home())) for side in ledger_sides(ledger_old)]
     if not old:
@@ -1179,6 +1179,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(filter(None, [identity_checks.check_adjudicator_identity(loop)]))
     checks.extend(filter(None, [identity_checks.check_main_flake_rerun(loop, offline)]))
     checks.extend(filter(None, [identity_checks.check_update_behind(loop, offline)]))
+    checks.extend(filter(None, [identity_checks.check_review_only_rerequest_grants(loop)]))
     checks.extend(identity_checks.check_tokens(loop))
     checks.extend(identity_checks.check_app_live(loop, login, offline) for login in sorted(loop.get("apps") or {}))
     checks.append(identity_checks.check_read_token(loop))

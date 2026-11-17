@@ -19,7 +19,7 @@
     "diaktoros/safe_push.py": 1017,
     "diaktoros/seat_model.py": 1429,
     "diaktoros/selftest.py": 1326,
-    "diaktoros/state.py": 1257,
+    "diaktoros/state/__init__.py": 1257,
     "diaktoros/stats.py": 1241,
     "diaktoros/trusted_turn.py": 939,
     "scripts/watchdog.py": 1350
@@ -78,6 +78,6 @@
     "diaktoros/watch_health.py::read_health": 93,
     "diaktoros/watch_stacked.py::reconcile_stacked": 106,
     "scripts/gate_fixer.py::main": 300,
-    "scripts/gate_reviewer.py::decide": 234
+    "scripts/gate_reviewer.py::decide": 217
   }
 }

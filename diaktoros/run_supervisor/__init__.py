@@ -21,7 +21,8 @@ import urllib.request
 from .. import hostdirs
 from ..hostdirs import WORKER_ENV, HostStateGone
 
-from .. import ledger, util
+from .. import util
+from ..state import ledger
 from ..config import DEFAULT_TURN_BUDGET_S
 from .. import envnames
 from . import records   # Supervisor's record-table methods: records.LedgerRecords, inherited
@@ -74,6 +75,9 @@ PUSH_SETTLED = "push quarantine settled: nothing written:"
 # only the next watchdog sweep, up to a sweep interval later, would start it.
 CLAIM_READ_FAILED = "claim-time read failed"
 CI_POLL_S = 90
+# The CI light poll's live maintainer-hold read (#1708): once per this many seconds of a hold,
+# so a hold the watchdog sweep has not recorded yet is still seen within this bound.
+CI_HOLD_READ_S = 10 * 60
 CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8
 RETRY_BASE = 120.0

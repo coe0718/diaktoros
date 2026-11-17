@@ -26,7 +26,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .ledger import read_only
+from .state.ledger import read_only
 from .util import epoch
 
 SCHEMA = 1

@@ -133,7 +133,15 @@ turn on them. Automatic adjudication is disabled, but a person may request an ad
 `review_only_update` and unattended fixer pushes are both on (a clean merge of the base, under a lease). There is still a verdict cap: `review_only_cap` (default: the loop's `cap`). At the cap the reviewer declines further
 reviews of that PR with nothing spent, says so once per head, and `explain` shows
 `review cap reached`. A maintainer or the operator allows exactly one more verdict on the
-current head with `hermes dk review --loop "<loop-id>" --pr N --another-round`.
+current head with `hermes dk review --loop "<loop-id>" --pr N --another-round`. With
+`review_only_rerequest_grants` on (#2496, off by default), a maintainer's re-request of the
+reviewer on GitHub, from the web or the mobile app, grants that verdict too, under the same rules
+(one per head, and never for a head that already has a verdict); an urgent `granted` notice names
+who granted it, at once, even with a digest set, and the grant takes effect only once that notice
+is recorded delivered. A feed must send it: with none, a muted one, a route the gateway can't
+deliver to (`urgent_route` when set), or an `observer.events` list without `granted`, a re-request grants nothing (`doctor`
+says so). Anything holding a maintainer's token can re-request, so turn it on only when every
+such agent is one you trust to grant a round.
 `review_only_daily` (off by default) caps reviewer turns per local day on review-only PRs;
 it is a separate pool from the reviewer's `daily_turns` (neither spends the other; with both
 set the reviewer may run up to their sum a day, and the reviewer's token budget stays shared).

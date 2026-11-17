@@ -595,7 +595,7 @@ def _approved(c: _Sweep, pr: dict, number: int, head: str, reviews: list) -> Non
     # #1004: unless the shadow review disagrees, then it goes for a ruling (once per
     # head; the shadow's own finish tries first, this is the backstop).
     try:
-        if gate.shadow_escalation(loop, st, number, head, reviews) == "new":
+        if gate.shadows.shadow_escalation(loop, st, number, head, reviews) == "new":
             log(f"#{number} @ {head[:7]} shadow review disagrees with the approval: "
                 "sent for a ruling")
     except Exception as exc:
@@ -603,7 +603,7 @@ def _approved(c: _Sweep, pr: dict, number: int, head: str, reviews: list) -> Non
     try:
         # #1004 part 3: an upheld ruling's fix, if the ruling's own delivery did not
         # queue it (same turn key, so never twice).
-        if gate.queue_shadow_fix(loop, number, head) in gate.SCHEDULED_OUTCOMES:
+        if gate.shadows.queue_shadow_fix(loop, number, head) in gate.SCHEDULED_OUTCOMES:
             log(f"#{number} @ {head[:7]} upheld shadow review handed to the fixer")
     except Exception as exc:
         log(f"#{number} upheld shadow fix check failed: {type(exc).__name__}: {exc}")
@@ -1140,7 +1140,7 @@ def notify_dead_migrate(held: dict) -> None:
     nothing; a new interrupted migrate is a new notice. A loop whose state directory does not
     exist (its move may be half done) is skipped: writing its observer ledger would recreate
     the directory under the old name, and the re-run would then refuse to move it."""
-    from diaktoros import migrate
+    from diaktoros.state import migrate
     outcome = (f"install paused — {migrate.describe(held)} (marker {migrate.marker_path()}; "
                "run `hermes dk migrate`)")
     identity = migrate_identity(held)
@@ -1159,7 +1159,7 @@ def notify_dead_migrate(held: dict) -> None:
 def paused_by_migrate(args: argparse.Namespace) -> bool:
     """Whether a migration holds the install (#431), saying so once per run (not on a drain).
     A migrate that died holding it also sends its observer notice (#1077)."""
-    from diaktoros import migrate
+    from diaktoros.state import migrate
     held = migrate.migrating()
     if held is None:
         return False

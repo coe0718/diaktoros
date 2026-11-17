@@ -1459,6 +1459,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     runtime_file = Path(runtime_file or runtime_path())
     redact = redactor_for(loop)
     report = Report(out, redact)
+    # #1714: the stages' inputs before any check runs, so a credential or setting that changes
+    # mid-run is never recorded as checked.
+    inputs = onboarding_record.inputs_before(loop, runtime_file=runtime_file, resolver=resolver)
     github_scope = (("GitHub: reads only, plus one write: --ping asks GitHub to redeliver the "
                      "App's newest ping" if config.app_ingress(loop) else
                      "GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook")
@@ -1507,9 +1510,31 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     if ping:
         # Outside the read-only guard on purpose: the one write --ping asked for.
         check_hook_signatures(report, loop, ping=True, login=ping_login)
+    check_inputs_unchanged(report, loop, inputs, runtime_file, resolver)
     onboarding_record.record_selftest(
         loop, report, say=report.text, pr=pr, live_pr=live_pr, model=model,
-        live_turn=live_turn, seats=seats, runtime_file=runtime_file, resolver=resolver)
+        live_turn=live_turn, seats=seats, runtime_file=runtime_file, resolver=resolver,
+        inputs=inputs)
+    return _summarize(report, loop)
+
+
+def check_inputs_unchanged(report: "Report", loop: dict, inputs: dict, runtime_file: Path,
+                           resolver) -> None:
+    """A FAIL when a stage's inputs (a token or App key file, a loop setting, the runtime file,
+    a seat's model) changed while the checks ran (#1714 review F3): what passed was the old
+    input, so the run exits 1 and ``setup`` stops before arming instead of going on."""
+    changed = onboarding_record.changed_during_run(loop, inputs, runtime_file=runtime_file,
+                                                   resolver=resolver)
+    if changed:
+        report.add("inputs", "inputs:changed", FAIL,
+                   f"changed while the checks ran: {', '.join(changed)} (what passed above was "
+                   "checked against the old inputs)",
+                   f"re-run `hermes dk selftest --loop {loop.get('id') or '<id>'}` once the "
+                   "token, key or setting is no longer changing")
+
+
+def _summarize(report: "Report", loop: dict) -> int:
+    """Print the run's totals and what to fix; return 1 when any check failed, else 0."""
     counts = report.counts()
     report.text(f"\n{loop['id']}: {counts[PASS]} passed, {counts[FAIL]} failed, "
                 f"{counts[WARN]} warnings, {counts[SKIP]} skipped")

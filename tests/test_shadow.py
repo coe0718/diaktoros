@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, nullcontext
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -107,10 +107,10 @@ class Enqueue(unittest.TestCase):
                 self.assertEqual([c.args[4] for c in sup.submit.call_args_list], [seat])
         loop = self.loop(profile="grok", every=1000)
         heads = [f"{i:040x}" for i in range(40)]
-        picked = [h for h in heads if gate.shadow_sampled(loop, 8, h)]
+        picked = [h for h in heads if gate.shadows.shadow_sampled(loop, 8, h)]
         self.assertLess(len(picked), 5)
         # The choice is the same on every redelivery.
-        self.assertEqual(picked, [h for h in heads if gate.shadow_sampled(loop, 8, h)])
+        self.assertEqual(picked, [h for h in heads if gate.shadows.shadow_sampled(loop, 8, h)])
 
     def test_a_duplicate_reviewer_delivery_queues_no_second_shadow(self):
         sup = mock.Mock()
@@ -381,10 +381,10 @@ class ProductionTurn(unittest.TestCase):
                                    proxy_model="", client_identity="")
 
     def run_shadow(self, submissions, reviews=(), rc=0, checks=GREEN, pr=None, created=None,
-                   reviewer=("confirmed", "APPROVED"), reviewer_state="succeeded"):
+                   reviewer=("confirmed", "APPROVED"), reviewer_state="succeeded", observed=None):
         sup = self.queue_shadow()
         self.reviewer_is(sup, reviewer, reviewer_state)
-        return self.claim_shadow(sup, submissions, reviews, rc, checks, pr, created)
+        return self.claim_shadow(sup, submissions, reviews, rc, checks, pr, created, observed)
 
     def queue_shadow(self):
         with mock.patch.object(Supervisor, "_spawn"), \
@@ -411,7 +411,7 @@ class ProductionTurn(unittest.TestCase):
                              time.time() if confirmed is None else confirmed))
 
     def claim_shadow(self, sup, submissions, reviews=(), rc=0, checks=GREEN, pr=None,
-                     created=None):
+                     created=None, observed=None):
         row = sup.get(f"acme/widgets:8:{HEAD}:shadow")
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
@@ -425,6 +425,7 @@ class ProductionTurn(unittest.TestCase):
                              prompt=kwargs.get("prompt"), steps=kwargs.get("steps"),
                              turn_key=scope.turn_key, shadow=scope.shadow)
             kwargs["observed"]["submissions"] = list(submissions)
+            kwargs["observed"].update(observed or {})
             return rc
 
         def prompt(loop, row, reviews, marker=None, change=None, steps=None):
@@ -590,6 +591,58 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual(sup.shadow_reviews(), [])
         self.assertEqual((row["state"], row["retries"]), ("failed", 0))
 
+    def test_a_shadow_that_exits_1_after_its_verdict_succeeds_only_if_it_was_authorized(self):
+        # #1361: on #1310 a shadow recorded its authorized APPROVE, then exited 1 (Hermes does
+        # for a turn that ends partial). The ledger called it failed; the exit is kept as its
+        # error. A verdict the broker refused is no work done: that exit still fails the run.
+        for authorized, state, error in ((True, "succeeded", "verdict recorded, then the turn "
+                                          "exited with status 1"),
+                                         (False, "failed", "turn exited with status 1")):
+            with self.subTest(authorized=authorized):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
+                                             "authorized": authorized, "denial": ""}], rc=1)
+                self.assertEqual((row["state"], row["retries"], row["outcome"]), (state, 0, 1))
+                self.assertIn(error, row["error"])
+                self.assertEqual([r["authorized"] for r in sup.shadow_reviews()], [int(authorized)])
+
+    def test_a_shadow_whose_verdict_is_recorded_spends_no_provider_strike_and_never_waits(self):
+        # #1361 review F1: the provider error that ended the process came after the verdict, so
+        # it is no strike against the account (#1155), and the run never waits on a hold. A 429's
+        # hold still stands for the account's next turn. A refused verdict still counts a strike,
+        # and so does one whose write failed (F3): no verdict is recorded, so it is paced as before.
+        from diaktoros import pacing
+        error = {"provider_error": "HTTP 503: overloaded"}
+        later = {"rate_limited_until": time.time() + 600}
+        lost = sqlite3.OperationalError("database is locked")
+        for name, limit, observed, authorized, write, state, strikes in (
+                ("under the breaker", 3, error, True, None, "succeeded", 0),
+                ("trips the breaker", 1, error, True, None, "succeeded", 0),
+                ("429", 3, later, True, None, "succeeded", 0),
+                ("refused", 3, error, False, None, "failed", 1),
+                ("write refused", 3, error, True, False, "failed", 1),
+                ("write raised, 429", 3, later, True, lost, "waiting", 0),
+                ("write refused, 429", 3, later, True, False, "waiting", 0)):
+            with self.subTest(name):
+                self.setUp()
+                self.loop = {**self.loop, "provider_breaker_failures": limit}
+                fails = (mock.patch.object(Supervisor, "record_shadow",
+                                           **({"side_effect": write} if isinstance(write, Exception)
+                                              else {"return_value": write}))
+                         if write is not None else nullcontext())
+                with fails:
+                    sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
+                                                 "authorized": authorized, "denial": ""}],
+                                               rc=1, observed=observed)
+                self.assertEqual((row["state"], row["retries"]), (state, 0), row)
+                self.assertEqual(row["retry_at"] is not None, state == "waiting", row)
+                self.assertEqual(len(sup.shadow_reviews()), 1 if write is None else 0)
+                stored = pacing._load(pacing.path())
+                counted = sum(entry.get("count", 0) if isinstance(entry, dict) else entry
+                              for entry in (stored.get("provider_failures") or {}).values())
+                self.assertEqual(counted, strikes)
+                self.assertEqual(bool(stored.get("holds")), "429" in name, stored)
+
     def test_a_head_the_reviewer_sent_back_gets_no_shadow_and_spends_nothing(self):
         # #1647: on a change-requested head the shadow decides nothing, so it never runs.
         sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
@@ -680,7 +733,7 @@ class ProductionTurn(unittest.TestCase):
                 self.assertEqual(row["state"], "cancelled", row["error"])
                 self.assertEqual(row["error"], "shadow review superseded: PR closed or head moved")
                 # No longer open, so its findings snapshot is evictable again.
-                self.assertNotIn((8, HEAD), gate.shadow_open_heads("acme/widgets", sup.db))
+                self.assertNotIn((8, HEAD), gate.shadows.shadow_open_heads("acme/widgets", sup.db))
 
     def kinds(self):
         pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
@@ -726,9 +779,9 @@ class ProductionTurn(unittest.TestCase):
 
         def second_submit(loop, supervisor, number, head, **kw):
             # What a reviewer that already approved finds, the moment its own row exists ...
-            seen.append(gate.shadow_state(self.loop, 8, HEAD, supervisor.db))
+            seen.append(gate.shadows.shadow_state(self.loop, 8, HEAD, supervisor.db))
             return "error"                 # ... and the old second submit failing outright
-        with mock.patch.object(gate, "enqueue_shadow", side_effect=second_submit):
+        with mock.patch.object(gate.shadows, "enqueue_shadow", side_effect=second_submit):
             sup = self.queue_shadow()
         self.assertEqual([kind for kind, _hold, _note in seen], ["pending"], seen)
         self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")

@@ -36,16 +36,16 @@ DIFFERENT = {
     "diaktoros/native_recovery.py::Record.write": (
         "publishes relative to the leased directory fd; the path-based helper can be redirected",
         {"os.replace": 1}),
-    "diaktoros/backup.py::_swap_in": (
+    "diaktoros/state/backup.py::_swap_in": (
         "a restore swaps staged members in, journalling each displaced file aside (#1049)",
         {"os.rename": 1, "os.replace": 1}),
-    "diaktoros/backup.py::_roll_back": ("a failed restore puts the displaced files back",
+    "diaktoros/state/backup.py::_roll_back": ("a failed restore puts the displaced files back",
                                         {"os.replace": 1}),
-    "diaktoros/migrate.py::move_state_dir": (
+    "diaktoros/state/migrate.py::move_state_dir": (
         "renames a loop's state directory; nothing is written", {"os.rename": 1}),
-    "diaktoros/migrate.py::_move_ledger_file": (
+    "diaktoros/state/migrate.py::_move_ledger_file": (
         "renames a ledger file and its sidecar; nothing is written", {"os.rename": 2}),
-    "diaktoros/migrate.py::files_step": ("renames a loop's files; nothing is written",
+    "diaktoros/state/migrate.py::files_step": ("renames a loop's files; nothing is written",
                                          {"os.rename": 1}),
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": (
         "rotates a worker log", {"os.replace": 1}),
@@ -56,15 +56,15 @@ DIFFERENT = {
 CALLERS = {
     "diaktoros/app_manifest.py::save_session", "diaktoros/app_tokens.py::save",
     # The record of future-dated archives (#1905).
-    "diaktoros/backup_fresh.py::record_future_dated",
+    "diaktoros/state/backup_fresh.py::record_future_dated",
     "diaktoros/ci_cache.py::save", "diaktoros/cli/common.py::_write_config_locked",
     "diaktoros/cli/common.py::_restore_config_locked",
     "diaktoros/gate/shims.py::_write", "diaktoros/gate/shims.py::heal_watchdog_shim",
     "diaktoros/gh_cache.py::store", "diaktoros/gh_calls.py::flush",
-    "diaktoros/observer.py::_save", "diaktoros/onboarding.py::record", "diaktoros/pacing.py::_save",
+    "diaktoros/observer.py::_save", "diaktoros/onboarding.py::_store", "diaktoros/pacing.py::_save",
     "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
-    "diaktoros/runtime_detect.py::write", "diaktoros/state.py::_atomic_publish",
-    "diaktoros/state.py::LoopState._transition_write",
+    "diaktoros/runtime_detect.py::write", "diaktoros/state/__init__.py::_atomic_publish",
+    "diaktoros/state/__init__.py::LoopState._transition_write",
     # The shared append-then-prune (#2302): gate_decisions.record and corpus.record publish
     # their pruned files through it.
     "diaktoros/util.py::append_keeping",

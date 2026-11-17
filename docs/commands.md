@@ -375,8 +375,11 @@ approval, a dismissed review, or a verdict at an earlier head writes none. A mer
 each sweep while it is within the 7 days when its reviews cannot be read or ordered, when no
 verdict is proved current at the merged head, or when the reviewer has a pending review there
 (GitHub shows a pending review only to its author, so the host cannot tell it from no review);
-one never proved by then is not recorded. The report lists them by the day of the merge, with a
-count per model and per category of the findings still open (each blocking finding carries one of
+one never proved by then is not recorded. Since the host cannot see a pending review beside a
+verdict either, a merge after an approval is also read again each sweep for one day after the
+merge (#1761), so a changes-requested the reviewer held pending at that head and submits within
+that day is recorded; one submitted later is not. The report lists them by the day of the merge,
+with a count per model and per category of the findings still open (each blocking finding carries one of
 `correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
 `F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
 ruling, or a reverted fixer push (so zero is not zero overrides). Detection needs the watchdog
@@ -486,6 +489,15 @@ Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). 
 checks were never recorded (verified by hand, or before #1617) runs every step as before. The
 record does not know about `doctor`: a `runtime:*` problem `doctor` alone finds is not seen
 while the record is current, so run `hermes dk doctor` yourself after changing the host.
+What does make the record stale (#1714): a change to the loop's own settings (a `set` or an
+edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_check`, ...)
+makes `loop` stale, and a new token or App key written into the same credential file makes
+`identities` stale (only a hash of the file is kept, never its contents). A change outside the
+loop file, the runtime file, the credential files and the seats' models (a gateway that moved
+while `host` stayed the same, a token revoked on GitHub) is not seen. If a token, key, setting
+or the runtime file changes while `selftest` runs, it fails `inputs:changed` and exits `1`
+(what passed was the old input), so `setup` stops before arming; that stage is not recorded
+as current.
 `setup` never changes `unattended_fixer_push`.
 
 `setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes
@@ -562,6 +574,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer (default: the plugin setting, off) |
 | `--main-flake-rerun` | `on` \| `off` |  | rerun main's failed CI jobs once when they look like a flake, before a red-main notice (default: the plugin setting, off) |
 | `--update-behind` | `on` \| `off` |  | merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed (default: the plugin setting, off) |
+| `--review-only-rerequest-grants` | `on` \| `off` |  | a maintainer's GitHub re-request at a review-only PR's cap grants one more verdict (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-profile` | `REVIEWER_PROFILE` |  | Hermes profile for the reviewer seat (default: the plugin setting) |
 | `--fixer-profile` | `FIXER_PROFILE` |  | Hermes profile for the fixer seat (default: the plugin setting) |
@@ -670,7 +683,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-route` | `OBSERVER_ROUTE` |  | route name for the read-only observer feed (default: <id>-observe) |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile the observer feed belongs to (its chat) — naming one switches the feed on |
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked (default: all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked,granted (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
 | `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | send the week's report to the feed once a week, at a weekday and UTC time like 'mon 09:00' (default: none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | second route for urgent notices (failed, held, escalation, ruling, stall, conflict, uncertain); routine ones keep the main feed |
@@ -693,6 +706,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer (default off) |
 | `--main-flake-rerun` | `on` \| `off` |  | rerun main's failed CI jobs once when they look like a flake, before a red-main notice (default off) |
 | `--update-behind` | `on` \| `off` |  | merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed (default off) |
+| `--review-only-rerequest-grants` | `on` \| `off` |  | a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
@@ -805,6 +819,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer; off stops it |
 | `--main-flake-rerun` | `on` \| `off` |  | rerun main's failed CI jobs once when they look like a flake, before a red-main notice; off stops it |
 | `--update-behind` | `on` \| `off` |  | merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed; needs unattended fixer pushes; off stops it |
+| `--review-only-rerequest-grants` | `on` \| `off` |  | a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does; off leaves only `--another-round` |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
@@ -866,7 +881,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked (blank = all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked,granted (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
 | `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | the week's report once a week at a weekday and UTC time like 'mon 09:00' (blank = none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (blank = one feed for everything) |
@@ -1432,7 +1447,8 @@ record (`onboarding.json` in the loop's state directory) that the checks leave. 
 `loop`, `model`, `live_turn` and `armed` it shows the status (`passed`, `failed`, `skipped`,
 `stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
 summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
-identities, the runtime file, a seat's model, the PR head, the hook state), or that an earlier
+identities and a hash of each credential file's contents, the loop's settings and the runtime
+file, a seat's model, the PR head, the hook state), or that an earlier
 stale stage is the cause. A stage whose inputs cannot be read now is stale, never passed.
 
 ```bash
@@ -1841,7 +1857,8 @@ It's also refused when the verdict cap is spent (#1453): at a fixer PR with `cap
 changes-requested verdicts (say, a cap lowered after the approval) the gate would park the PR for
 adjudication instead of reviewing it, so a reconsider never reaches the gate there and never
 escalates a PR (`escalate` asks for a ruling). A review-only PR at its `review_only_cap` is
-refused too; `--another-round` is the way past that cap.
+refused too; `--another-round` is the way past that cap (or, with `review_only_rerequest_grants`
+on, a maintainer's re-request on GitHub).
 A reconsider has to be queued as a turn while you wait. If the gate can only hold it in the
 reviewer queue (for example, when the isolated worker runtime is unavailable), nothing replays
 it: the queue entry keeps no turn key, and a later delivery or drain at the reviewed head only
@@ -1958,7 +1975,8 @@ a ruling and has no turn running. For a review-only PR this is always a person's
 the ruling is advice to the operator, and the loop never pushes to or merges that branch. A
 maintainer's own PR is eligible only when the maintainer is also review-only, since only then does
 the reviewer give it a verdict to rule on (#1165).
-The review-only verdict cap still waits for `review --another-round`; it does not automatically
+The review-only verdict cap still waits for `review --another-round` (or, with
+`review_only_rerequest_grants` on, a maintainer's re-request on GitHub); it does not automatically
 escalate. Exit `1` means it was refused, and the line says why.
 
 **With a turn running on a fixer's PR** (#1246), the escalation can't be written yet, and with unattended fixer

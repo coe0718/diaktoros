@@ -48,6 +48,7 @@ class ClaimWaits(sm.Base):
         with mock.patch.object(self.sup, "_spawn"):
             self.sup.enqueue("d-2080", "acme/widgets", 7, cp.HEAD, "reviewer")
         self.checks, self.pr, self.calls = cp.RUNNING, cp.pull(), []
+        self.kv: dict = {}                                 # the borrowed claim's kv store
         self.log = waits.log_path(self.sup.db)
         self.log.write_text("worker exited: an older line with no time\n")   # the host made it
 

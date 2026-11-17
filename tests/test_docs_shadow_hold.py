@@ -1,4 +1,4 @@
-"""#1803: the shadow-hold text must agree with ``gate.shadow_state`` (#1683).
+"""#1803: the shadow-hold text must agree with ``gate.shadows.shadow_state`` (#1683).
 
 A head with a single reviewer turn is not held when its shadow ended without a review; a head
 with an earlier turn's shadow is. That hold ends with ``shadow.escalate`` off, a new head, or a
@@ -46,13 +46,13 @@ class ShadowHoldDocs(unittest.TestCase):
         self.assertIn("already has a reviewer's verdict", text)
 
     def test_docstring_names_every_way_the_lost_hold_ends(self):
-        doc = " ".join(gate.shadow_state.__doc__.split())
+        doc = " ".join(gate.shadows.shadow_state.__doc__.split())
         self.assertNotIn("only ``shadow.escalate`` off or a new head", doc)      # #1818, #1821
         self.assertIn("its own, landing late", doc)
         self.assertIn("a newer turn's at the head", doc)
 
     def test_docstring_does_not_claim_a_failed_shadow_never_holds(self):
-        doc = " ".join(gate.shadow_state.__doc__.split())
+        doc = " ".join(gate.shadows.shadow_state.__doc__.split())
         self.assertNotIn("never parks a PR for good", doc)
         self.assertIn("earlier turn's shadow", doc)
 

@@ -22,7 +22,7 @@ import sqlite3
 import time
 import uuid
 
-from .. import ledger
+from ..state import ledger
 
 HOLD_S = 300        # the push it covers is an authorization read and one ``git push``
 WAIT_S = 30         # how soon a turn the hold kept from its claim is tried again

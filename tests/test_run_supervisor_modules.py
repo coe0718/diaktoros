@@ -15,7 +15,6 @@ import ast
 import importlib
 import pathlib
 import re
-import symtable
 import sys
 import unittest
 from unittest import mock
@@ -25,14 +24,20 @@ from diaktoros import run_supervisor  # noqa: E402
 
 PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
+# The shadow rules live in tools/submodule_shadows.py, outside tests/, so the host's base-failure
+# proof runs the tests below against the base's rules, not this PR's (#1973, #2509).
+sys.path.insert(0, str(ROOT / "tools"))
+import submodule_shadows  # noqa: E402
+from submodule_shadows import ALL_SUBMODULES  # noqa: E402
+from submodule_shadows import local_submodule_shadows as _local_submodule_shadows  # noqa: E402
+from submodule_shadows import shadowed_submodules as _shadowed_submodules  # noqa: E402
+
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs", "ledger_schema", "waits", "merge_hold")
-# Every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES: the package
-# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the one-home rules
-# check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a local named
-# ``turns`` shadows the module like any other (#1528).
-ALL_SUBMODULES = tuple(sorted(
-    p.stem for p in PACKAGE.glob("*.py") if p.stem not in ("__init__", "__main__")))
+# ALL_SUBMODULES is every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES:
+# the package deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the
+# one-home rules check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a
+# local named ``turns`` shadows the module like any other (#1528).
 # The package's deliberate re-exports (#758): the only names of a submodule that may also resolve
 # as ``run_supervisor.<name>``. The one-home rules check every other name of every submodule,
 # ``turns`` included (#1332).
@@ -129,41 +134,6 @@ def _prose_names_of_moved(text: str) -> list[tuple[int, str]]:
                 found.append((number, name))
     return found
 
-
-def _local_submodule_shadows(source: str, filename: str) -> list[tuple[str, str]]:
-    """(function, name) for each function in the source with a local (not imported) binding named
-    like any run_supervisor submodule."""
-    found = []
-
-    def walk(table):
-        for child in table.get_children():
-            if child.get_type() == "function":
-                for sub in ALL_SUBMODULES:
-                    symbol = child.lookup(sub) if sub in child.get_identifiers() else None
-                    if symbol is not None and symbol.is_local() and not symbol.is_imported():
-                        found.append((child.get_name(), sub))
-            walk(child)
-    walk(symtable.symtable(source, filename, "exec"))
-    return found
-
-
-def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
-    """(line, name) for each function-local binding named like a run_supervisor submodule that
-    the source imports from diaktoros.run_supervisor."""
-    tree = ast.parse(source)
-    imported = {a.asname or a.name for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
-                for a in node.names if (a.asname or a.name) in ALL_SUBMODULES}
-    found = set()
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for node in ast.walk(func):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in imported:
-                found.add((node.lineno, node.id))
-            elif isinstance(node, ast.arg) and node.arg in imported:
-                found.add((node.lineno, node.arg))
-    return sorted(found)
 
 
 class Split(unittest.TestCase):
@@ -355,7 +325,7 @@ class Split(unittest.TestCase):
         # local named like a submodule its file imports turns a later `views.<name>` into an
         # UnboundLocalError.
         for path in (ROOT / "tests").rglob("*.py"):
-            for lineno, name in _shadowed_submodules(path.read_text()):
+            for lineno, name in _shadowed_submodules(path.read_text(), str(path)):
                 self.fail(f"{path.relative_to(ROOT)}:{lineno} binds a local `{name}` that "
                           f"shadows the imported submodule")
 
@@ -387,6 +357,140 @@ class Split(unittest.TestCase):
         as_argument = ("from diaktoros.run_supervisor import turns\n"
                        "def f(turns):\n    return turns\n")
         self.assertEqual(_shadowed_submodules(as_argument), [(2, "turns")])
+
+    def test_the_shadow_check_flags_every_binding_shape(self):
+        # #1665/#1664: except-as, with-as, module-level rebinding, aliased imports, imports
+        # inside a function and `import diaktoros.run_supervisor.views as views` all shadow.
+        imp = "from diaktoros.run_supervisor import views\n"
+        cases = {
+            "except_as": (imp + "def t():\n    try:\n        pass\n"
+                          "    except Exception as views:\n        return views\n", [(5, "views")]),
+            "with_as": (imp + "def t():\n    with open('x') as views:\n        pass\n",
+                        [(3, "views")]),
+            "module_level": (imp + "views = []\n", [(2, "views")]),
+            "import_alias": ("from diaktoros.run_supervisor import views as v\n"
+                             "def t():\n    v = 1\n    return v\n", [(3, "v")]),
+            "import_in_function": (imp + "def t():\n    import json as views\n    return views\n",
+                                   [(3, "views")]),
+            "from_import_in_function": (
+                imp + "def t():\n    from json import dumps as views\n    return views\n",
+                [(3, "views")]),
+            "alias_import_in_function": (
+                "def t():\n    from diaktoros.run_supervisor import views as v\n    return v\n"
+                "def u():\n    v = 2\n    return v\n", [(5, "v")]),
+            "dotted_import": ("import diaktoros.run_supervisor.views as views\n"
+                              "def t():\n    views = 1\n    return views\n", [(3, "views")]),
+            "match_capture": (imp + "def t(x):\n    match x:\n        case [*views]:\n"
+                              "            return views\n", [(4, "views")]),
+            "comprehension": (imp + "def t():\n    return [views for views in ()]\n",
+                              [(3, "views")]),
+            "global_rebinding": (imp + "def t():\n    global views\n    views = 1\n",
+                                 [(4, "views")]),
+        }
+        for label, (source, expected) in cases.items():
+            with self.subTest(shape=label):
+                self.assertEqual(_shadowed_submodules(source), expected)
+        # Importing the submodule itself, at any scope or alias, is not a shadow.
+        clean = ("import diaktoros.run_supervisor.views as views\n"
+                 "from diaktoros.run_supervisor import turns as t\n"
+                 "def f():\n    from diaktoros.run_supervisor import views\n"
+                 "    return views.x, t.y\n")
+        self.assertEqual(_shadowed_submodules(clean), [])
+
+    def test_a_module_level_comprehension_does_not_shadow(self):
+        # #2509 F1: a comprehension has its own scope, so its target at module level leaves the
+        # imported module bound; only a comprehension inside a function counts (shape
+        # `comprehension` above).
+        source = ("from diaktoros.run_supervisor import views\n"
+                  "items = [views for views in ()]\n"
+                  "pairs = {views: 1 for views in ()}\n"
+                  "first = next((views for views in ()), None)\n"
+                  "def t():\n    return views.next_step\n")
+        self.assertEqual(_shadowed_submodules(source), [])
+        # Its iterable and element still belong to the module: a walrus there does rebind it.
+        walrus = ("from diaktoros.run_supervisor import views\n"
+                  "items = [(views := x) for x in ()]\n"
+                  "more = [x for x in () if (views := x)]\n")
+        self.assertEqual(_shadowed_submodules(walrus), [(2, "views"), (3, "views")])
+
+    def test_a_read_before_a_local_reimport_is_a_shadow(self):
+        # #2509 F2: a function-local import makes the name local to the whole function, so a
+        # read before it raises UnboundLocalError although the module imports the same module.
+        for imp in ("from diaktoros.run_supervisor import views as v\n",
+                    "import diaktoros.run_supervisor.views as v\n"):
+            for local in ("    from diaktoros.run_supervisor import views as v\n",
+                          "    import diaktoros.run_supervisor.views as v\n"):
+                with self.subTest(module=imp, local=local):
+                    read_first = imp + "def f():\n    print(v)\n" + local + "    return v\n"
+                    self.assertEqual(_shadowed_submodules(read_first), [(3, "v")])
+                    namespace = {}
+                    exec(compile(read_first, "<f>", "exec"), namespace)
+                    with self.assertRaises(UnboundLocalError):
+                        namespace["f"]()
+                    read_after = imp + "def f():\n" + local + "    return v\n"
+                    self.assertEqual(_shadowed_submodules(read_after), [])
+        plain = ("from diaktoros.run_supervisor import views\n"
+                 "def f():\n    print(views)\n    from diaktoros.run_supervisor import views\n")
+        self.assertEqual(_shadowed_submodules(plain), [(3, "views")])
+
+    def test_the_package_shadow_rule_flags_a_read_before_a_local_import(self):
+        # The package-side rule agrees with the tests/ rule on #2509 F2: a local import of the
+        # submodule is allowed only when nothing in the function reads it first.
+        early = "def f():\n    x = turns.a\n    from . import turns\n    return x\n"
+        self.assertEqual(_local_submodule_shadows(early, "x.py"), [("f", "turns")])
+        late = "def f():\n    from . import turns\n    return turns.a\n"
+        self.assertEqual(_local_submodule_shadows(late, "x.py"), [])
+
+    def test_a_read_after_an_import_that_may_not_run_is_a_shadow(self):
+        # #2509 round 2 F2: an import nested in an `if` (or try/with/loop) may never run, so a
+        # read after it in the text can still find the local unbound. Both rules flag it; an
+        # import that is a statement of the function body itself still binds every later read.
+        imp = "from diaktoros.run_supervisor import views\n"
+        local = "from diaktoros.run_supervisor import views\n"
+        for opener in ("    if False:\n", "    for _ in ():\n", "    try:\n"):
+            closer = "    except ImportError:\n        pass\n" if opener.startswith("    try") else ""
+            source = imp + "def f():\n" + opener + "        " + local + closer + "    return views\n"
+            with self.subTest(block=opener.strip()):
+                last = len(source.splitlines())
+                self.assertEqual(_shadowed_submodules(source), [(last, "views")])
+                self.assertEqual(_local_submodule_shadows(source, "x.py"), [("f", "views")])
+                if opener.startswith("    if") or opener.startswith("    for"):
+                    namespace = {}
+                    exec(compile(source, "<f>", "exec"), namespace)
+                    with self.assertRaises(UnboundLocalError):
+                        namespace["f"]()
+        straight = imp + "def f():\n    if True:\n        pass\n    " + local + "    return views\n"
+        self.assertEqual(_shadowed_submodules(straight), [])
+        self.assertEqual(_local_submodule_shadows(straight, "x.py"), [])
+
+    def test_a_function_named_like_a_comprehension_scope_is_checked(self):
+        # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
+        # (etc.); a real function of that name is still a function and is checked.
+        for name in ("listcomp", "setcomp", "dictcomp", "genexpr"):
+            with self.subTest(name=name):
+                source = ("from diaktoros.run_supervisor import views\n"
+                          f"def {name}():\n    print(views)\n    views = 1\n")
+                self.assertEqual(_shadowed_submodules(source), [(4, "views")])
+                self.assertEqual(_local_submodule_shadows(source, "x.py"), [(name, "views")])
+
+    def test_a_global_reimport_after_a_read_is_not_a_shadow(self):
+        # #2509 round 2 F4: under `global`, a later import rebinds the module's name; the read
+        # before it finds the module's import, so it runs. Only a local import leaves it unbound.
+        source = ("from diaktoros.run_supervisor import views\n"
+                  "def f():\n    global views\n    print(views)\n"
+                  "    from diaktoros.run_supervisor import views\n    return views\n")
+        self.assertEqual(_shadowed_submodules(source), [])
+        self.assertEqual(_local_submodule_shadows(source, "x.py"), [])
+        namespace = {}
+        exec(compile(source.replace("print(views)", "views.__name__"), "<f>", "exec"), namespace)
+        namespace["f"]()
+
+    def test_a_base_proof_tests_the_base_shadow_rules(self):
+        # #2509 round 2 F5: the rules live off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs the head's tests above against the base's rules. It
+        # fails if the rules go back into a tests/ module, where they were.
+        import _base_proof
+        _base_proof.assert_taken_from_the_base(self, submodule_shadows.__file__)
 
 
 if __name__ == "__main__":

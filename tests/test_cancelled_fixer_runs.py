@@ -25,7 +25,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import cli, config, explain, gate, gh, ledger, run_supervisor, seat_model  # noqa: E402
+from diaktoros import cli, config, explain, gate, gh, run_supervisor, seat_model  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, Supervisor, views  # noqa: E402
 

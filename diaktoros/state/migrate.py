@@ -34,10 +34,10 @@ import sqlite3
 import time
 
 from .ledger import LOCK_WAIT_S
-from .config import settings_form
-from . import config, gh, state as state_mod
-from .gate import shims as gate_shims
-from . import envnames
+from ..config import settings_form
+from .. import config, gh, state as state_mod
+from ..gate import shims as gate_shims
+from .. import envnames
 
 OLD_PLUGIN = "hermes-review-loop"
 
@@ -271,7 +271,7 @@ def _ledger_tables(con) -> list[str]:
 def _active_runs(con, repo: str | None = None) -> int:
     """Active runs (all repos, or just ``repo``) on an open ledger connection. A ledger without a
     ``runs`` table (empty file, a crash before the schema was written) has none in flight."""
-    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
+    from ..run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
     where = f"state IN ({','.join('?' * len(ACTIVE))})"
     args: tuple = tuple(ACTIVE)
     if repo is not None:
@@ -412,7 +412,7 @@ def route_renames(loop: dict, old_id: str, new_id: str) -> dict[str, str]:
 
     ``loop`` may be the old loop or the renamed one, so a re-run after a crash that left only
     the new loop file still knows which old routes to clear."""
-    from .route_intent import routes_of
+    from ..route_intent import routes_of
     out: dict[str, str] = {}
     for name in routes_of(loop).values():
         for this, other in ((old_id, new_id), (new_id, old_id)):
@@ -602,7 +602,7 @@ def shim_step(loops: list[dict], write_watchdog_shim, watchdog_shim: pathlib.Pat
 
 
 def doctor_step(loops: list[dict]) -> list[str]:
-    from . import doctor  # noqa: PLC0415 - heavy module
+    from .. import doctor  # noqa: PLC0415 - heavy module
     lines = []
     for loop in loops:
         for check in doctor.check_loop(loop):

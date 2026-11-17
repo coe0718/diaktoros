@@ -572,6 +572,47 @@ class Setup(unittest.TestCase):
         self.assertIn("starting at the loop stage (stale: loop fingerprint changed", out)
         self.assertNotIn("skipped doctor", out)
 
+    def test_a_changed_loop_setting_reruns_doctor_and_selftest(self):
+        # #1714: a `set` of the gateway host leaves the runtime file and profiles as they were.
+        loop = self.installed()
+        self.record_checks(loop)
+        data = json.loads(LOOP_FILE.read_text())
+        data["host"] = "https://elsewhere.example"
+        LOOP_FILE.write_text(json.dumps(data))
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (stale: loop fingerprint changed", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_rotated_token_in_the_same_file_reruns_doctor_and_selftest(self):
+        # #1714: the same path, new contents.
+        loop = self.installed()
+        self.record_checks(loop)
+        token_file = pathlib.Path(loop["tokens"][t.READ_LOGIN])
+        original = token_file.read_bytes()
+        self.addCleanup(token_file.write_bytes, original)
+        token_file.write_text("ghp_" + "R" * 36)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the identities stage (stale: identities fingerprint changed",
+                      out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_failed_hook_signature_recheck_is_rerun_by_the_next_setup(self):
+        # #1714 review F2: selftest after a host change records the loop stage with the hook
+        # signature check that failed; the next setup must run doctor and selftest again.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        checks = [(name, "pass") for name in onboarding.required_checks("loop", loop)]
+        onboarding.record(loop, "loop", "passed", "hermes dk selftest", "loop",
+                          checks=checks + [("hooks:signature", "fail")],
+                          runtime_file=self.runtime_file)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (failed)", out)
+        self.assertNotIn("skipped doctor", out)
+
     def test_an_armed_record_skips_arm_even_with_arm_and_a_changed_hook_state_runs_it(self):
         loop = self.installed()
         self.record_checks(loop)

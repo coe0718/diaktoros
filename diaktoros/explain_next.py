@@ -7,7 +7,7 @@ It reads only ``c``, so it decides nothing ``explain`` did not already read.
 """
 from __future__ import annotations
 
-from . import config, explain, gate, pr_hold, transition
+from . import config, explain, gate, pr_hold, review_asks, transition
 
 
 def next_step(c) -> tuple[str, str]:
@@ -143,9 +143,11 @@ def _next_review_only(c) -> tuple[str, str] | None:
         kind = "operator"
         push_first = ("the author pushes a new head first (this head already has a verdict, so a "
                       "grant now would be wasted), then " if c.reviewed else "")
+        ask = (", or re-requests the reviewer on GitHub (`review_only_rerequest_grants`)"
+               if review_asks.rerequest_can_grant(c.loop) else "")
         action = (f"review cap reached on #{c.number} ({c.spent} verdicts): no further review until "
                   f"{push_first}a maintainer grants another round — merge, close, or "
-                  f"`hermes dk review --loop {c.loop['id']} --pr {c.number} --another-round`")
+                  f"`hermes dk review --loop {c.loop['id']} --pr {c.number} --another-round`{ask}")
     elif c.review_only and c.at_head:
         kind = "author-push"
         ask = (f"runs `hermes dk review --loop {c.loop['id']} --pr {c.number}` (a GitHub App reviewer "
@@ -154,7 +156,8 @@ def _next_review_only(c) -> tuple[str, str] | None:
         action = (f"the author {c.author} pushes a fix and {ask} — a "
                   f"review-only PR has no fixer, but its verdicts are capped at "
                   f"{config.review_only_cap(c.loop)} (`review_only_cap`, default the loop's "
-                  f"`cap`); a maintainer's `--another-round` lifts it once reached")
+                  f"`cap`); a maintainer's `--another-round` lifts it once reached"
+                  f"{' (or their re-request on GitHub)' if review_asks.rerequest_can_grant(c.loop) else ''}")
     else:
         return None
     return kind, action

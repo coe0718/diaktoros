@@ -19,7 +19,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from diaktoros import cancel_action, contained, ledger, retry_action, run_supervisor
+from diaktoros import cancel_action, contained, retry_action, run_supervisor
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import OPERATOR_CANCEL, OPERATOR_STOPPED, Supervisor
 

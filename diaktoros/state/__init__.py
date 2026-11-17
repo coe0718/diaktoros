@@ -32,9 +32,9 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import config, hostdirs
-from .config import settings_form
-from .util import atomic_write, finite_time, log, now_iso, register_lock
+from .. import config, hostdirs
+from ..config import settings_form
+from ..util import atomic_write, finite_time, log, now_iso, register_lock
 
 # The flock files this module keeps in a loop's state directory, each registered by its writer
 # (``util.register_lock``): ``backup`` leaves out what was registered, from no list of its own.
@@ -1496,11 +1496,12 @@ class LoopState:
         Kept in ``OVERRIDE_CHECKED_FILE``. The first file, ``override-checked.json``, also held
         merges marked as read with no verdict proved (a review still PENDING and unseen by the
         reader, #1323); it is no longer read, so those merges are read once more after an
-        upgrade. That is safe: an override record is written once per PR and head."""
+        upgrade; nor is ``override-checked-v2.json``, which marked approvals read at once (#1761,
+        see ``overrides``). That is safe: an override record is written once per PR and head."""
         raw = self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {})
         return raw if isinstance(raw, dict) else {}
 
-    OVERRIDE_CHECKED_FILE = "override-checked-v2.json"
+    OVERRIDE_CHECKED_FILE = "override-checked-v3.json"
 
     def override_checked_put(self, data: dict) -> None:
         self._save(self.dir / self.OVERRIDE_CHECKED_FILE, data)

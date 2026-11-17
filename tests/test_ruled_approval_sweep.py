@@ -501,12 +501,10 @@ class LeftToAPerson(Base):
         self.assertEqual(self.sweep(), [])
         self.approve.assert_not_called()
 
-    def test_the_dismissal_rechecks_every_condition(self):
-        # Review of #1605, F1: an approval posted on an earlier sweep never dismisses past a
-        # red check, a hold or a reserved path.
+    def test_the_dismissal_rechecks_every_condition_but_ci(self):
+        # Review of #1605, F1: an approval posted on an earlier sweep never dismisses past a hold
+        # or a reserved path. CI is no longer one of them (#2402: the next test).
         for name, setup, state in (
-                ("red", lambda: setattr(self, "ci", ci.CIState(failed=["tests"])), "pending"),
-                ("unread", lambda: setattr(self, "ci", None), "pending"),
                 ("hold", lambda: setattr(self, "hold", ({"by": "coe0718"}, "")), "pending"),
                 ("paths", lambda: setattr(self, "paths", ("", "it touches .github/x")), "denied"),
                 ("human", lambda: self.st.human_hold_set(7, fg.HEAD, "touches"), "denied")):
@@ -519,6 +517,27 @@ class LeftToAPerson(Base):
                 self.sweep()
                 self.dismiss.assert_not_called()
                 self.assertEqual(self.row()["dismiss"], state)
+
+
+    def test_the_dismissal_does_not_wait_for_ci_once_the_approval_is_posted(self):
+        # #2402: the approval waited for green; a red (or unreadable) head after it no longer
+        # holds the dismissal. The required checks still block the merge, and a dismissal still
+        # pending would hold the base merge (#2375) that may be what turns the head green.
+        for name, red in (("red", ci.CIState(failed=["tests"])), ("unread", None)):
+            with self.subTest(name):
+                self.setUp()
+                self.ruled("ACCEPT")
+                self.ci = red
+                self.sweep()
+                self.approve.assert_not_called()           # the approval still waits for green
+                self.ci = ci.CIState(passed=["tests"])
+                self.sweep()
+                self.assertEqual(self.row()["approve"], "posted")
+                self.ci = red
+                self.sweep()
+                self.dismiss.assert_called_once()
+                self.assertEqual(self.dismiss.call_args.kwargs["review_id"], CHANGES["id"])
+                self.assertEqual(self.row()["dismiss"], "posted")
 
 
 class LaterRuling(Base):
@@ -614,7 +633,7 @@ class CheckShowsIt(Base):
     def kinds(self):
         from diaktoros import ready
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
-        with mock.patch.object(ready.gate, "shadow_state", return_value=("", "", "")), \
+        with mock.patch.object(ready.gate.shadows, "shadow_state", return_value=("", "", "")), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
             return ready.assess_kinds({**self.loop, "required_checks": []}, self.st, pr,
                                       list(self.reviews), ci.CIState(passed=[]), tra.CLEAN)

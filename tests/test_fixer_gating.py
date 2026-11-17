@@ -23,7 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from diaktoros import ledger  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros import cli, config, doctor, explain, gate, gh, run_supervisor, state as state_mod  # noqa: E402

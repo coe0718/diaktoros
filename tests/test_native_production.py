@@ -14,7 +14,8 @@ import threading
 import unittest
 from unittest import mock
 
-from diaktoros import gh, ledger, native_backend, review_receipt, runtime_detect, trusted_fetch, trusted_turn
+from diaktoros import gh, native_backend, review_receipt, runtime_detect, trusted_fetch, trusted_turn
+from diaktoros.state import ledger
 from diaktoros.broker.ipc import RunScope
 from diaktoros.inference_proxy import PATH
 from diaktoros.run_supervisor import Supervisor

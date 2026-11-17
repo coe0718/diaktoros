@@ -35,7 +35,8 @@ def check_backup_fresh() -> doctor.Check:
     exits 0 and only ``--strict`` turns it into a failure — the same as ``fixer-push`` being off.
     ``report`` prints a ``fix:`` line for failures only, so the command is in the detail.
     """
-    from .. import backup, backup_fresh   # here, not module level: importing them loads every writer module
+    # here, not module level: importing them loads every writer module
+    from ..state import backup, backup_fresh
     name = "backup:fresh"
     command = "hermes dk backup"
     where = backup.backups_dir()

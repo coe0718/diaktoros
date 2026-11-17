@@ -1,10 +1,11 @@
 """What the operator's ``hermes dk review`` asks beyond a plain review (split from
 ``one_shot_action``, #1369): another verdict on a review-only PR at its cap
-(``--another-round``), and the answer for a reconsider (#1334) the gate held instead of queuing.
+(``--another-round``, or with ``review_only_rerequest_grants`` a maintainer's GitHub re-request,
+#2496), and the answer for a reconsider (#1334) the gate held instead of queuing.
 Both read the reviews the reviewer gate itself decides from (``gate_reviews``, #1370)."""
 from __future__ import annotations
 
-from . import config, gate, gh, transition
+from . import config, gate, gh, observer, transition
 
 
 def gate_reviews(loop, st, number, head):
@@ -45,6 +46,75 @@ def grant_another_round(loop, args, pr, head, st, emit):
     else:
         emit(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
     return None
+
+
+def rerequest_grants(loop) -> bool:
+    """Whether a maintainer's GitHub re-request at a review-only PR's cap grants another round,
+    as ``--another-round`` does (#2496, ``review_only_rerequest_grants``). Off unless set."""
+    return loop.get("review_only_rerequest_grants") is True
+
+
+def unannounced(loop) -> str:
+    """Why a re-request's grant could not be announced on this loop, or ``""`` (#2501 review, F3,
+    F5, F6): no observer feed, a muted one, a route the gateway can't deliver to
+    (``observer.unusable``: the urgent one, ``urgent_route`` when set, since ``granted`` is
+    urgent), or ``observer.events`` without ``granted``. The grant is made away from the terminal,
+    and its notice is how the maintainer sees it, so without one the re-request grants nothing."""
+    reason = observer.unusable(loop, urgent=observer.is_urgent("granted"))
+    if not reason and not observer.subscribes(loop, "granted"):
+        reason = "observer.events leaves out granted"
+    return reason
+
+
+def rerequest_can_grant(loop) -> bool:
+    """Whether a re-request can grant here, so the cap notice and ``explain`` may offer it: the
+    setting is on, GitHub can request the reviewer (not a GitHub App, ``reviewer_is_app``), and
+    the grant's notice has a feed that sends it (``unannounced``)."""
+    return rerequest_grants(loop) and not config.reviewer_is_app(loop) and not unannounced(loop)
+
+
+def grant_by_rerequest(loop, st, number, head, rounds, sender) -> str:
+    """The reviewer gate's grant at a review-only PR's cap (#2496), for a head with no verdict
+    yet. A maintainer's (``config.maintainers``) ``review_requested``, where a re-request can grant
+    (``rerequest_can_grant``), sends the urgent ``granted`` notice; the grant itself, one more
+    verdict at ``head`` under ``--another-round``'s rules, is written only once the observer
+    ledger records that notice delivered (#2501 review, F5). So no review starts on a grant nobody
+    was told of: a failed, uncertain or unfinished POST grants nothing yet, and the first gate
+    pass that finds it delivered (after the sweep's retry, a settled one, or a gate stopped after
+    the receipt) writes the grant. A maintainer's re-request also resends a notice whose POST
+    definitely failed (``observer.resend``), however many attempts the sweep spent, so a repaired
+    route recovers without the terminal (F7). ``sender``: '' when the pass is no re-request.
+    Returns why a re-request's grant still waits for its notice, else ''."""
+    if not rerequest_grants(loop) or st.review_cap_granted(number, head, rounds):
+        return ""
+    identity = f"rerequest:{rounds}"
+    key = observer.key_for(loop, number, head, "granted", identity)
+    if sender in config.maintainers(loop) and rerequest_can_grant(loop):
+        # A failed one first: a notice this pass sends and fails is the next request's to resend.
+        observer.resend(loop, st, key)
+        observer.notify(loop, st, "granted", number, head, identity=identity,
+                        outcome=(f"{sender}'s re-request on GitHub (review_only_rerequest_grants): "
+                                 f"one more verdict at this head, {rounds} spent"),
+                        actor=sender, next_turn="the review of this head")
+    notice = observer.recorded(st, key)
+    status = notice.get("status")
+    if status == "delivered":
+        st.review_cap_grant(number, head, rounds)
+        return ""
+    if not status:
+        return ""
+    if status == "failed":
+        return (f"a re-request's grant waits for its granted notice, failed "
+                f"({notice.get('error') or 'delivery failed'}): once the route works, a "
+                f"maintainer's re-request resends it (the watchdog sweep does too, up to "
+                f"{observer.MAX_ATTEMPTS} attempts)")
+    if status == "uncertain":
+        then = (f"check the chat, then `hermes dk observer --loop {loop['id']} --settle {key} "
+                "--delivered` (or `--not-delivered` to have the sweep send it once)")
+    else:
+        then = "it is being sent, or its sender stopped and the sweep settles it"
+    return (f"a re-request's grant waits for its granted notice, {status}: {then}; "
+            "re-request again once it is delivered")
 
 
 def reconsider_held(emit, st, hold, args, head, loop) -> int:

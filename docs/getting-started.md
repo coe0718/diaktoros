@@ -69,7 +69,7 @@ Setup performs these steps in order:
 1. Detect or keep valid runtime paths and write a private `diaktoros-runtime.json`.
 2. Show an `init` dry run, confirm installation and create configuration/routes (and paused hooks if a hook admin was named).
 3. Install the shared watchdog job if missing.
-4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept. When the [onboarding record](commands.md#onboard) says `identities`, `loop` and `model` already passed (or `model` was skipped) and nothing they depend on has changed, a re-run skips this step and says so; after a change it starts over at the stale stage.
+4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept. When the [onboarding record](commands.md#onboard) says `identities`, `loop` and `model` already passed (or `model` was skipped) and nothing they depend on has changed (the loop's settings, the runtime file, the token and App key files' contents, the seats' models; see [what the record covers](commands.md#setup)), a re-run skips this step and says so; after a change it starts over at the stale stage.
 5. Offer to require the `diaktoros/review` merge check on the base, when the loop posts it ([`protect`](commands.md#protect); defaults to **no**). A loop that does not post it gets one line saying there is nothing to require.
 6. Ask whether to arm. It defaults to **no**, and it is skipped when the record shows the hooks armed and unchanged. Setup does not enable fixer pushes or issue automation. It turns adjudication on only when you name an adjudicator profile (asked, blank = none; with `--yes`, the plugin setting's profile).
 

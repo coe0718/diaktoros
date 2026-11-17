@@ -8,8 +8,9 @@ Only the record lives here. The checks stay where they are (``selftest``, ``doct
 summary, the outcomes of the checks that decided the status (``deciding_checks``), and a
 *fingerprint* of the stage's inputs.
 
-A fingerprint is a SHA-256 over facts, never a secret: logins and file paths (not file contents),
-a hash of the runtime file, the seats' ``SeatInference.identity()`` (hashed again, because that
+A fingerprint is a SHA-256 over facts, never a secret: logins and file paths, a hash of each
+credential file's contents (#1714), the loop's own settings, a hash of the runtime file, the
+seats' ``SeatInference.identity()`` (hashed again, because that
 tuple carries a digest of the key), a PR number and head SHA, the observed hook state.
 
 ``read`` gives each stage's status. A stage whose inputs no longer hash to its recorded
@@ -59,7 +60,11 @@ REQUIRED_CHECKS = {
 # (selftest's ``github:distinct-files``, ``github:adjudicator``, ``ledger:production``, ...).
 FAILURE_SCOPE = {
     "identities": ("github:",),
-    "loop": ("runtime:", "bwrap:", "sandbox:", "ledger"),
+    # The loop stage fingerprints the loop's settings (``host`` included, #1714), so a failed
+    # check of what those settings point at keeps it from ``passed`` too: the gateway, each
+    # repo hook's signature (``hooks:signature``, ``hook:<id>``) and the App's webhook.
+    "loop": ("runtime:", "bwrap:", "sandbox:", "ledger", "gateway", "hooks:", "hook:",
+             "app-webhook"),
     "model": ("seat:", "model:"),
     "live_turn": ("broker:", "turn:"),
     "armed": ("arm:",),
@@ -162,11 +167,42 @@ def _digest(value) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def _runtime_hash(runtime_file: Path) -> str:
+def _file_hash(file: Path) -> str:
+    """SHA-256 of a file's bytes, or ``"absent"`` when it cannot be read."""
     try:
-        return hashlib.sha256(runtime_file.read_bytes()).hexdigest()
+        return hashlib.sha256(Path(file).expanduser().read_bytes()).hexdigest()
     except OSError:
         return "absent"
+
+
+def _runtime_hash(runtime_file: Path) -> str:
+    return _file_hash(runtime_file)
+
+
+class CredentialUnreadable(Exception):
+    """A credential file is unset or cannot be read; there is nothing to fingerprint."""
+
+
+def _credential_hashes(loop: dict) -> dict:
+    """login -> SHA-256 of its credential file's contents (a PAT file or an App key, from
+    ``config.credentials_map``), so a rotated token in the same file is a change (#1714).
+    Only the hash is kept, and ``_digest`` hashes it again: never the credential itself.
+
+    Raises ``CredentialUnreadable`` when a file is unset or unreadable: an unreadable file then
+    and an unreadable file now are not the same credential, so that must never match."""
+    found = {login: _file_hash(Path(raw)) if raw else "absent"
+             for login, raw in config.credentials_map(loop).items()}
+    missing = sorted(login for login, digest in found.items() if digest == "absent")
+    if missing:
+        raise CredentialUnreadable(f"credential file unreadable: {', '.join(missing)}")
+    return found
+
+
+def _loop_settings(loop: dict) -> dict:
+    """The loop's own configuration as loaded (``host``, ``base``, ``required_checks``,
+    ``hook_admin``, ``fixer_check``, ...), so a ``set`` or a hand edit of the loop file makes
+    the ``loop`` stage stale (#1714). Credentials appear here as paths, never contents."""
+    return dict(loop)
 
 
 def _resolve_seats(loop: dict, runtime_file: Path, resolver) -> dict:
@@ -235,14 +271,16 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
     """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     if stage == "identities":
-        # Logins and file paths (an App's id and key_file path), never the files' contents, and
-        # which login each role is checked as (selftest's own role -> login list, #1689).
+        # Logins and file paths (an App's id and key_file path), a hash of each credential
+        # file's contents (a rotated token in the same file, #1714), and which login each role
+        # is checked as (selftest's own role -> login list, #1689).
         from . import selftest
         facts = {"repo": loop.get("repo"), "tokens": loop.get("tokens") or {},
-                 "apps": loop.get("apps") or {}, "roles": selftest._roles(loop)}
+                 "apps": loop.get("apps") or {}, "roles": selftest._roles(loop),
+                 "credentials": _credential_hashes(loop)}
     elif stage == "loop":
         from . import seat_model
-        facts = {"runtime": _runtime_hash(runtime_file),
+        facts = {"runtime": _runtime_hash(runtime_file), "settings": _loop_settings(loop),
                  "profiles": {seat: str(config.profile_dir(config.seat_profile(loop, seat)))
                               for seat in seat_model.seats_for(loop)}}
     elif stage == "model":
@@ -260,6 +298,15 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
     else:
         raise ValueError(f"unknown onboarding stage {stage!r}")
     return _digest([stage, facts])
+
+
+def fingerprint_now(loop: dict, stage: str, **kwargs) -> str:
+    """``fingerprint``, or ``""`` when it cannot be computed now. A caller takes it before its
+    checks run and hands it to ``record`` as ``inputs`` (#1714)."""
+    try:
+        return fingerprint(loop, stage, **kwargs)
+    except (HookStateUnknown, SeatUnresolved, CredentialUnreadable, ValueError):
+        return ""
 
 
 # -- the file ------------------------------------------------------------------------------
@@ -339,8 +386,12 @@ def _redactor(loop: dict, runtime_file: Path, seats: dict, stage: str, secrets=(
 
 def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
            checks=None, pr: tuple | None = None, runtime_file: Path | None = None,
-           resolver=None, hook_state=None, secrets=()) -> dict:
+           resolver=None, hook_state=None, secrets=(), inputs: str | None = None) -> dict:
     """Store ``stage``'s result with the fingerprint of its inputs as they are now.
+
+    ``inputs`` is the fingerprint the caller took before its checks ran (``fingerprint_now``);
+    when the inputs no longer hash to it, the result is stored with no fingerprint (never
+    current) and a ``passed`` becomes ``failed``: what was checked is not what is there now.
 
     ``secrets`` are credentials the caller's check saw (a key it resolved) that must not reach
     the file. If one cannot be redacted (shorter than four characters), or a model-facing stage
@@ -369,7 +420,11 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     try:
         prints = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
                              hook_state=hook_state, seats=seats)
-    except (HookStateUnknown, SeatUnresolved):
+    except (HookStateUnknown, SeatUnresolved, CredentialUnreadable):
+        prints, status = "", (FAILED if status == PASSED else status)
+    if inputs is not None and inputs != prints:
+        # The inputs changed while the checks ran (a token rotated mid-selftest, #1714): the
+        # result belongs to inputs nobody fingerprinted, so it must never read as current.
         prints, status = "", (FAILED if status == PASSED else status)
     distinct = len({found.identity() for found in seats.values() if found is not None})
     if stage == "model" and not distinct and status == PASSED:
@@ -384,6 +439,17 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
              "fingerprint": prints}
     if pr:
         entry["pr"] = int(pr[0])
+    _store(loop, stage, entry)
+    return entry
+
+
+def _store(loop: dict, stage: str, entry: dict) -> None:
+    """Write ``entry`` as ``stage``'s result, under the record's lock.
+
+    When the entry has no fingerprint, or one other than the stage's previous entry, every
+    later stage's entry is marked ``invalidated``; a stage's first record invalidates nothing.
+    """
+    prints = entry["fingerprint"]
     with _locked(loop):
         stages = _load(loop)
         before = stages.get(stage)
@@ -476,7 +542,7 @@ def _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state) -> 
     try:
         now = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
                           hook_state=hook_state)
-    except (HookStateUnknown, SeatUnresolved, ValueError) as exc:
+    except (HookStateUnknown, SeatUnresolved, CredentialUnreadable, ValueError) as exc:
         return f"{stage} fingerprint cannot be computed now ({exc})"
     except Exception as exc:
         return f"{stage} fingerprint cannot be computed now ({type(exc).__name__})"

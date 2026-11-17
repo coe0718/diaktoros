@@ -3,7 +3,7 @@
 On a same-head re-review (``review --reconsider``) there are two reviewer turns at one head. A
 shadow review queued with the older turn never clears the newer one: until the newer turn's own
 shadow has a review, the head holds. Driven through ``ready.assess_kinds`` and the merge check's
-``decide`` on a real run ledger, and through ``gate.shadow_state`` for the hold's wording.
+``decide`` on a real run ledger, and through ``gate.shadows.shadow_state`` for the hold's wording.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class Turns(ser.Base):
                             "1,'',0,?)", (f"sh-{key}", fg.REPO, 7, fg.HEAD, verdict, at))
 
     def state(self):
-        return gate.shadow_state(self.loop, 7, fg.HEAD, db=self.db)
+        return gate.shadows.shadow_state(self.loop, 7, fg.HEAD, db=self.db)
 
     def kinds(self):
         """``ready``'s reasons for the head: it reads the production ledger itself."""
@@ -128,7 +128,7 @@ class ActiveTurn(Turns):
     def test_a_single_turn_whose_shadow_ended_without_a_review_is_a_note_not_a_hold(self):
         self.reviewer("t1", time.time() - 100)
         self.turn_shadow("t1", "failed")
-        held, note = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db)
+        held, note = gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db)
         self.assertEqual(held, "")
         self.assertIn("ended failed without a review", note)
 
