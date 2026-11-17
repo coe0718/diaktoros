@@ -60,7 +60,10 @@ Main has no lint findings, and CI's `lint` job keeps it that way: it runs `ruff 
 rules in [`ruff.toml`](../ruff.toml) (pyflakes, plus pycodestyle's import, statement and syntax
 checks) and fails on any finding. Run the same check locally with `ruff check .` from the checkout
 root; the job's pinned version is in [`ci.yml`](../.github/workflows/ci.yml). Ruff is a
-development tool only: the plugin and its tests stay stdlib-only.
+development tool only: the plugin and its tests stay stdlib-only. `tests/test_lint_job.py` also
+runs ruff on a scratch tree, to show a finding fails the check and the harness exemption stays that
+narrow. Without ruff those tests skip; the lint job sets `DIAKTOROS_REQUIRE_RUFF=1`, so there a
+missing ruff fails them.
 
 When an import is there on purpose but unused in its own file, say why on the line:
 `# noqa: F401 - <reason>` (a re-export, or a name tests patch through that module). On a

@@ -68,6 +68,12 @@ jobs:
         run: |
           python -m pip install -q ruff==0.17.3
           ruff check --output-format github .
+      # The rules, executed: a finding fails the check and the harness exemption stays that narrow.
+      # Required here, so a missing ruff fails instead of skipping.
+      - name: Lint rules execute as configured
+        env:
+          DIAKTOROS_REQUIRE_RUFF: "1"
+        run: python -m unittest discover -s tests -p test_lint_job.py
 
   # The unit suite in three shards per Python (#850), about 3 minutes each instead of 9 in one
   # job. tests/shard.py deals every tests/test_*.py into exactly one shard, balanced by
