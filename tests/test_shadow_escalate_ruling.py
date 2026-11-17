@@ -49,13 +49,15 @@ class Base(fg.Base):
                         "authorized,denial,held,created) VALUES(?,?,?,?,?,?,?,1,'',0,?)",
                         (f"s{self.n}", fg.REPO, 7, head, "deepseek-x", verdict, body, now))
 
-    def ruled(self, verdict, head=fg.HEAD):
+    def ruled(self, verdict, head=fg.HEAD, shadow_run=None):
+        """A ruling row; ``shadow_run`` is the shadow review it was shown (None: a ruling
+        recorded before #1112, read by time)."""
         self.n += 1
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
-                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        "updated,shadow_run) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (f"r{self.n}", fg.REPO, 7, head, "breach:1", verdict, "because",
-                         time.time() + self.n, time.time() + self.n))
+                         time.time() + self.n, time.time() + self.n, shadow_run))
 
     def mark_escalated(self, by="shadow", status="adjudicating"):
         marker = {"pr": 7, "head": fg.HEAD, "rounds": 1, "cap": 3, "reason": "r", "at": "now",
@@ -248,6 +250,46 @@ class Between(Base):
             why = ready.assess(self.loop, self.st, pr, APPROVED, None, None)
         self.assertTrue(any(w.startswith("escalated: parked awaiting adjudication") for w in why), why)
         self.assertFalse(any("ruled ACCEPT" in w for w in why), why)
+
+    def explain_and_ready(self):
+        """explain's blockers and ready's reasons at the head, through their entry points."""
+        from diaktoros import ready
+        marker = self.st.breach_get(7)
+        hold = gate.shadows.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        facts = {"pr": fg.LIVE, "reviews": APPROVED, "armed": True, "read_at": 0,
+                 "shadow_hold": hold}
+        report = explain.explain(self.loop, self.st, 7, facts)
+        pr = {**fg.LIVE, "user": {"login": "fixer"}}
+        with mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            why = ready.assess(self.loop, self.st, pr, APPROVED, None, None)
+        return marker, report["blockers"], why
+
+    def test_the_ruling_that_answers_the_review_counts_over_a_newer_one_for_another(self):
+        # #2506 review: the ruling that answers the newest dissent (s2's REJECT) is the one
+        # reported, though a later ACCEPT of s1 (an earlier review) is the newest at the head.
+        self.shadow("REQUEST_CHANGES", body="F1: the first review", at=time.time() - 100)
+        self.shadow("REQUEST_CHANGES", body="F2: the second review", at=time.time() - 50)
+        self.mark_escalated()
+        self.ruled("REJECT", shadow_run="s2")
+        self.ruled("ACCEPT", shadow_run="s1")                    # newer, for another review
+        marker, blockers, why = self.explain_and_ready()
+        self.assertEqual(explain._ruled(self.loop, 7, fg.HEAD, marker), "REJECT")
+        self.assertTrue(any(b.startswith("ruled: the adjudicator ruled REJECT") for b in blockers),
+                        blockers)
+        self.assertTrue(any("the adjudicator ruled REJECT" in w for w in why), why)
+        self.assertFalse(any("ACCEPT" in w for w in [*blockers, *why]), (blockers, why))
+
+    def test_an_accept_that_answers_the_review_unparks_over_a_newer_one_for_another(self):
+        # The other order: s2's ACCEPT overrules it, and a newer REJECT of s1 does not re-park.
+        self.shadow("REQUEST_CHANGES", body="F1: the first review", at=time.time() - 100)
+        self.shadow("REQUEST_CHANGES", body="F2: the second review", at=time.time() - 50)
+        self.mark_escalated()
+        self.ruled("ACCEPT", shadow_run="s2")
+        self.ruled("REJECT", shadow_run="s1")                    # newer, for another review
+        marker, blockers, why = self.explain_and_ready()
+        self.assertEqual(explain._ruled(self.loop, 7, fg.HEAD, marker), "ACCEPT")
+        self.assertFalse(any(b.startswith(("ruled:", "escalated:")) for b in blockers), blockers)
+        self.assertFalse(any(w.startswith("escalated:") for w in why), why)
 
     def test_an_accept_of_the_review_it_was_shown_still_overrules_it(self):
         self.shadow("REQUEST_CHANGES", at=time.time() - 100)
