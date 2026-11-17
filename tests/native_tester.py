@@ -23,6 +23,7 @@ def environment():
     # interpreter/tool discovery inputs; never inherit model/GitHub credentials
     # or plugin settings pointing at a live install.
     value = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR', 'LANG') if k in os.environ}
+    value['DIAKTOROS_NATIVE_MACOS'] = '1'
     for key in ('SEATBELT', 'NATIVE_STORAGE', 'NATIVE_LIFECYCLE', 'NATIVE_ROLES'):
         value['DIAKTOROS_REQUIRE_' + key] = '1'
     return value

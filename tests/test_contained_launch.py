@@ -720,5 +720,16 @@ class EnvironmentScrub(Base):
                 self.assertFalse([arg for arg in argv if value in arg or name in arg], argv)
 
 
+class CaptureContracts(unittest.TestCase):
+    def test_timeout_after_pipe_eof_keeps_captured_output(self):
+        source = ('import os,time; os.write(1,b"before timeout"); '
+                  'os.write(2,b"before error"); os.close(1); os.close(2); time.sleep(30)')
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            contained.capture([sys.executable, '-c', source],
+                              env={'PATH': '/usr/bin:/bin'}, timeout=3)
+        self.assertEqual(caught.exception.output, b'before timeout')
+        self.assertEqual(caught.exception.stderr, b'before error')
+
+
 if __name__ == "__main__":
     unittest.main()

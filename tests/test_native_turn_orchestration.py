@@ -153,6 +153,7 @@ class NativeOrchestration(unittest.TestCase):
                 return subprocess.CompletedProcess(kwargs['entry'], 0, 'fixture stdout', '')
 
             stack.enter_context(mock.patch.object(sys, 'platform', 'darwin'))
+            stack.enter_context(mock.patch.dict(os.environ, {'DIAKTOROS_NATIVE_MACOS': '1'}))
             if real:
                 create_workspace = native_backend.workspace
                 stack.enter_context(mock.patch.object(native_backend, 'workspace',
@@ -176,6 +177,7 @@ class NativeOrchestration(unittest.TestCase):
                 (root / 'rust').mkdir()
                 (root / 'node/bin').mkdir(parents=True)
             else:
+                stack.enter_context(mock.patch.object(native_backend, 'unavailable', return_value=''))
                 stack.enter_context(mock.patch.object(native_backend, 'workspace', side_effect=workspace))
                 stack.enter_context(mock.patch.object(native_backend, 'run', side_effect=run))
             stack.enter_context(mock.patch.object(trusted_turn, '_safe_code_snapshot', side_effect=snapshot))
@@ -241,6 +243,7 @@ class NativeOrchestration(unittest.TestCase):
         paths = {name: Path('/fixture') / name for name in
                  ('code', 'venv', 'runtime', 'home', 'rust', 'query')}
         with mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(native_backend, 'unavailable', return_value=''), \
                 mock.patch.object(native_backend, 'workspace') as workspace, \
                 mock.patch.object(native_backend, 'run', return_value=
                 subprocess.CompletedProcess([], 0, 'proof', '')) as run:

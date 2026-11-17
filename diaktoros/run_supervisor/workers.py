@@ -613,12 +613,15 @@ class WorkerLifecycle:
         return row is not None and self._turn_gone(row)
 
     def reconcile_uncertain(self, run_id: str, *, reason: str,
-                            acknowledge_no_live_worker: bool = False) -> bool:
+                            acknowledge_no_live_worker: bool = False,
+                            acknowledge_native_descendants_stopped: bool = False) -> bool:
         """Operator-only release after inspecting the turn's external writes.
 
         A present or inaccessible PID conservatively blocks release. A missing
         PID still requires acknowledgement: absence alone cannot prove that
         a GitHub write did not happen before the worker died.
+        Native release also requires the operator to stop all descendants or
+        reboot, then attest to that fact; this is not automatic exit proof.
         """
         if not acknowledge_no_live_worker or not reason or len(reason) > 512:
             raise ValueError('explicit reconciliation acknowledgement and reason required')
@@ -629,8 +632,10 @@ class WorkerLifecycle:
             if row is None or row['state'] != 'uncertain':
                 con.execute('COMMIT')
                 return False
-            if sys.platform == 'darwin' and not self.fixture_mode:
-                raise ValueError('native process completion unverified; cannot release uncertain run')
+            native = sys.platform == 'darwin' and not self.fixture_mode
+            if native and not acknowledge_native_descendants_stopped:
+                raise ValueError('native process completion unverified; explicit native '
+                                 'descendants stopped acknowledgement required')
             if row['pid'] is not None:
                 found = process_state(row['pid'], row['launch_intent'])
                 if found == 'unknown':
@@ -642,7 +647,9 @@ class WorkerLifecycle:
             con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, "
                         "push_intent=NULL,updated=? "
                         "WHERE id=? AND state='uncertain'",
-                        ('operator reconciliation: ' + reason, time.time(), run_id))
+                        ('operator reconciliation: ' + reason +
+                         ('; native descendants manually acknowledged stopped' if native else ''),
+                         time.time(), run_id))
             con.execute('COMMIT')
         # The operator's reconciliation is what ends it, so it frees its claim too.
         _release_claim(row, run_id)

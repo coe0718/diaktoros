@@ -86,10 +86,25 @@ class ProofRouting(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['entry'][-2:], ['tests:.', 'test_id'])
         self.assertNotIn('workspace', run.call_args.kwargs)
 
+    def test_linux_proof_propagates_cancellation_and_captured_output(self):
+        paths = {name: Path('/fixture') / name for name in
+                 ('code', 'venv', 'runtime', 'home', 'rust', 'query')}
+        stop = object()
+        stopped = trusted_turn.contained.Stopped(b'proof output', b'proof error')
+        with mock.patch.object(sys, 'platform', 'linux'), \
+                mock.patch.object(trusted_turn.contained, 'run', side_effect=stopped) as run:
+            with self.assertRaises(trusted_turn.contained.Stopped) as caught:
+                trusted_turn.unittest_runner(**paths, stop=stop)(Path('/tree'), ['test_id'])
+        self.assertIs(run.call_args.kwargs['stop'], stop)
+        self.assertEqual(caught.exception.output, b'proof output')
+        self.assertEqual(caught.exception.stderr, b'proof error')
+
 
 @unittest.skipUnless(sys.platform == 'darwin', 'native macOS proofs')
 class NativeProofs(unittest.TestCase):
     def setUp(self):
+        import os
+        self.enterContext(mock.patch.dict(os.environ, {'DIAKTOROS_NATIVE_MACOS': '1'}))
         self.root = Path(tempfile.mkdtemp(prefix='native-proofs-')).resolve()
         self.addCleanup(self.cleanup)
         self.ledger = self.root / 'state/runs.sqlite'

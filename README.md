@@ -14,7 +14,7 @@ Coding agents now open pull requests faster than people can review them, and an 
 
 - **Bounded.** Every PR gets a fixed number of review verdicts (3 by default). At the cap the PR stops and goes to an adjudicator or to you. Daily token and turn budgets cap each seat's spend.
 - **Separated.** The reviewer and the fixer are distinct GitHub accounts (or GitHub Apps) running distinct Hermes profiles, so the account that writes a fix never reviews it. No seat can merge.
-- **Contained.** Every agent turn runs in a bubblewrap (Linux) or Seatbelt (macOS) sandbox with no GitHub token, no model key and no direct network. The host brokers each write and rechecks the live PR before sending it.
+- **Contained.** Every agent turn runs in a bubblewrap sandbox with no GitHub token, no model key and no direct network. The host brokers each write and rechecks the live PR before sending it.
 - **Accountable.** Every turn and its outcome is recorded in a local run ledger. `hermes dk explain` says why a PR is stuck and what has to happen next; `hermes dk stats` says what the loop did and what it cost.
 
 ## It maintains itself
@@ -53,7 +53,7 @@ flowchart LR
 ```
 
 1. A GitHub webhook reaches your Hermes gateway. A **gate** script reads live GitHub state and decides, in plain Python, whether the event earns a turn. It answers `[SILENT]`, so no ordinary credential-owning Hermes agent handles the event.
-2. A host **worker** claims the queued turn, rechecks the PR at its exact head, exports that head and starts the seat in the platform sandbox.
+2. A host **worker** claims the queued turn, rechecks the PR at its exact head, exports that head and starts the seat in bubblewrap.
 3. The seat reads, builds and tests inside the sandbox. Model calls go through a bounded inference capability. GitHub writes go through the host **broker**, which allows each seat only its own bounded writes (the reviewer one review, the fixer one push and its answers, the adjudicator one ruling) and rechecks the PR before sending them.
 4. The **watchdog**, a scheduled job and not an agent, reports stalls, drains queued work and repairs the loop's own routes.
 
@@ -61,9 +61,9 @@ flowchart LR
 
 ## Safety model
 
-> With a valid private `diaktoros-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in the platform sandbox without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
+> With a valid private `diaktoros-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
 
-Isolation is not immunity: installed plugins are trusted host code, and a kernel or sandbox escape would run as the host user. Offline tests do not establish provider-policy approval or live credentials. Issue triage, issue fixing and the Desktop forms have offline coverage, not a claimed live acceptance test here. See [Security](docs/security.md) and [Development](docs/development.md).
+Isolation is not immunity: installed plugins are trusted host code, and a kernel or bubblewrap escape would run as the host user. Offline tests do not establish provider-policy approval or live credentials. Issue triage, issue fixing and the Desktop forms have offline coverage, not a claimed live acceptance test here. See [Security](docs/security.md) and [Development](docs/development.md).
 
 ## What it does
 
@@ -96,7 +96,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 
 ## Before you start
 
-- Linux with working bubblewrap (`bwrap`) and unprivileged user namespaces, or native macOS on Apple Silicon with Apple Command Line Tools, Seatbelt (`sandbox-exec`) and APFS disk-image support. Intel/Rosetta is not verified for this integration. See [native macOS setup and operating limits](docs/native-macos.md#current-main-operator-guide).
+- Linux with working bubblewrap (`bwrap`) and unprivileged user namespaces. Native macOS is experimental and disabled by default; it is not advertised as a supported catalog platform. See [the explicit opt-in guide](docs/native-macos.md).
 - Hermes **>=0.21.5** (manifest requirement), a Hermes Git checkout and working virtualenv, Python runtime and Rust toolchain for the isolated runtime. A version number alone does not prove sandbox/provider compatibility: run `selftest`.
 - Your own HTTPS-reachable Hermes gateway, and a repository whose hooks you can administer.
 - Separate reviewer and fixer Hermes profiles; three distinct GitHub accounts and token files: reader, reviewer and fixer. An adjudicator comment account is optional and must be distinct too. Or run each role as a GitHub App, with no personal account or PAT: see [Getting started with GitHub Apps](docs/github-apps.md).
@@ -195,7 +195,7 @@ hermes plugins remove hermes-review-loop
 
 ## Advanced: Claude subscription seats (DirectSDK)
 
-The experimental `claude-subscription-directsdk-experimental` provider runs its native client on the trusted host. Seat GitHub/model credentials still stay outside the sandbox; model requests cross a bounded per-run inference capability. Native authentication defaults to the OS user's login: distinct Hermes profiles alone do not create separate subscriptions. Configure explicit host-side native account directories if different accounts are required. This integration is not provider-policy approval, and offline tests do not prove native prerequisites or a live completion. See [configuration](docs/configuration.md) and [security](docs/security.md) before selecting it.
+The experimental `claude-subscription-directsdk-experimental` provider runs its native client on the trusted host. Seat GitHub/model credentials still stay outside bubblewrap; model requests cross a bounded per-run inference capability. Native authentication defaults to the OS user's login: distinct Hermes profiles alone do not create separate subscriptions. Configure explicit host-side native account directories if different accounts are required. This integration is not provider-policy approval, and offline tests do not prove native prerequisites or a live completion. See [configuration](docs/configuration.md) and [security](docs/security.md) before selecting it.
 
 ## Run and extend
 

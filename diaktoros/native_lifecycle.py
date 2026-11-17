@@ -184,15 +184,117 @@ def _drain_group(pid: int, leader_exited: bool) -> None:
                 event.filter == select.KQ_FILTER_PROC and event.ident == pid for event in ready)
 
 
-def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
-    # Configuration comes from a trusted anonymous file, not child arguments or state.
-    with os.fdopen(config_fd, 'rb') as source:
-        config = json.loads(source.read(MAX_CONFIG + 1))
-    argv, env, timeout, cwd, owner = (config[k] for k in ('argv', 'env', 'timeout', 'cwd', 'owner'))
-    receipt = None
-    watchdog = None
-    watchdog_lost = False
+def _watch_owner(events, lifeline_fd, owner):
+    parent_lost = False
+    events.control([select.kevent(lifeline_fd, filter=select.KQ_FILTER_READ,
+                                  flags=select.KQ_EV_ADD)], 0, 0)
+    # A fork-only host child can retain a copy of the lifeline writer.
+    # Also watch our actual parent, checking PPID around registration so
+    # startup after reparenting/PID reuse cannot target an unrelated PID.
+    if owner <= 1 or os.getppid() != owner:
+        parent_lost = True
+    else:
+        try:
+            events.control([select.kevent(owner, filter=select.KQ_FILTER_PROC,
+                                          flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                          fflags=select.KQ_NOTE_EXIT)], 0, 0)
+        except OSError as error:
+            if error.errno != errno.ESRCH:
+                raise
+            parent_lost = True
+        if os.getppid() != owner:
+            parent_lost = True
+    return parent_lost
+
+
+def _watch_exit(events, process, owner, watchdog, timeout, watchdog_lost):
+    leader_exited = timed_out = parent_lost = False
+    # No wait/poll before group cleanup: the unreaped child reserves
+    # its PID, preventing a stale group ID from targeting a reused PID.
+    try:
+        events.control([select.kevent(process.pid, filter=select.KQ_FILTER_PROC,
+                                      flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                      fflags=select.KQ_NOTE_EXIT)], 0, 0)
+    except OSError as error:
+        if error.errno != errno.ESRCH:
+            raise
+        leader_exited = True
+        # A very short-lived child can exit before registration.
+        # It has not been reaped; cleanup still precedes wait().
+    else:
+        deadline = time.monotonic() + timeout
+        while not watchdog_lost:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            ready = events.control(None, 4, remaining)
+            if not ready:
+                timed_out = True
+                break
+            leader_exited = any(event.filter == select.KQ_FILTER_PROC and
+                                event.ident == process.pid for event in ready)
+            if any(event.filter == select.KQ_FILTER_READ or
+                   (event.filter == select.KQ_FILTER_PROC and event.ident == owner)
+                   for event in ready):
+                parent_lost = True
+                break
+            if leader_exited:
+                break
+            if watchdog is not None and any(
+                    event.filter == select.KQ_FILTER_PROC and event.ident == watchdog.pid
+                    for event in ready):
+                # The monitor can exit when its timer expires.
+                # Neither requires a stale PID
+                # signal: the guardian still owns the unreaped leader.
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                else:
+                    watchdog_lost = True
+                break
+    return leader_exited, timed_out, parent_lost, watchdog_lost
+
+
+def _finish_watch(process, watchdog, receipt, anchor_result, leader_exited,
+                  watchdog_lost, parent_lost, timed_out):
+    turn_returncode = None
     storage_cleaned = False
+    if watchdog is not None:
+        # The monitor is our unreaped child, not a discovered process.
+        # Do not reap it before the signal, preserving its PID identity.
+        try:
+            watchdog.terminate()
+        except ProcessLookupError:
+            pass
+        watchdog.wait(timeout=5)
+    if process is not None:
+        _drain_group(process.pid, leader_exited)
+        if receipt is not None:
+            receipt.update('drained', cause=('watchdog_lost' if watchdog_lost else
+                                            'owner_lost' if parent_lost else
+                                            'timeout' if timed_out else 'leader_exit'))
+        process.wait()
+        turn_returncode = process.returncode
+        if anchor_result is not None:
+            os.set_blocking(anchor_result, False)
+            try:
+                raw = os.read(anchor_result, MAX_STATUS + 1)
+            except BlockingIOError:
+                raw = b''
+            if raw:
+                value = json.loads(raw)
+                if len(raw) > MAX_STATUS or type(value['returncode']) is not int:
+                    raise CleanupIncomplete('invalid anchor command completion')
+                turn_returncode = value['returncode']
+    elif receipt is not None:
+        receipt.update('drained', cause='owner_lost_before_launch')
+    if receipt is not None and (parent_lost or watchdog_lost):
+        storage_cleaned = receipt.cleanup_or_defer()
+    return turn_returncode, storage_cleaned
+
+
+def _watch_receipt(config):
+    receipt = None
     if config.get('recovery_root') is not None:
         from diaktoros import native_recovery
         receipt = native_recovery.Record(Path(config['recovery_root']))
@@ -202,6 +304,18 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
         except BaseException:
             receipt.close()
             raise
+    return receipt
+
+
+def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
+    # Configuration comes from a trusted anonymous file, not child arguments or state.
+    with os.fdopen(config_fd, 'rb') as source:
+        config = json.loads(source.read(MAX_CONFIG + 1))
+    argv, env, timeout, cwd, owner = (config[k] for k in ('argv', 'env', 'timeout', 'cwd', 'owner'))
+    receipt = _watch_receipt(config)
+    watchdog = None
+    watchdog_lost = False
+    storage_cleaned = False
     process = None
     anchor_result = None
     turn_returncode = None
@@ -213,24 +327,7 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     try:
         with closing(select.kqueue()) as events:
-            events.control([select.kevent(lifeline_fd, filter=select.KQ_FILTER_READ,
-                                          flags=select.KQ_EV_ADD)], 0, 0)
-            # A fork-only host child can retain a copy of the lifeline writer.
-            # Also watch our actual parent, checking PPID around registration so
-            # startup after reparenting/PID reuse cannot target an unrelated PID.
-            if owner <= 1 or os.getppid() != owner:
-                parent_lost = True
-            else:
-                try:
-                    events.control([select.kevent(owner, filter=select.KQ_FILTER_PROC,
-                                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
-                                                  fflags=select.KQ_NOTE_EXIT)], 0, 0)
-                except OSError as error:
-                    if error.errno != errno.ESRCH:
-                        raise
-                    parent_lost = True
-                if os.getppid() != owner:
-                    parent_lost = True
+            parent_lost = _watch_owner(events, lifeline_fd, owner)
             # Do not launch new work if the owner died during watchdog startup.
             if parent_lost or events.control(None, 2, 0):
                 parent_lost = True
@@ -276,82 +373,13 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                                                       fflags=select.KQ_NOTE_EXIT)], 0, 0)
                     except ProcessLookupError:
                         watchdog_lost = True
-                # No wait/poll before group cleanup: the unreaped child reserves
-                # its PID, preventing a stale group ID from targeting a reused PID.
-                try:
-                    events.control([select.kevent(process.pid, filter=select.KQ_FILTER_PROC,
-                                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
-                                                  fflags=select.KQ_NOTE_EXIT)], 0, 0)
-                except OSError as error:
-                    if error.errno != errno.ESRCH:
-                        raise
-                    leader_exited = True
-                    # A very short-lived child can exit before registration.
-                    # It has not been reaped; cleanup still precedes wait().
-                else:
-                    deadline = time.monotonic() + timeout
-                    while not watchdog_lost:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            timed_out = True
-                            break
-                        ready = events.control(None, 4, remaining)
-                        if not ready:
-                            timed_out = True
-                            break
-                        leader_exited = any(event.filter == select.KQ_FILTER_PROC and
-                                            event.ident == process.pid for event in ready)
-                        if any(event.filter == select.KQ_FILTER_READ or
-                               (event.filter == select.KQ_FILTER_PROC and event.ident == owner)
-                               for event in ready):
-                            parent_lost = True
-                            break
-                        if leader_exited:
-                            break
-                        if watchdog is not None and any(
-                                event.filter == select.KQ_FILTER_PROC and event.ident == watchdog.pid
-                                for event in ready):
-                            # The monitor can exit when its timer expires.
-                            # Neither requires a stale PID
-                            # signal: the guardian still owns the unreaped leader.
-                            if time.monotonic() >= deadline:
-                                timed_out = True
-                            else:
-                                watchdog_lost = True
-                            break
+                leader_exited, timed_out, parent_lost, watchdog_lost = _watch_exit(
+                    events, process, owner, watchdog, timeout, watchdog_lost)
     finally:
         try:
-            if watchdog is not None:
-                # The monitor is our unreaped child, not a discovered process.
-                # Do not reap it before the signal, preserving its PID identity.
-                try:
-                    watchdog.terminate()
-                except ProcessLookupError:
-                    pass
-                watchdog.wait(timeout=5)
-            if process is not None:
-                _drain_group(process.pid, leader_exited)
-                if receipt is not None:
-                    receipt.update('drained', cause=('watchdog_lost' if watchdog_lost else
-                                                    'owner_lost' if parent_lost else
-                                                    'timeout' if timed_out else 'leader_exit'))
-                process.wait()
-                turn_returncode = process.returncode
-                if anchor_result is not None:
-                    os.set_blocking(anchor_result, False)
-                    try:
-                        raw = os.read(anchor_result, MAX_STATUS + 1)
-                    except BlockingIOError:
-                        raw = b''
-                    if raw:
-                        value = json.loads(raw)
-                        if len(raw) > MAX_STATUS or type(value['returncode']) is not int:
-                            raise CleanupIncomplete('invalid anchor command completion')
-                        turn_returncode = value['returncode']
-            elif receipt is not None:
-                receipt.update('drained', cause='owner_lost_before_launch')
-            if receipt is not None and (parent_lost or watchdog_lost):
-                storage_cleaned = receipt.cleanup_or_defer()
+            turn_returncode, storage_cleaned = _finish_watch(
+                process, watchdog, receipt, anchor_result, leader_exited,
+                watchdog_lost, parent_lost, timed_out)
         finally:
             if receipt is not None:
                 receipt.close()
@@ -400,21 +428,24 @@ def _completion(process, descriptor, *, allow_owner_loss=False):
     return record
 
 
-def capture(argv: list[str], *, env: dict[str, str], timeout: int,
-            cwd: Path | None = None, recovery_root: Path | None = None,
-            stop=None) -> subprocess.CompletedProcess:
-    """Capture through a trusted watchdog; no sandbox is provided by this function.
+def _guardian_completion(process, status_read, proof, recovery_root, turn_id,
+                         *, allow_owner_loss=False):
+    try:
+        return _completion(process, status_read, allow_owner_loss=allow_owner_loss)
+    except CleanupIncomplete:
+        if proof is not None:
+            try:
+                proof.recover(recovery_root, turn_id)
+            except (GuardianLost, StoragePending):
+                raise
+            except (OSError, RuntimeError) as error:
+                raise CleanupIncomplete('guardian-loss cleanup remains unverified: '
+                                        + str(error)) from error
+        raise
 
-    Caller must pass an already-contained command. No unsupervised fallback.
-    The helper is outside the child's Seatbelt profile, in a separate session,
-    with a scrubbed environment and exclusively host-owned pipe descriptors.
-    """
-    from . import contained
-    if sys.platform != 'darwin':
-        raise contained.ContainmentUnavailable('native watchdog requires macOS kqueue')
-    if type(timeout) is not int or timeout < 1:
-        raise ValueError('watchdog timeout must be positive')
-    channel = peer = proof = None
+
+def _capture_config(argv, env, timeout, cwd, recovery_root):
+    channel = peer = None
     turn_id = None
     config = json.dumps({'argv': argv, 'env': env, 'timeout': timeout,
                          'cwd': str(cwd) if cwd is not None else None,
@@ -434,6 +465,25 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
             if connection is not None:
                 connection.close()
         raise ValueError('native watchdog configuration exceeds limit')
+    return config, channel, peer, turn_id
+
+
+def capture(argv: list[str], *, env: dict[str, str], timeout: int,
+            cwd: Path | None = None, recovery_root: Path | None = None,
+            stop=None) -> subprocess.CompletedProcess:
+    """Capture through a trusted watchdog; no sandbox is provided by this function.
+
+    Caller must pass an already-contained command. No unsupervised fallback.
+    The helper is outside the child's Seatbelt profile, in a separate session,
+    with a scrubbed environment and exclusively host-owned pipe descriptors.
+    """
+    from . import contained
+    if sys.platform != 'darwin':
+        raise contained.ContainmentUnavailable('native watchdog requires macOS kqueue')
+    if type(timeout) is not int or timeout < 1:
+        raise ValueError('watchdog timeout must be positive')
+    proof = None
+    config, channel, peer, turn_id = _capture_config(argv, env, timeout, cwd, recovery_root)
     with tempfile.TemporaryFile() as source:
         source.write(config)
         source.seek(0)
@@ -474,18 +524,8 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
                 channel = None
 
             def completion(*, allow_owner_loss=False):
-                try:
-                    return _completion(process, status_read, allow_owner_loss=allow_owner_loss)
-                except CleanupIncomplete:
-                    if proof is not None:
-                        try:
-                            proof.recover(recovery_root, turn_id)
-                        except (GuardianLost, StoragePending):
-                            raise
-                        except (OSError, RuntimeError) as error:
-                            raise CleanupIncomplete('guardian-loss cleanup remains unverified: '
-                                                    + str(error)) from error
-                    raise
+                return _guardian_completion(process, status_read, proof, recovery_root, turn_id,
+                                            allow_owner_loss=allow_owner_loss)
 
             def abort():
                 nonlocal life_write

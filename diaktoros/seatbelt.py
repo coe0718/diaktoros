@@ -1,6 +1,6 @@
-"""Experimental Seatbelt profile builder; not wired into production contained turns.
+"""Seatbelt profiles for the explicit opt-in native execution backend.
 
-This first slice probes filesystem and IPC enforcement on macOS. It supplies no
+These profiles enforce filesystem and IPC restrictions on macOS. They supply no
 mount namespace, disk quota, parent-death guarantee or detached-child supervisor.
 Only trusted host code may choose roots, socket endpoints and the executable.
 """
@@ -62,6 +62,27 @@ class Profile:
         return [*args, *entry]
 
 
+def _socket_rules(sockets, writes, params, rules):
+    if sockets:
+        rules.append('(allow system-socket (socket-domain AF_UNIX))')
+    for index, raw in enumerate(sockets):
+        raw = Path(raw)
+        if not raw.is_absolute() or raw.is_symlink():
+            raise ValueError('socket endpoints must be absolute and not symlinks')
+        path = raw.resolve(strict=True)
+        if not path.is_socket() or any(ord(char) < 32 for char in str(path)):
+            raise ValueError('a live Unix socket endpoint is required')
+        if len(str(path).encode()) >= 104:
+            raise ValueError('socket path exceeds the macOS sockaddr_un bound')
+        if any(path == p or p in path.parents for p in writes):
+            raise ValueError('capability sockets cannot be inside writable roots')
+        key = f'SOCKET_{index}'
+        params.append((key, str(path)))
+        rules.append(f'(allow file-read* (literal (param "{key}")))')
+        rules.append('(allow network-outbound'
+                     f' (remote unix-socket (literal (param "{key}"))))')
+
+
 def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
             sockets: tuple[Path, ...] = ()) -> Profile:
     """Deny by default, allow narrow runtime/run roots and exact AF_UNIX endpoints.
@@ -113,22 +134,5 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
                 key = f'PARENT_{len(params)}'
                 params.append((key, str(ancestor)))
                 rules.append(f'(allow file-read-metadata (literal (param "{key}")))')
-    if sockets:
-        rules.append('(allow system-socket (socket-domain AF_UNIX))')
-    for index, raw in enumerate(sockets):
-        raw = Path(raw)
-        if not raw.is_absolute() or raw.is_symlink():
-            raise ValueError('socket endpoints must be absolute and not symlinks')
-        path = raw.resolve(strict=True)
-        if not path.is_socket() or any(ord(char) < 32 for char in str(path)):
-            raise ValueError('a live Unix socket endpoint is required')
-        if len(str(path).encode()) >= 104:
-            raise ValueError('socket path exceeds the macOS sockaddr_un bound')
-        if any(path == p or p in path.parents for p in writes):
-            raise ValueError('capability sockets cannot be inside writable roots')
-        key = f'SOCKET_{index}'
-        params.append((key, str(path)))
-        rules.append(f'(allow file-read* (literal (param "{key}")))')
-        rules.append('(allow network-outbound'
-                     f' (remote unix-socket (literal (param "{key}"))))')
+    _socket_rules(sockets, writes, params, rules)
     return Profile('\n'.join(rules) + '\n', tuple(params))

@@ -10,12 +10,14 @@ import subprocess
 import sys
 import tempfile
 
-from . import contained, native_cleanup, native_lifecycle, native_recovery, native_storage, seatbelt
+from . import contained, envnames, native_cleanup, native_lifecycle, native_recovery, native_storage, seatbelt
 
 
 def unavailable() -> str:
     if sys.platform != 'darwin':
         return 'native containment requires macOS'
+    if envnames.get('NATIVE_MACOS') != '1':
+        return 'native macOS is experimental; explicit opt-in requires DIAKTOROS_NATIVE_MACOS=1'
     for tool in ('/usr/bin/sandbox-exec', '/usr/bin/hdiutil', '/usr/sbin/diskutil',
                  '/usr/bin/clang', '/usr/bin/xcrun', '/usr/bin/codesign', '/bin/bash'):
         if not os.access(tool, os.X_OK):
@@ -64,14 +66,20 @@ def _translate(entry, mapping):
 
 
 def _tool_roots():
-    roots = []
-    env = {'PATH': '/usr/bin:/bin'}
-    for args in (['--sdk', 'macosx', '--show-sdk-path'], ['--find', 'clang']):
-        result = subprocess.run(['/usr/bin/xcrun', *args], env=env, capture_output=True,
-                                text=True, timeout=15, check=True)
-        root = Path(result.stdout.strip()).resolve(strict=True)
-        roots.append(root if root.is_dir() else root.parent.parent)
-    return roots
+    from . import runtime_detect
+    roots, reason = runtime_detect.native_tools()
+    if reason:
+        raise contained.ContainmentUnavailable(reason)
+    return [roots['sdk'], roots['developer_tools']]
+
+
+def _check_roots(paths, **additional):
+    from . import runtime_detect
+    for name, value in {**paths, **additional}.items():
+        if name == 'query' or value is None:
+            continue
+        if reason := runtime_detect.native_root_problem(str(value)):
+            raise contained.ContainmentUnavailable(f'unsafe native {name} root: {reason}')
 
 
 def stage_shell(directory: Path) -> Path:
@@ -239,6 +247,8 @@ def run(*, code: Path, venv: Path, runtime: Path, home: Path, checkout: Path,
     paths = {name: Path(value).resolve(strict=True) for name, value in
              dict(code=code, venv=venv, runtime=runtime, home=home, checkout=checkout,
                   rust=rust, query=query).items()}
+    _check_roots(paths, node=node, client=client_code, review=review_dir,
+                 **{f'{key} cache': value for key, value in (dependency_caches or {}).items()})
     with ExitStack() as stack:
         from .native_backend import workspace as create_workspace
         volume = workspace if workspace is not None else stack.enter_context(create_workspace())

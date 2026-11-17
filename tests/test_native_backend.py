@@ -18,6 +18,7 @@ from diaktoros import contained, native_backend, native_cleanup
 @unittest.skipUnless(sys.platform == 'darwin', 'native macOS backend')
 class NativeBackend(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.dict(os.environ, {'DIAKTOROS_NATIVE_MACOS': '1'}))
         self.root = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(self.cleanup)
         self.paths = {name: self.root / name for name in ('code', 'venv', 'home', 'checkout', 'rust')}
@@ -52,6 +53,37 @@ class NativeBackend(unittest.TestCase):
             with self.assertRaises(contained.ContainmentUnavailable):
                 native_backend.run(**self.paths, entry=['/usr/bin/true'], network=True)
         create.assert_not_called()
+
+    def test_native_dispatch_requires_explicit_host_opt_in(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(native_backend, 'workspace', side_effect=AssertionError('disabled admission')) as create:
+            with self.assertRaisesRegex(contained.ContainmentUnavailable, 'opt-in'):
+                native_backend.run(**self.paths, entry=['/usr/bin/true'])
+        create.assert_not_called()
+
+    def test_disabled_turn_is_refused_before_staging_or_capabilities(self):
+        from diaktoros import trusted_turn
+        scope = mock.Mock(repo='owner/repo', role='reviewer')
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(trusted_turn, '_stage_source') as stage, \
+                mock.patch.object(trusted_turn.inference_proxy, 'InferenceCapability') as inference:
+            with self.assertRaisesRegex(trusted_turn.TurnDenied, 'opt-in'):
+                trusted_turn.run_turn({'repo': scope.repo}, scope,
+                    source=self.paths['code'], venv=self.paths['venv'], runtime=self.paths['runtime'],
+                    rust=self.paths['rust'], upstream='http://127.0.0.1:9', key='dummy', model='fixture', prompt='test')
+        stage.assert_not_called()
+        inference.assert_not_called()
+
+    def test_broad_read_roots_are_rechecked_before_workspace_creation(self):
+        alias = self.root / 'broad-alias'
+        alias.symlink_to('/tmp', target_is_directory=True)
+        for name in ('code', 'venv', 'runtime', 'home', 'checkout', 'rust'):
+            with self.subTest(name=name), \
+                    mock.patch.object(native_backend, 'workspace', side_effect=AssertionError('unsafe admission')) as create:
+                paths = {**self.paths, name: alias}
+                with self.assertRaisesRegex(contained.ContainmentUnavailable, 'broad'):
+                    native_backend.run(**paths, entry=['/usr/bin/true'])
+                create.assert_not_called()
 
     def test_real_launch_preserves_result_and_denies_secrets_network_and_detach(self):
         secret = self.root / 'secret'

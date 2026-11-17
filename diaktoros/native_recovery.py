@@ -161,6 +161,10 @@ class Record:
                 raise ValueError('invalid preparation ownership')
         except (ValueError, KeyError, TypeError) as error:
             raise RecoveryError('invalid ownership record; retain storage') from error
+        self._validate_storage(record)
+        return record
+
+    def _validate_storage(self, record):
         try:
             image = os.stat('turn.dmg', dir_fd=self.directory, follow_symlinks=False)
         except FileNotFoundError:
@@ -186,7 +190,6 @@ class Record:
                 raise RecoveryError('mount path is not a directory')
         if _identity(self.root.lstat()) != record['root_identity']:
             raise RecoveryError('ownership root was replaced')
-        return record
 
     def write(self, record):
         raw = json.dumps(record, sort_keys=True).encode()

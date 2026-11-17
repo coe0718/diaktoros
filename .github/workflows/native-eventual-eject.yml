@@ -1,14 +1,6 @@
 name: Natural busy eject eventual recovery
 
 on:
-  pull_request:
-    paths:
-      - diaktoros/native_cleanup.py
-      - diaktoros/native_recovery.py
-      - diaktoros/native_storage.py
-      - tests/native_eject_forensics.py
-      - tests/test_native_eject_forensics.py
-      - .github/workflows/native-eventual-eject.yml
   workflow_dispatch:
 
 permissions:

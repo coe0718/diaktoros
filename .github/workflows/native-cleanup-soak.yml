@@ -1,18 +1,6 @@
 name: Native cleanup 200-turn soak
 
 on:
-  pull_request:
-    paths:
-      - diaktoros/native_cleanup.py
-      - diaktoros/native_recovery.py
-      - diaktoros/native_lifecycle.py
-      - diaktoros/native_anchor.py
-      - diaktoros/native_storage.py
-      - diaktoros/seatbelt.py
-      - tests/native_cleanup_soak.py
-      - tests/test_native_cleanup_soak.py
-      - tests/test_native_cleanup.py
-      - .github/workflows/native-cleanup-soak.yml
   workflow_dispatch:
 
 permissions:

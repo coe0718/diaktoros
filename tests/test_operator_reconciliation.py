@@ -74,10 +74,12 @@ class OperatorReconciliation(unittest.TestCase):
         self.assertEqual(self.sup.get('waiting')['state'], 'pending')
         self.assertEqual(self.cli('reconcile', str(self.db), self.row['id'],
                                   '--reason', 'inspected external writes',
-                                  '--acknowledge-no-live-worker').stdout.strip(), 'reconciled')
+                                  '--acknowledge-no-live-worker',
+                                  '--acknowledge-native-descendants-stopped').stdout.strip(), 'reconciled')
         self.assertEqual(self.cli('reconcile', str(self.db), self.row['id'],
                                   '--reason', 'inspected external writes',
-                                  '--acknowledge-no-live-worker').stdout.strip(), 'unchanged')
+                                  '--acknowledge-no-live-worker',
+                                  '--acknowledge-native-descendants-stopped').stdout.strip(), 'unchanged')
         self.assertEqual(self.sup.get('d')['state'], 'failed')
         self.assertEqual(self.sup.get('waiting')['state'], 'pending')
 

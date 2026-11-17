@@ -771,6 +771,17 @@ def _stage_source(root: Path, source: Path, scope):
     return code, home, client
 
 
+def _check_turn(loop, scope, no_write):
+    if scope.repo != loop.get('repo') or scope.role not in TOOLS:
+        raise TurnDenied('scope mismatch')
+    if no_write is not False and (no_write is not True or scope.role != 'reviewer'):
+        raise TurnDenied('no-write mode supports only a reviewer turn')
+    if sys.platform == 'darwin':
+        from . import native_backend
+        if reason := native_backend.unavailable():
+            raise TurnDenied(reason)
+
+
 def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path,
              runtime: Path, rust: Path, upstream: str, key: str, model: str,
              prompt: str, timeout: int = 600, work_root: Path | None = None,
@@ -810,10 +821,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     after the checkout is staged, the dependencies prefetched and the stop check passed. A turn
     that fails or is refused earlier never calls it (#1378: the daily turn cap counts from it).
     """
-    if scope.repo != loop.get('repo') or scope.role not in TOOLS:
-        raise TurnDenied('scope mismatch')
-    if no_write is not False and (no_write is not True or scope.role != 'reviewer'):
-        raise TurnDenied('no-write mode supports only a reviewer turn')
+    _check_turn(loop, scope, no_write)
     # The host (gate enqueue) creates the work root; a worker never recreates host state (#108).
     if hostdirs.in_worker():  # checks only: nothing is created here
         hostdirs.ensure(Path(work_root or loop['state_dir']).expanduser())

@@ -17,6 +17,7 @@ from diaktoros.cli import setup_command
 
 class NativeSetup(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.dict(os.environ, {'DIAKTOROS_NATIVE_MACOS': '1'}))
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
@@ -194,6 +195,7 @@ class NativeSetup(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "darwin", "requires actual macOS containment")
 class NativeSelftestBoundary(unittest.TestCase):
     def test_containment_probe_uses_real_native_backend_without_credentials(self):
+        self.enterContext(patch.dict(os.environ, {'DIAKTOROS_NATIVE_MACOS': '1'}))
         from diaktoros import native_backend, trusted_turn
         self.assertEqual(native_backend.unavailable(), "")
         self.assertEqual(runtime_detect.native_tools()[1], "")

@@ -1,11 +1,6 @@
 name: Native APFS eject forensics
 
 on:
-  pull_request:
-    paths:
-      - tests/native_eject_forensics.py
-      - tests/test_native_eject_forensics.py
-      - .github/workflows/native-eject-forensics.yml
   workflow_dispatch:
 
 permissions:

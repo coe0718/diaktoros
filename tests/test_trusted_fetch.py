@@ -581,13 +581,14 @@ class TrustedFetchTests(unittest.TestCase):
         from _tarball_redirect_fixture import ApiServer, CodeloadServer
         from unittest import mock
 
-        # Distinct hostnames exercise the host check without requiring a macOS
-        # loopback alias. The disallowed target must not receive even one request.
+        # Keep distinct loopback IPs on Linux; macOS needs an explicitly configured
+        # alias for 127.0.0.2, so only Darwin uses a different hostname instead.
         allowed = CodeloadServer(body=self.tarball, host="127.0.0.1")   # never contacted
         self.addCleanup(allowed.close)
-        other = CodeloadServer(body=b"stolen", host="127.0.0.1")
+        other = CodeloadServer(body=b"stolen", host="127.0.0.1" if sys.platform == 'darwin' else "127.0.0.2")
         self.addCleanup(other.close)
-        api = ApiServer(location=f"http://localhost:{other.port}/steal.tar.gz")
+        target = f"http://localhost:{other.port}" if sys.platform == 'darwin' else other.base
+        api = ApiServer(location=f"{target}/steal.tar.gz")
         self.addCleanup(api.close)
 
         with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \

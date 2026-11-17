@@ -30,6 +30,7 @@ class NativeProduction(unittest.TestCase):
                 self.fail('prepared native Hermes/Rust fixture required')
             self.skipTest('prepared native Hermes/Rust fixture required')
         with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, {'DIAKTOROS_NATIVE_MACOS': '1'}))
             root = Path(stack.enter_context(tempfile.TemporaryDirectory(dir='/tmp'))).resolve()
             root.chmod(0o700)
             key = 'HOST_ONLY_MODEL_SENTINEL'

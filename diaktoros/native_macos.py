@@ -27,6 +27,87 @@ def _work_roots(layout: turn_layout.TurnLayout, *, role: str):
     return (), (layout.home, layout.work, layout.scratch)
 
 
+def _build_roots(sdk, developer_tools, dependencies):
+    build_roots = ()
+    if any(p is not None for p in (sdk, developer_tools, dependencies)):
+        if any(p is None for p in (sdk, developer_tools, dependencies)):
+            raise ValueError('native builds require SDK, developer tools and vendored dependencies')
+        sdk, developer_tools, dependencies = (Path(p).resolve(strict=True) for p in
+                                               (sdk, developer_tools, dependencies))
+        if not (developer_tools / 'bin/clang').is_file():
+            raise ValueError('developer tools must name the selected compiler directory')
+        build_roots = (sdk, developer_tools, dependencies)
+    return build_roots
+
+
+def _stage_environment(layout, *, rust, model, inference_socket, broker_socket, build_roots):
+    home, client, venv, scratch = layout.home, layout.client, layout.venv, layout.scratch
+    plugin = home / 'plugins' / PROVIDER
+    plugin.mkdir(parents=True, mode=0o700)
+    shutil.copyfile(Path(__file__).with_name('seatbelt_wire.py'), plugin / '__init__.py')
+    (plugin / 'plugin.yaml').write_text(
+        f'name: {PROVIDER}\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
+    (home / 'config.yaml').write_text(
+        f'model:\n  provider: {PROVIDER}\n  default: {json.dumps(model)}\n'
+        '  base_url: http://localhost/v1\n  api_key: sandbox-dummy\n'
+        f'plugins:\n  enabled: [{PROVIDER}]\nmemory:\n  memory_enabled: false\n')
+    shell = native_backend.stage_shell(client / 'native-shell')
+    env = {**layout.environment(), 'USER': 'agent', 'LOGNAME': 'agent',
+           'SHELL': str(shell), 'PATH': f'{shell.parent}:{venv}/bin:{rust}/bin:/usr/bin:/bin',
+           'PYTHONDONTWRITEBYTECODE': '1',
+           'CARGO_NET_OFFLINE': 'true', 'GIT_CONFIG_GLOBAL': '/dev/null',
+           'GIT_CONFIG_SYSTEM': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
+           'OPENAI_API_KEY': 'sandbox-dummy',
+           'DIAKTOROS_INFERENCE_SOCKET': str(inference_socket),
+           'DIAKTOROS_BROKER_SOCKET': str(broker_socket)}
+    if build_roots:
+        sdk, developer_tools, dependencies = build_roots
+        # Direct tools avoid rustup/xcrun proxies looking in the operator's profile.
+        # Unit separators preserve SDK/compiler paths containing spaces.
+        compiler = developer_tools / 'bin/clang'
+        env.update(SDKROOT=str(sdk), CC=str(compiler),
+                   AR=str(developer_tools / 'bin/ar'),
+                   CARGO_ENCODED_RUSTFLAGS='\x1f'.join(
+                       ('-C', f'linker={compiler}', '-C', 'link-arg=-isysroot',
+                        '-C', f'link-arg={sdk}')))
+        cargo_home = scratch / 'cargo'
+        cargo_home.mkdir(mode=0o700)
+        (cargo_home / 'config.toml').write_text(
+            '[source.crates-io]\nreplace-with = "vendored"\n'
+            f'[source.vendored]\ndirectory = {json.dumps(str(dependencies))}\n')
+    return env
+
+
+def _capture(profile, entry, *, adapter, workspace, env, work, timeout):
+    # Profile file lives outside every writable root. A file avoids ARG_MAX limits.
+    with tempfile.TemporaryDirectory(prefix='dk-policy-', dir='/tmp') as directory:
+        policy = Path(directory) / 'profile.sb'
+        policy.write_text(profile.text)
+        policy.chmod(0o400)
+        try:
+            recovery = None
+            if adapter is not None:
+                # Arm durably before launch. Only the kernel-restricted mode
+                # permits a group-drained receipt to authorize storage disposal.
+                native_recovery.arm(workspace)
+                recovery = workspace.root
+            return native_lifecycle.capture(profile.command(policy, entry, spawn_adapter=adapter), env=env,
+                                            cwd=work, timeout=timeout + 30,
+                                            **({'recovery_root': recovery} if recovery else {}))
+        except native_lifecycle.StoragePending:
+            workspace.active = False
+            raise
+        except native_lifecycle.WatchdogLost:
+            # Guardian completion or live anchor proof verified disposal of
+            # this exact volume. Context exit must not touch absent paths.
+            workspace.active = False
+            workspace.root = None
+            raise
+        except native_lifecycle.CleanupIncomplete:
+            workspace.retain('native watchdog completion could not be verified')
+            raise
+
+
 def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         work: Path, export: Path, client: Path, scratch: Path, query: Path,
         inference_socket: Path, broker_socket: Path, model: str, role: str,
@@ -61,15 +142,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
     layout = turn_layout.TurnLayout(code=code, venv=venv, home=home, work=work,
                                     export=export, client=client, scratch=scratch, query=query)
     read_work, writes = _work_roots(layout, role=role)
-    build_roots = ()
-    if any(p is not None for p in (sdk, developer_tools, dependencies)):
-        if any(p is None for p in (sdk, developer_tools, dependencies)):
-            raise ValueError('native builds require SDK, developer tools and vendored dependencies')
-        sdk, developer_tools, dependencies = (Path(p).resolve(strict=True) for p in
-                                               (sdk, developer_tools, dependencies))
-        if not (developer_tools / 'bin/clang').is_file():
-            raise ValueError('developer tools must name the selected compiler directory')
-        build_roots = (sdk, developer_tools, dependencies)
+    build_roots = _build_roots(sdk, developer_tools, dependencies)
     adapter = Path(spawn_adapter).resolve(strict=True) if spawn_adapter is not None else None
     if adapter is not None and not adapter.is_file():
         raise ValueError('spawn adapter must be a trusted compiled file')
@@ -78,38 +151,8 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
                                           *build_roots, *read_work, *adapter_roots),
                                write_roots=writes,
                                sockets=(inference_socket, broker_socket))
-    plugin = home / 'plugins' / PROVIDER
-    plugin.mkdir(parents=True, mode=0o700)
-    shutil.copyfile(Path(__file__).with_name('seatbelt_wire.py'), plugin / '__init__.py')
-    (plugin / 'plugin.yaml').write_text(
-        f'name: {PROVIDER}\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
-    (home / 'config.yaml').write_text(
-        f'model:\n  provider: {PROVIDER}\n  default: {json.dumps(model)}\n'
-        '  base_url: http://localhost/v1\n  api_key: sandbox-dummy\n'
-        f'plugins:\n  enabled: [{PROVIDER}]\nmemory:\n  memory_enabled: false\n')
-    shell = native_backend.stage_shell(client / 'native-shell')
-    env = {**layout.environment(), 'USER': 'agent', 'LOGNAME': 'agent',
-           'SHELL': str(shell), 'PATH': f'{shell.parent}:{venv}/bin:{rust}/bin:/usr/bin:/bin',
-           'PYTHONDONTWRITEBYTECODE': '1',
-           'CARGO_NET_OFFLINE': 'true', 'GIT_CONFIG_GLOBAL': '/dev/null',
-           'GIT_CONFIG_SYSTEM': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
-           'OPENAI_API_KEY': 'sandbox-dummy',
-           'DIAKTOROS_INFERENCE_SOCKET': str(inference_socket),
-           'DIAKTOROS_BROKER_SOCKET': str(broker_socket)}
-    if build_roots:
-        # Direct tools avoid rustup/xcrun proxies looking in the operator's profile.
-        # Unit separators preserve SDK/compiler paths containing spaces.
-        compiler = developer_tools / 'bin/clang'
-        env.update(SDKROOT=str(sdk), CC=str(compiler),
-                   AR=str(developer_tools / 'bin/ar'),
-                   CARGO_ENCODED_RUSTFLAGS='\x1f'.join(
-                       ('-C', f'linker={compiler}', '-C', 'link-arg=-isysroot',
-                        '-C', f'link-arg={sdk}')))
-        cargo_home = scratch / 'cargo'
-        cargo_home.mkdir(mode=0o700)
-        (cargo_home / 'config.toml').write_text(
-            '[source.crates-io]\nreplace-with = "vendored"\n'
-            f'[source.vendored]\ndirectory = {json.dumps(str(dependencies))}\n')
+    env = _stage_environment(layout, rust=rust, model=model, inference_socket=inference_socket,
+                             broker_socket=broker_socket, build_roots=build_roots)
     entry = layout.hermes_entry(provider=PROVIDER, model=model, max_steps=max_steps, timeout=timeout)
     if adapter is not None:
         profile = replace(profile, text=profile.text + '(allow syscall-unix)\n'
@@ -118,30 +161,5 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         shutil.copyfile(Path(__file__).with_name('native_python_spawn.py'), helper)
         helper.chmod(0o444)
         entry = native_python_spawn.entry(entry)
-    # Profile file lives outside every writable root. A file avoids ARG_MAX limits.
-    with tempfile.TemporaryDirectory(prefix='dk-policy-', dir='/tmp') as directory:
-        policy = Path(directory) / 'profile.sb'
-        policy.write_text(profile.text)
-        policy.chmod(0o400)
-        try:
-            recovery = None
-            if adapter is not None:
-                # Arm durably before launch. Only the kernel-restricted mode
-                # permits a group-drained receipt to authorize storage disposal.
-                native_recovery.arm(workspace)
-                recovery = workspace.root
-            return native_lifecycle.capture(profile.command(policy, entry, spawn_adapter=adapter), env=env,
-                                            cwd=work, timeout=timeout + 30,
-                                            **({'recovery_root': recovery} if recovery else {}))
-        except native_lifecycle.StoragePending:
-            workspace.active = False
-            raise
-        except native_lifecycle.WatchdogLost:
-            # Guardian completion or live anchor proof verified disposal of
-            # this exact volume. Context exit must not touch absent paths.
-            workspace.active = False
-            workspace.root = None
-            raise
-        except native_lifecycle.CleanupIncomplete:
-            workspace.retain('native watchdog completion could not be verified')
-            raise
+    return _capture(profile, entry, adapter=adapter, workspace=workspace,
+                    env=env, work=work, timeout=timeout)
