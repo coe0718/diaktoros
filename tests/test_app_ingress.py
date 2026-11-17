@@ -726,7 +726,8 @@ class Dispatch(unittest.TestCase):
         """#1969: ``--drain --loop`` on an App loop whose pause flag is damaged says so; the loop
         has no repo hook list, so "hook list unreadable" was the wrong reason."""
         import argparse
-        from diaktoros import migrate, watch_mode
+        from diaktoros import watch_mode
+        from diaktoros.state import migrate
         from scripts import watchdog
         loop = self.app_loop()
         (state_mod.state_for(loop).dir / app_ingress.FILE).write_text("{not json")

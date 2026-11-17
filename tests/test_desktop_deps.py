@@ -23,8 +23,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_issue_deps as tid  # noqa: E402
 import test_issue_fix as tif  # noqa: E402
 from diaktoros import (cli, config, desktop_api, explain as explain_mod, fix_hold,  # noqa: E402
-                       issue_deps, ledger, one_shot_action as actions, run_supervisor,
+                       issue_deps, one_shot_action as actions, run_supervisor,
                        state as state_mod)
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 DepsFixture = type("DepsFixture", (tid.Deps,),

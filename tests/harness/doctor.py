@@ -703,7 +703,8 @@ def group_doctor() -> None:
     # #496 (adjudication on #537): the round trip on a correct install. Backup, remove everything
     # the archive says restore owns (its files, its routes, the watchdog job), restore: it exits 0,
     # its own doctor step says every check verified, and doctor afterwards is all green again.
-    from diaktoros import backup, routes
+    from diaktoros import routes
+    from diaktoros.state import backup
     archive = TMP / "round-trip.tar.gz"
     rc, out = run_doctor_cli("backup", "--out", str(archive))
     check("round trip: backup of a correct install", rc, 0)

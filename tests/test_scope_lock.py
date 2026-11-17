@@ -142,7 +142,7 @@ class ScopeLock(unittest.TestCase):
     def test_broker_push_holds_then_release_goes_through(self):
         """The broker's push operation (RunBroker._dispatch) is the enforcing entry point."""
         import json
-        from diaktoros import ledger
+        from diaktoros.state import ledger
         from diaktoros.run_supervisor import Supervisor
         db = self.root / "runs.sqlite"
         sup = Supervisor(db)

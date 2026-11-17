@@ -21,7 +21,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import fixer_answers, ledger, review_kick  # noqa: E402
+from diaktoros import fixer_answers, review_kick  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import broker, broker_client, config, gh, run_supervisor, safe_push  # noqa: E402
