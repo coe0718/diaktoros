@@ -61,19 +61,20 @@ class LightPoll(sm.Base):
             con.execute("UPDATE runs SET state='pending', retry_at=NULL, owner=NULL, "
                         "error=?", (f"{CI_HOLD} on {HEAD[:7]} — 1 check(s) still running or not reported",))
 
-    def claim(self):
+    def claim(self, marker=None, holds=None, events=()):
         self.calls.clear()
         with mock.patch.object(config, "by_repo", return_value=self.loop), \
              mock.patch.object(gh, "api", side_effect=self.fake_api), \
              mock.patch.object(gh, "reviews", side_effect=lambda *a, **k: self.calls.append("reviews") or []), \
              mock.patch.object(gh, "issue_events_read",
-                               side_effect=lambda *a, **k: self.calls.append("events") or ([], "")), \
+                               side_effect=lambda *a, **k: self.calls.append("events") or (list(events), "")), \
              mock.patch.object(gh, "issue_comments_read",
                                side_effect=lambda *a, **k: self.calls.append("comments") or ([], "")), \
              mock.patch("diaktoros.state.state_for") as state_for, \
              mock.patch.object(observer, "notify") as notify:
             self.notify = notify
-            state_for.return_value.breach_get.return_value = None
+            state_for.return_value.breach_get.return_value = marker
+            state_for.return_value.pr_holds.return_value = holds or {}
             return self.sup._claim()
 
     def row(self):
@@ -169,6 +170,39 @@ class LightPoll(sm.Base):
             con.execute("UPDATE runs SET error=NULL")
         self.assertIsNotNone(self.claim())
         self.assertEqual(self.calls.count("reviews"), 1, self.calls)
+
+    def test_an_escalated_head_is_retired_while_ci_holds(self):
+        """#1708: an operator's escalation (#459) at this head retires the held row at the next
+        poll, as the full claim would, even under a red hold that has no time limit."""
+        self.hold()
+        self.assertIsNone(self.claim())
+        self.assertEqual(self.row()[0], "waiting")             # control: still held for CI
+        self.hold()
+        marker = {"head": HEAD, "status": "awaiting-adjudication", "escalated": {"by": "boss"}}
+        self.assertIsNone(self.claim(marker=marker))
+        self.assertEqual(self.row()[:2], ("cancelled", "escalated to adjudication at this head"))
+        self.assertNotIn("/commits/" + HEAD + "/check-runs", self.calls)   # no CI read spent
+
+    def test_an_escalation_at_an_older_head_keeps_the_light_poll(self):
+        self.hold()
+        marker = {"head": "c" * 40, "status": "awaiting-adjudication", "escalated": {"by": "boss"}}
+        self.assertIsNone(self.claim(marker=marker))
+        self.assertEqual(self.row()[0], "waiting")
+        self.assertNotIn("events", self.calls)
+
+    def test_a_maintainer_held_pr_takes_the_full_claims_hold_read(self):
+        """#1708: a PR the sweep recorded as held (#477) leaves the CI hold for the claim's live
+        hold read, which parks it pending like any held PR's row, not re-timed as a CI hold."""
+        hold = {"by": "boss", "at": "2026-01-01T00:00:00Z", "how": "label"}
+        labeled = [{"event": "labeled", "label": {"name": "diaktoros:hold"},
+                    "actor": {"login": "boss"}, "created_at": "2026-01-01T00:00:00Z"}]
+        self.hold()
+        self.assertIsNone(self.claim(holds={7: hold}, events=labeled))
+        self.assertIn("events", self.calls)                    # the claim's pr_hold.read ran
+        self.assertNotIn("/commits/" + HEAD + "/check-runs", self.calls)
+        state, _, retry_at = self.row()
+        self.assertEqual((state, retry_at), ("pending", None))  # parked by the hold, not re-timed
+        self.assertFalse(self.sup.held_for_ci)
 
 
 if __name__ == "__main__":

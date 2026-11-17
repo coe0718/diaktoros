@@ -297,29 +297,7 @@ class ClaimAndLaunch:
         """The production claim's live reads, in order: an escalated head, a maintainer's
         hold, the adjudicator's facts, the fixer's verdict. Each may add to ``read``."""
         if row['seat'] in ('reviewer', 'fixer') and not read.superseded:
-            # The operator escalated this head (#459): it waits for a ruling, so a review or
-            # fix queued for it is retired, as a spent cap would have stopped it.
-            from .. import config, gate, state as state_mod
-            try:
-                escalated_loop = config.by_repo(row['repo'])
-                marker = (state_mod.state_for(escalated_loop).breach_get(row['pr'])
-                          if escalated_loop is not None else None)
-                # A head the sweep escalated because of a dispute (#894) still takes the
-                # maintainer's requested re-review: an approval then supersedes the ruling.
-                rereview = (str(row['turn_key'] or '').startswith(run_supervisor.DISPUTE_KEY)
-                            and ((marker or {}).get('escalated') or {}).get('by') == 'dispute')
-                # Nor is the fix of a shadow review the adjudicator upheld (#1004 part 3): that
-                # ruling is why it exists, and its marker stays at the head. Whether the ruling
-                # still stands is _claim_read_fixer's (upheld_shadow_ruling).
-                upheld = (row['seat'] == 'fixer'
-                          and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY)
-                          and ((marker or {}).get('escalated') or {}).get('by')
-                          == gate.SHADOW_ESCALATION)
-                if (escalated_loop is not None and not rereview and not upheld
-                        and gate.escalated(marker, row['head'])):
-                    read.superseded = 'escalated to adjudication at this head'
-            except Exception as exc:
-                read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
+            self._claim_read_escalated(row, read)
         if row['seat'] in claims.PR_HOLD_SEATS and not read.superseded:
             # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
             # starts after release. An unreadable hold is not "not held": it waits too.
@@ -346,6 +324,33 @@ class ClaimAndLaunch:
                     read.retry_read = True
             except Exception:
                 read.retry_read = True
+
+    def _claim_read_escalated(self, row, read: _ClaimRead) -> None:
+        """The operator escalated this head (#459): it waits for a ruling, so a review or fix
+        queued for it is retired (``read.superseded``), as a spent cap would have stopped it.
+        A local read (the breach marker). The full claim asks it, and so does the CI light
+        poll (``_ci_poll``, #1708), which sends an escalated row to the full claim."""
+        from .. import config, gate, state as state_mod
+        try:
+            escalated_loop = config.by_repo(row['repo'])
+            marker = (state_mod.state_for(escalated_loop).breach_get(row['pr'])
+                      if escalated_loop is not None else None)
+            # A head the sweep escalated because of a dispute (#894) still takes the
+            # maintainer's requested re-review: an approval then supersedes the ruling.
+            rereview = (str(row['turn_key'] or '').startswith(run_supervisor.DISPUTE_KEY)
+                        and ((marker or {}).get('escalated') or {}).get('by') == 'dispute')
+            # Nor is the fix of a shadow review the adjudicator upheld (#1004 part 3): that
+            # ruling is why it exists, and its marker stays at the head. Whether the ruling
+            # still stands is _claim_read_fixer's (upheld_shadow_ruling).
+            upheld = (row['seat'] == 'fixer'
+                      and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY)
+                      and ((marker or {}).get('escalated') or {}).get('by')
+                      == gate.SHADOW_ESCALATION)
+            if (escalated_loop is not None and not rereview and not upheld
+                    and gate.escalated(marker, row['head'])):
+                read.superseded = 'escalated to adjudication at this head'
+        except Exception as exc:
+            read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
 
     def _claim_read_adjudicator(self, row, read: _ClaimRead) -> None:
         from .. import config
@@ -797,6 +802,8 @@ class ClaimAndLaunch:
         from .. import config, gh
         try:
             loop = config.by_repo(row['repo'])
+            if loop is not None and self._ci_poll_defers(row, loop):
+                return False
             queued = (gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
                              login=loop['read_token']) if loop is not None else None)
             if (not isinstance(queued, dict) or queued.get('number') != row['pr']
@@ -817,6 +824,20 @@ class ClaimAndLaunch:
             self.held_for_ci = True
             self.failure_notice(row['id'], 'waiting')   # once per kind, as a held turn's is
         return True
+
+    def _ci_poll_defers(self, row, loop: dict) -> bool:
+        """Whether a held-for-CI row must take the full claim now, whatever CI says (#1708):
+        its head is escalated for a ruling (the claim's own ``_claim_read_escalated``, which
+        then retires it), or the watchdog sweep has recorded a maintainer's hold on the PR
+        (``pr_holds``, #477), which the claim's live ``pr_hold.read`` then decides. Both are
+        local reads, so the light poll stays light. A hold placed since the last sweep is seen
+        at the sweep after it, or by the full claim once CI settles."""
+        from .. import state as state_mod
+        read = _ClaimRead()
+        self._claim_read_escalated(row, read)
+        if read.superseded or read.read_error:
+            return True
+        return row['pr'] in state_mod.state_for(loop).pr_holds()
 
     def _shadow_escalation(self, turn: _Turn) -> None:
         """Right after a shadow review is recorded (#1004 part 2): if it disagrees with the
