@@ -12,7 +12,7 @@ import secrets
 from typing import cast
 
 from . import config, gate, gh, run_supervisor, state as state_mod, transition
-from .ledger import read_only
+from .state.ledger import read_only
 from .util import now_iso
 
 

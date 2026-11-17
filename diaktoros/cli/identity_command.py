@@ -114,7 +114,8 @@ def _identity_runs(loop: dict, seat: str) -> tuple[str, ...] | None:
 def _runs_in_flight(loop: dict, seat: str) -> tuple[int, int]:
     """``(busy, uncertain)``: the runs of ``loop`` acting as ``seat``'s identity that are in
     flight, and how many of them are uncertain. ``(0, 0)`` while no run ledger exists yet."""
-    from .. import ledger, run_supervisor
+    from .. import run_supervisor
+    from ..state import ledger
     db = run_supervisor.production_ledger()
     if not db.exists():
         return 0, 0
