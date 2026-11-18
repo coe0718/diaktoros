@@ -111,8 +111,9 @@ def _clip(text: object, limit: int) -> str:
     return text if len(data) <= limit else data[:limit].decode(errors='ignore') + ' […truncated]'
 
 
-def pr_record(loop: dict, row, reviews, comments=None) -> str:
-    """The reviewer verdicts and the fixer's published answers, as the host read them.
+def pr_record(loop: dict, row, reviews, comments=None, seen: list | None = None) -> str:
+    """The reviewer verdicts and the fixer's published answers, as the host read them. ``seen``
+    receives the ids of the reviewer reviews the record shows, after both caps (#2402).
 
     Answers are only the comments ``fixer_answers.parse_answers_comment`` recognizes (the fixer seat's
     own login *and* the host's marker), and only those answering a verdict in ``reviews`` — so a
@@ -128,6 +129,7 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
             if state in ('APPROVED', 'CHANGES_REQUESTED', 'COMMENTED'):
                 answered.add(str(review.get('commit_id') or ''))
                 items.append((str(review.get('submitted_at') or ''),
+                              review.get('id'),
                               f"reviewer {gate.reviewer_login(review)} — {state} at "
                               f"{str(review.get('commit_id') or '?')[:12]} "
                               f"({review.get('submitted_at') or 'undated'})",
@@ -138,7 +140,7 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
             what = (f"fixer's merge of the base into {found['base'][:12]} (a merge only: it "
                     "answers no finding)" if found['merge'] else
                     f"fixer's answers to the verdict at {found['base'][:12]}")     # #1907
-            items.append((found['created_at'],
+            items.append((found['created_at'], None,
                           f"{what}, pushed as {found['head'][:12]} "
                           f"({found['created_at'] or 'undated'}; the fixer "
                           "model's own words, published through the broker)",
@@ -148,12 +150,14 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
     if not items:
         return '(no reviewer verdicts or fixer answers could be read for this PR)'
     parts, total = [], 0
-    for _, title, body in reversed(items):  # newest first survive the overall cap
+    for _, review_id, title, body in reversed(items):  # newest first survive the overall cap
         part = f"### {title}\n{_clip(body, RECORD_ITEM_BYTES) or '(empty)'}"
         total += len(part.encode())
         if total > RECORD_BYTES:
             break
         parts.append(part)
+        if seen is not None and type(review_id) is int:
+            seen.append(review_id)
     return '\n\n'.join(reversed(parts))
 
 
