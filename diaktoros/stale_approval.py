@@ -6,9 +6,10 @@ ready-to-merge queue can exclude the PR through :func:`is_stale`) and sends one 
 notice per PR and head. Nothing is written to GitHub. A PR that is not approved at its current head
 is never flagged, and a new head clears the record (it has no approval yet).
 
-A missing required check only counts once ``MISSING_WAIT_S`` has passed since the approval was
-submitted. It can only fire when ``required_checks`` names checks: with none, every reported check
-gates and none can be "missing".
+A missing required check only counts once ``MISSING_WAIT_S`` has passed since the approval reached
+that head: when it was submitted, or, for the approval the host's base merge carried to a head it
+made, when that merge made it (#2291, ``base_merge.carried_at``), not the old head's submission. It can only fire when
+``required_checks`` names checks: with none, every reported check gates and none can be "missing".
 """
 from __future__ import annotations
 
@@ -20,9 +21,15 @@ KEY = "stale_approvals"
 MISSING_WAIT_S = 30 * 60
 
 
-def _epoch(review: dict) -> float | None:
+def _epoch(loop: dict, number: int, head: str, review: dict) -> float | None:
+    """When the approval reached ``head``: the host's merge time for the approval it carried there,
+    as a copy or as GitHub moved it (``base_merge.carried_at``), else its submission."""
+    from . import base_merge
     from .util import iso_epoch
-    return iso_epoch(review.get("submitted_at") if isinstance(review, dict) else None)
+    if not isinstance(review, dict):
+        return None
+    carried = base_merge.carried_at(loop, number, head, review)
+    return carried if carried is not None else iso_epoch(review.get("submitted_at"))
 
 
 def assess(loop: dict, state: ci.CIState | None, approved_at: float | None,
@@ -84,7 +91,7 @@ def sweep(loop: dict, st, prs: list, watch: dict, log=lambda _msg: None) -> None
             if isinstance(old, dict) and old.get("head") == head:
                 kept[str(number)] = old       # unreadable CI neither flags nor clears
             continue
-        why = assess(loop, state, _epoch(latest), now)
+        why = assess(loop, state, _epoch(loop, number, head, latest), now)
         if not why:
             continue                          # green (or still running): cleared
         entry = {"head": head, "why": why, "at": (old or {}).get("at")
