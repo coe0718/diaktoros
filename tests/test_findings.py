@@ -144,6 +144,14 @@ class Findings(unittest.TestCase):
                                    "F1: fixed\nF2: fixed\nF9: fixed\n")
             self.assertNotIn("first review round", later)
 
+    def test_a_later_round_with_no_recorded_findings_is_not_called_the_first(self):
+        # #2275/#2278: round 1 recorded no finding (``last_head`` set, findings empty), so the
+        # round-N rules apply; the refusal must not give round-1 advice beside them.
+        for entry in ({"last_head": H1}, {"last_head": H1, "findings": {}}):
+            reason = findings.check(self.loop, entry, 9, H2, "F1: open\n", "REQUEST_CHANGES")
+            self.assertIn("no such finding F1", reason)
+            self.assertNotIn("first review round", reason)
+
     def test_new_finding_starting_with_a_state_word_is_recorded(self):
         findings.record(self.loop, 7, H2,
                         "F1: fixed\nF2: open\nF3: open file handle leaks in x.py\n"

@@ -427,6 +427,33 @@ class GateFailureTest(unittest.TestCase):
 
     # -- a payload that was not kept is never promised a retry ---------------------------------
 
+    def test_a_recorded_failure_keeps_its_loops_ingress_for_the_redeliver_hint(self):
+        # #2295 (#2539 review F1): a repo-hooks loop's seat route may be named dk-app-*. The entry a
+        # real gate failure records says which ingress it came by, so its hint names the repo's
+        # hook, not an App's log, both from the gateway's run and from an in-process call; without
+        # the field the old entries' fallback would read the route's name and say App.
+        cfg = json.loads((t.LOOPS_DIR / "widgets.json").read_text())
+        cfg["seats"]["reviewer"]["route"] = "dk-app-widgets-review"
+        (t.LOOPS_DIR / "widgets.json").write_text(json.dumps(cfg, indent=2))
+        broken = t.pr(7, requested=t.SEAT)
+        broken["head"] = "not-an-object"
+        t.set_prs({"7": broken})
+        proc, _ = gateway_run("gate_reviewer.py", t.pr_payload(7))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        try:
+            raise RuntimeError("in-process failure")
+        except RuntimeError as err:
+            gate_failures.record_in_process("gate_fixer", t.pr_payload(7), err, time.monotonic())
+        entries = {e.get("via", "gateway"): e for e in loop_entries().values()}
+        self.assertEqual(set(entries), {"gateway", gate_failures.IN_PROCESS})
+        for via, entry in entries.items():
+            with self.subTest(via=via):
+                self.assertEqual(entry["ingress"], "repo-hooks")
+                hint = gate_failures.redeliver_hint(entry)
+                self.assertIn(f"the hook ending in /webhooks/{entry['route']}", hint)
+                self.assertNotIn("App's settings", hint)
+        self.assertEqual(entries["gateway"]["route"], "dk-app-widgets-review")
+
     def test_a_payload_not_kept_says_how_to_redeliver_it(self):
         broken = t.pr(7, requested=t.SEAT)
         broken["head"] = "not-an-object"

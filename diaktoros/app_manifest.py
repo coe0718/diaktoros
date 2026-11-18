@@ -28,6 +28,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from .config import APP_ROUTE_PREFIX
 from .util import write_all
 
 GITHUB = "https://github.com"
@@ -73,10 +74,11 @@ def manifest(prefix: str, role: str, host: str, redirect: str, homepage: str) ->
             "default_permissions": {"metadata": "read", **PERMISSIONS[role]},
             "default_events": EVENTS.get(role, [])}
     if role == "reader":
-        # The route the reader's webhook delivers to (config.app_route: dk-app-<slug>). Its
-        # secret is GitHub's here; `hermes dk app-webhook --set` replaces it with the route's.
-        body["hook_attributes"] = {"url": f"{host.rstrip('/')}/webhooks/dk-app-{slug_of(name)}",
-                                   "active": True}
+        # The route the reader's webhook delivers to (config.app_route: dk-app-<slug>; the prefix
+        # is config's one spelling, #2296). Its secret is GitHub's here; `hermes dk app-webhook
+        # --set` replaces it with the route's.
+        route = APP_ROUTE_PREFIX + slug_of(name)
+        body["hook_attributes"] = {"url": f"{host.rstrip('/')}/webhooks/{route}", "active": True}
     else:
         body["hook_attributes"] = {"url": f"{host.rstrip('/')}/webhooks/none", "active": False}
     return body
