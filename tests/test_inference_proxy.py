@@ -867,9 +867,12 @@ class UpstreamConnect(unittest.TestCase):
         listener = socket.create_server(('127.0.0.1', 0))
         self.addCleanup(listener.close)
         address = ('127.0.0.1', listener.getsockname()[1])
-        for timeout, expected in ((None, None),
-                                  (socket._GLOBAL_DEFAULT_TIMEOUT, socket.getdefaulttimeout())):
-            with self.subTest(timeout=timeout):
+        self.addCleanup(socket.setdefaulttimeout, socket.getdefaulttimeout())
+        sentinel = socket._GLOBAL_DEFAULT_TIMEOUT
+        for timeout, default, expected in ((None, None, None), (sentinel, None, None),
+                                           (sentinel, 7.0, 7.0)):    # the default is kept
+            with self.subTest(timeout=timeout, default=default):
+                socket.setdefaulttimeout(default)
                 sock = inference_proxy._connect(address, timeout)
                 self.addCleanup(sock.close)
                 self.assertEqual(sock.gettimeout(), expected)
