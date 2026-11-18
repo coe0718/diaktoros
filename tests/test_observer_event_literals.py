@@ -27,14 +27,15 @@ from diaktoros import observer  # noqa: E402
 
 EVENT_POS = 2  # notify(loop, st, event, number, ...)
 
-# (file, enclosing function) -> (why the event is not a literal, how its literals are checked).
+# (file, enclosing function's qualified name: ``Class.method``, ``outer.inner``; #2369) ->
+# (why the event is not a literal, how its literals are checked).
 # ``("assigned", None)``: every binding of ``event`` in that function must be a string literal
 # assignment (``event = "x"``, ``event: str = "x"``, ``event, k = "x", …``) and is checked.
 # ``("param", index)``: the function forwards its ``event`` parameter (at ``index``) unchanged;
 # every call to it, anywhere scanned, must pass a known literal at that position (or ``event=``).
 # Either way the notify call must pass the bare name ``event``.
 ALLOWED = {
-    ("diaktoros/run_supervisor/notices.py", "failure_notice"):
+    ("diaktoros/run_supervisor/notices.py", "OperatorNotices.failure_notice"):
         ("the event (failed or held) depends on the run's state", ("assigned", None)),
     ("diaktoros/fix_hold.py", "_notice"):
         ("a wrapper for the issue hand-off's held and fixing notices", ("param", 2)),
@@ -150,15 +151,23 @@ def _literals(node):
 
 
 def _functions(tree):
-    """Each node of ``tree`` mapped to the name of its innermost enclosing function."""
+    """Each node of ``tree`` mapped to ``(qualified name, node)`` of its innermost enclosing
+    function (``OperatorNotices.failure_notice``, ``outer.inner``), or ``(None, None)``. The
+    node itself, not a name, is what an allowed call is checked against (#2369, #2373): a
+    second function of the same name in the file is not the one ``ALLOWED`` reviewed."""
     owner = {}
 
-    def visit(node, name):
+    def visit(node, inner, prefix):
         for child in ast.iter_child_nodes(node):
-            inner = child.name if isinstance(child, _FUNCS) else name
-            owner[child] = inner
-            visit(child, inner)
-    visit(tree, None)
+            here, below = inner, prefix
+            if isinstance(child, _FUNCS):
+                here = (prefix + child.name, child)
+                below = here[0] + "."
+            elif isinstance(child, ast.ClassDef):
+                below = prefix + child.name + "."
+            owner[child] = here
+            visit(child, here, below)
+    visit(tree, (None, None), "")
     return owner
 
 
@@ -267,17 +276,16 @@ def _scan_notify(path, tree, wrappers):
             problems += [f"{where}: unknown observer event {v!r}"
                          for v in values if v not in observer.EVENTS]
             continue
-        func = owner.get(node)
+        func, fn = owner.get(node, (None, None))
         allowed = ALLOWED.get((path, func))
         if allowed is None:
             problems.append(f"{where}: event is not a string literal (in {func}); "
                             "pass a literal or add an ALLOWED entry saying why")
             continue
         how, pos = allowed[1]
-        fn = next(n for n in ast.walk(tree) if isinstance(n, _FUNCS) and n.name == func)
         problems += _check_allowed(fn, node, how, pos, where)
         if how == "param":
-            wrappers[(path, func)] = pos
+            wrappers[(path, fn.name)] = pos
     problems += [f"{path}:{node.lineno}: observer notify referenced, not called: its event "
                  "cannot be checked" for node in ast.walk(tree)
                  if _is_notify_ref(node, names) and id(node) not in called]
@@ -377,7 +385,7 @@ class ObserverEventLiterals(unittest.TestCase):
         for path, func in ALLOWED:
             tree = ast.parse(sources[path])
             owner, names = _functions(tree), _observer_names(tree)
-            self.assertTrue(any(_is_observer_notify(n, names) and owner.get(n) == func
+            self.assertTrue(any(_is_observer_notify(n, names) and owner.get(n)[0] == func
                                 for n in ast.walk(tree)), f"stale ALLOWED entry {path}:{func}")
 
     def test_planted_unknown_event_fails(self):
@@ -487,6 +495,16 @@ class ScanBypasses(unittest.TestCase):
                    "    dk.observer.notify(loop, st, 'no-such-event', 1)\n")
         self.assertFlags({"diaktoros/planted.py": planted},
                          "diaktoros/planted.py:5: unknown observer event 'no-such-event'")
+
+    def test_same_named_function_in_an_allowed_file_fails(self):
+        # #2369, #2373: ALLOWED was keyed by the bare name and checked the first function of
+        # that name, so a second ``failure_notice`` sending its ``event`` parameter passed.
+        sources = repo_sources()
+        sources["diaktoros/run_supervisor/notices.py"] += (
+            "\n\nclass Other:\n    def failure_notice(self, loop, st, event):\n"
+            "        from diaktoros import observer\n"
+            "        observer.notify(loop, st, event, 1)\n")
+        self.assertFlags(sources, "not a string literal (in Other.failure_notice)")
 
     def test_observer_module_passed_on_fails(self):
         # Review 2 of #2356: ``obs = observer; obs.notify(...)`` and the like hide the call.
