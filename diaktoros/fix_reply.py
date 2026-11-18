@@ -43,6 +43,8 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
     except Exception as exc:            # no ledger yet, or unreadable: the PR holds still run
         log(f"maintainer replies to issue-fix comments not checked: {type(exc).__name__}: {exc}")
         return
+    before = st.kv_get(st.dir / WAITING, {})
+    before = before if isinstance(before, dict) else {}
     waiting = {}
     for row in rows:
         number = row["number"]
@@ -56,6 +58,8 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
             continue
         if outcome == "waiting":
             waiting[str(number)] = row["comment_id"]
+        elif outcome == "unreadable" and str(number) in before:
+            waiting[str(number)] = before[str(number)]   # unknown is not "no wait" (#2019)
     st.kv_set(st.dir / WAITING, waiting)
 
 
