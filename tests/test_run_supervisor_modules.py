@@ -477,6 +477,21 @@ class Split(unittest.TestCase):
         self.assertEqual(_shadowed_submodules(straight), [])
         self.assertEqual(_local_submodule_shadows(straight, "x.py"), [])
 
+    def test_a_read_in_the_else_of_a_try_that_imports_it_is_not_a_shadow(self):
+        # #2522: a `try`'s `else` runs only after its body finished, so the body's own import has
+        # bound the name there. An import nested deeper in the body may not have run.
+        head = "from diaktoros.run_supervisor import views\ndef f(c):\n    try:\n"
+        tail = "    except ImportError:\n        return None\n    else:\n        return views\n"
+        safe = head + "        from diaktoros.run_supervisor import views\n" + tail
+        self.assertEqual(_shadowed_submodules(safe), [])
+        self.assertEqual(_local_submodule_shadows(safe, "x.py"), [])
+        namespace = {}
+        exec(compile(safe, "<f>", "exec"), namespace)
+        self.assertEqual(namespace["f"](True).__name__, "diaktoros.run_supervisor.views")
+        nested = head + "        if c:\n            from diaktoros.run_supervisor import views\n" + tail
+        self.assertEqual(_shadowed_submodules(nested), [(len(nested.splitlines()), "views")])
+        self.assertEqual(_local_submodule_shadows(nested, "x.py"), [("f", "views")])
+
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
         # (etc.); a real function of that name is still a function and is checked.

@@ -132,6 +132,9 @@ def scope_bindings(scope: ast.AST) -> list[tuple[int, str, bool]]:
     return found
 
 
+_TRIES = tuple(getattr(ast, n) for n in ("Try", "TryStar") if hasattr(ast, n))
+
+
 def _imports(node: ast.AST, name: str) -> bool:
     """Whether ``node`` is an import statement that binds ``name``."""
     return (isinstance(node, (ast.Import, ast.ImportFrom))
@@ -148,13 +151,18 @@ def _block_reads(stmts: list, name: str) -> list[tuple[int, int]]:
     """The reads of ``name`` in this statement block that run before an import of it in the
     same block, or in a block that holds this one, has bound it. Each nested block (the bodies of
     an if, loop, with, try, except handler or match case) starts unbound: an import inside one
-    binds the rest of that block only, since the block may not run (``if False: import ...``)."""
+    binds the rest of that block only, since the block may not run (``if False: import ...``).
+    The one exception is a ``try``'s ``else``: it runs only once the ``try`` body has finished, so
+    an import at that body's top level has bound it (#2522)."""
     found = []
     for stmt in stmts:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             found += _reads([stmt], name)          # decorators, bases, defaults: not the body
         else:
-            for _field, value in ast.iter_fields(stmt):
+            bound_else = isinstance(stmt, _TRIES) and any(_imports(s, name) for s in stmt.body)
+            for field, value in ast.iter_fields(stmt):
+                if bound_else and field == "orelse":
+                    continue
                 items = value if isinstance(value, list) else [value]
                 if items and isinstance(items[0], ast.stmt):
                     found += _block_reads(items, name)
@@ -178,8 +186,8 @@ def unbound_read(func: ast.AST, name: str) -> int | None:
 
     An import binds the statements after it in its own block and in the blocks those hold (see
     _block_reads), so ``try: import views; views.x()`` is safe while ``if c: import views`` then
-    ``views.x()`` after the ``if`` is not. Conservative where a later block always runs after
-    the import (a ``try``'s ``else``): that read is reported too. Not seen: a read in a nested
+    ``views.x()`` after the ``if`` is not, and neither is a read after a ``try`` whose body
+    imports it (an exception may skip the import); its ``else`` is bound (#2522). Not seen: a read in a nested
     function or lambda (a closure cell), a ``del`` of the name after its import, and a read in a
     loop body that follows the import in the text but runs first on a later iteration."""
     if not any(_imports(n, name) for n in scope_nodes(func)):
