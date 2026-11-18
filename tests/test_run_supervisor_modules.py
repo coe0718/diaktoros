@@ -575,6 +575,38 @@ class Split(unittest.TestCase):
                 with self.assertRaises(NameError):
                     namespace["f"]()
 
+    def test_a_nonlocal_unbinding_reaches_through_any_depth_of_nested_scope(self):
+        # #2536 review round 8 F8: a deeper function's ``nonlocal`` reaches the enclosing import
+        # through an intermediate function that does not bind the name itself, and a method's
+        # through its class. A middle function that binds it takes the nonlocal for its own.
+        imp = "from diaktoros.run_supervisor import views\n"
+        def source(nested, call):
+            return (imp + "def f():\n    try:\n        " + imp + nested + call
+                    + "    except ImportError:\n        return None\n    else:\n        return views\n")
+        inner = ("            def inner():\n                nonlocal views\n"
+                 "                del views\n            inner()\n")
+        cases = {
+            "chain": (source("        def middle():\n" + inner, "        middle()\n"), True),
+            "class": (source("        class C:\n            def m(self):\n"
+                             "                nonlocal views\n                del views\n",
+                             "        C().m()\n"), True),
+            "middle binds": (source("        def middle():\n            views = 1\n" + inner,
+                                    "        middle()\n"), False)}
+        for case, (code, unbound) in cases.items():
+            with self.subTest(case=case):
+                last = (len(code.splitlines()), "views")
+                namespace = {}
+                exec(compile(code, "<f>", "exec"), namespace)
+                if unbound:
+                    self.assertIn(last, _shadowed_submodules(code))
+                    self.assertEqual(_local_submodule_shadows(code, "x.py"), [("f", "views")])
+                    with self.assertRaises(NameError):
+                        namespace["f"]()
+                else:   # middle's own ``views = 1`` is still a shadow; f's else read is not
+                    self.assertNotIn(last, _shadowed_submodules(code))
+                    self.assertEqual(_local_submodule_shadows(code, "x.py"), [("middle", "views")])
+                    self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
+
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
         # (etc.); a real function of that name is still a function and is checked.

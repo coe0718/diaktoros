@@ -56,25 +56,59 @@ def _imports(node: ast.AST, name: str) -> bool:
             and any((a.asname or a.name.split(".")[0]) == name for a in node.names))
 
 
-def _deletes(stmts: list, name: str) -> bool:
-    """Whether anything in these statements' own scope may unbind ``name``: a ``del`` (#2536
+def _deletes(stmts: list, name: str, own: bool = True) -> bool:
+    """Whether anything in these statements may unbind this scope's ``name``: a ``del`` (#2536
     review F6), or an ``except ... as`` of that name, which Python deletes when the handler ends
-    (round 6). A nested function or class has its own scope, so its unbindings count only where
-    it declares the name ``nonlocal`` (round 7)."""
+    (round 6). A nested function counts only where its ``name`` is this one (``_shares``, rounds
+    7 and 8), at any depth. A class body's own unbindings (``own``) count only under ``nonlocal``;
+    its methods see past it to this scope."""
     for n in _scope_walk(list(stmts), module=False):
-        if ((isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name)
-                or (isinstance(n, ast.ExceptHandler) and n.name == name)):
+        if own and ((isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name)
+                    or (isinstance(n, ast.ExceptHandler) and n.name == name)):
             return True
-        if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                and _declares_nonlocal(n.body, name) and _deletes(n.body, name)):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and _shares(n, name):
+            if _deletes(n.body, name):
+                return True
+        elif isinstance(n, ast.ClassDef) and _deletes(
+                n.body, name, own=_declares(n.body, ast.Nonlocal, name)):
             return True
     return False
 
 
-def _declares_nonlocal(stmts: list, name: str) -> bool:
-    """Whether these statements' own scope declares ``name`` nonlocal."""
-    return any(isinstance(n, ast.Nonlocal) and name in n.names
+def _declares(stmts: list, kind: type, name: str) -> bool:
+    """Whether these statements' own scope declares ``name`` with ``kind`` (Global, Nonlocal)."""
+    return any(isinstance(n, kind) and name in n.names
                for n in _scope_walk(list(stmts), module=False))
+
+
+def _shares(func: ast.AST, name: str) -> bool:
+    """Whether a nested function's ``name`` is the enclosing scope's: declared ``nonlocal``, or
+    neither declared ``global`` nor bound in its own scope (a free name, as in a function that
+    only holds a deeper one; #2536 review round 8). A comprehension's target is not its binding:
+    before Python 3.12 the comprehension is its own scope, and from 3.12 (PEP 709), where a
+    captured target does bind in the function, leaving it out can only over-report."""
+    if _declares(func.body, ast.Nonlocal, name):
+        return True
+    if _declares(func.body, ast.Global, name):
+        return False
+    a = func.args
+    if any(arg.arg == name for arg in (*a.posonlyargs, *a.args, a.vararg, *a.kwonlyargs, a.kwarg)
+           if arg is not None):
+        return False
+    return not any(_binds(n, name) for n in _scope_walk(list(func.body), module=True))
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether this node binds (or deletes) ``name`` in the scope it belongs to."""
+    if isinstance(node, ast.Name):
+        return node.id == name and isinstance(node.ctx, (ast.Store, ast.Del))
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        return node.name == name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == name
+    return _imports(node, name)
 
 
 def _from_delete(stmts: list, name: str) -> list:
