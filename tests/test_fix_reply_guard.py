@@ -159,7 +159,8 @@ class LedgerReadFails(replies.Replies):
             reads.append(1)
             found = real(st)
             if len(reads) == 2:
-                st.kv_set(st.dir / fix_reply.GUARD, {"12": fresh})
+                fix_reply.kept.commit(st, "12", fix_reply.kept.stamp(), seen=None)
+                fix_reply.kept.commit(st, "12", fix_reply.kept.stamp(), seen=fresh)
             return found
         later = SimpleNamespace(time=lambda: spent["at"] + (fix_reply.WAIT_DAYS + 1) * 86400)
         with mock.patch.object(gh, "open_prs_read", offline), \

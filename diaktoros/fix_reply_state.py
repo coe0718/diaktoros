@@ -1,26 +1,29 @@
 """What the reply wake (``fix_reply``) keeps between sweeps, and how its two writers share it.
 
-``WAITING``: the issues waiting for a maintainer's reply, for ``status``. ``GUARD``: replies seen
-while the open PR listing could not be read, ``{n: {at}}``, ``at`` when the reply was first seen
-(its retry window runs from it).
+``STATE`` holds one record per issue, ``{"<n>": {"stamp", "wait", "seen"}}``: ``wait`` the fixer
+comment it waits on a maintainer's reply to, for ``status``; ``seen`` a reply seen while the open
+PR listing could not be read, ``{"at"}`` when first seen (its retry window runs from it); and
+``stamp`` when the reads behind the record's last decision began.
 
 The sweep and a webhook's wake (``fix_reply.on_comment``) both decide about an issue from GitHub
 reads that take a while, in different processes, so one can finish its reads after the other
-has started and finished newer ones (Vex on #2549, F5 to F7). So the newest reads decide: every
-decision about an issue is committed with ``stamp()`` taken before the reads it rests on, under
-the loop's state lock, and a commit whose reads began before the issue's last committed
-decision's is dropped. A decision rests only on its own issue's reads, and leaves alone what it
+has started and finished newer ones (Vex on #2549, F5 to F7, F10). So the newest reads decide:
+every decision is committed with the stamp taken before the ledger read it rests on, under the
+loop's state lock, and a commit whose reads began before the record's stamp is dropped. The
+record and its stamp are one write, so neither lands without the other (F11): a write that
+fails changes nothing, and a later sweep's reads decide again. A decision leaves alone what it
 did not read: an unreadable issue keeps its wait and its guard (#2019).
 """
 from __future__ import annotations
 
 import time
 
-WAITING = "fix-replies.json"    # the issues waiting for a maintainer's reply, for ``status``
-GUARD = "fix-reply-guard.json"  # replies seen whose open-PR guard could not be read: {n: {at}}
-STAMPS = "fix-reply-stamps.json"    # each issue's last committed decision: {n: its reads' stamp}
+from .util import log
+
+STATE = "fix-reply-state.json"  # {"<n>": {"stamp": int, "wait": comment id, "seen": {"at"}}}
+WAITING = "fix-replies.json"    # before STATE: {"<n>": comment id}, read for issues with no record
 KEEP = object()                 # a commit's "leave this one as it is"
-_STAMP_DAYS = 60                # a stamp older than this decides nothing any more: dropped
+_STAMP_DAYS = 60                # a bare stamp older than this decides nothing any more: dropped
 
 
 def stamp() -> int:
@@ -37,40 +40,45 @@ def _entry(value) -> bool:
     return isinstance(value, dict) and isinstance(value.get("at"), (int, float))
 
 
+def _records(st) -> dict:
+    return {str(n): r for n, r in _read(st, STATE).items() if isinstance(r, dict)}
+
+
 def guard(st) -> dict:
-    """``GUARD``'s well-formed entries: ``{"<n>": {"at": first seen}}``."""
-    return {str(n): e for n, e in _read(st, GUARD).items() if _entry(e)}
+    """The replies seen while the listing was unreadable: ``{"<n>": {"at": first seen}}``."""
+    return {n: r["seen"] for n, r in _records(st).items() if _entry(r.get("seen"))}
 
 
 def waiting(st) -> dict:
-    return _read(st, WAITING)
+    """``{"<n>": comment id}``: the records' waits, and the older file's for issues with none."""
+    records = _records(st)
+    found = {n: v for n, v in _read(st, WAITING).items() if n not in records}
+    return {**found, **{n: r["wait"] for n, r in records.items() if r.get("wait") is not None}}
 
 
 def commit(st, key: str, read_at: int, *, wait=KEEP, seen=KEEP, expect_at=None) -> bool:
     """Commit one decision about issue ``key``, made from reads begun at ``read_at``: ``wait`` its
-    ``WAITING`` value (``None`` drops it), ``seen`` its ``GUARD`` sighting (``{"at": now}``, an
-    earlier ``at`` kept; ``None`` drops it). False, and nothing written, when a decision from
-    later reads was committed first, or ``expect_at`` is given and its sighting is not that one."""
+    wait (``None`` drops it), ``seen`` its sighting (``{"at": now}``, an earlier ``at`` kept;
+    ``None`` drops it). False, and nothing written, when a decision from later reads was
+    committed first, ``expect_at`` is given and the sighting is not that one, or the write
+    fails."""
     with st.locked():
-        stamps = _read(st, STAMPS)
-        if int(stamps.get(key) or 0) > read_at:
+        records = _records(st)
+        old = records.get(key) or {"wait": _read(st, WAITING).get(key)}
+        if int(old.get("stamp") or 0) > read_at:
             return False
-        old = _read(st, GUARD).get(key)
-        if expect_at is not None and not (_entry(old) and old["at"] == expect_at):
+        if expect_at is not None and not (_entry(old.get("seen")) and old["seen"]["at"] == expect_at):
             return False
+        new = {"stamp": read_at, "wait": old.get("wait") if wait is KEEP else wait,
+               "seen": old.get("seen") if seen is KEEP or (seen and _entry(old.get("seen")))
+               else seen}
+        records[key] = {k: v for k, v in new.items() if v is not None}
         cutoff = stamp() - _STAMP_DAYS * 86400 * 10**9
-        stamps = {k: v for k, v in stamps.items() if isinstance(v, int) and v > cutoff}
-        stamps[key] = read_at
-        if wait is not KEEP:
-            found = _read(st, WAITING)
-            found.pop(key, None) if wait is None else found.update({key: wait})
-            st.kv_set(st.dir / WAITING, found)
-        if seen is not KEEP:
-            found = _read(st, GUARD)
-            if seen is not None:
-                found[key] = old if _entry(old) else seen
-            else:
-                found.pop(key, None)
-            st.kv_set(st.dir / GUARD, found)
-        st.kv_set(st.dir / STAMPS, stamps)
+        records = {n: r for n, r in records.items()
+                   if set(r) - {"stamp"} or int(r.get("stamp") or 0) > cutoff}
+        try:
+            st.kv_set_strict(st.dir / STATE, records)
+        except Exception as exc:        # the record and its stamp stay as they were
+            log(f"state write failed ({STATE}): {exc}")
+            return False
         return True

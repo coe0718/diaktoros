@@ -34,7 +34,7 @@ import time
 
 from . import config, fix_hold, gate, gh
 from . import fix_reply_state as kept
-from .fix_reply_state import GUARD, WAITING  # noqa: F401 - the files' names, as before
+from .fix_reply_state import STATE, WAITING  # noqa: F401 - the files' names
 from .util import epoch, log, silence
 
 WAIT_DAYS = 14          # a comment older than this no longer waits for a reply

@@ -198,6 +198,30 @@ class WebhookSettlesTheGuard(replies.Delivery):
         self.assertEqual(fix_reply.status_lines(self.st), [])
         self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
 
+    def test_a_delivery_whose_write_fails_leaves_the_record_whole_and_the_sweep_recovers(self):
+        # Vex on #2549 (F11): only the stamp failed to land, so a stale sweep erased the guard
+        # it ordered. The record and its stamp are one write now: it lands whole or not at all.
+        self.live = {**self.live, "updated_at": replies.iso(replies.TURN + 700)}
+        self.reply(201, "jeremy")
+        with cutoff(-120), mock.patch.object(gh, "open_prs_read", offline):
+            self.sweep()                        # guarded
+        state = self.st.dir / fix_reply.STATE
+        before, strict = state.read_text(), type(self.st).kv_set_strict
+
+        def disk_error(st, path, data):     # every process's state object: the webhook's too
+            raise OSError("transient disk error")
+        with cutoff(-60), mock.patch.object(gh, "open_prs_read", offline), \
+                mock.patch.object(type(self.st), "kv_set_strict", disk_error):
+            self.assertFalse(fix_reply.kept.commit(self.st, "12", fix_reply.kept.stamp(), seen=None))
+            self.deliver(self.comment())
+        self.assertEqual(state.read_text(), before)
+        self.assertIs(type(self.st).kv_set_strict, strict)
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        with cutoff(60):                        # disk and listing back, past the comment's cutoff
+            self.sweep()
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
+        self.assertEqual(fix_reply.status_lines(self.st), [])
+
 
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
