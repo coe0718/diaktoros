@@ -255,6 +255,29 @@ class Gates(fg.Base):
         block, _ = self.reviewer_gate(OWNER, rounds=cap + 1)        # the verdict landed: spent
         block.assert_not_called()
 
+    def test_a_grant_the_hosts_merge_carried_starts_the_review_at_the_merged_head(self):
+        # #2401, end to end: a maintainer's round granted at an older head (no verdict there),
+        # then the host's review_only_update merge makes HEAD. The reviewer gate at HEAD starts the
+        # review with no second grant; before the merge it declined at the cap.
+        from diaktoros import base_merge, review_only_conflict, watch_conflicts
+        cap, old = self.loop["cap"], "d" * 40
+        self.st.review_cap_grant(7, old, cap)
+        block, _ = self.reviewer_gate(OWNER, rounds=cap)
+        block.assert_not_called()
+        facts = {"number": 7, "head": old, "branch": "fix-7", "fork": False, "merged": [],
+                 "conflicted": [], "workflows": False, "error": "", "clean": True}
+        with mock.patch.object(base_merge, "in_flight", return_value=""), \
+                mock.patch.object(base_merge.gh, "reviews",
+                                  return_value=self.verdicts(cap, "c" * 40)), \
+                mock.patch.object(review_only_conflict, "assess", return_value=facts), \
+                mock.patch.object(review_only_conflict, "update", return_value=(HEAD, "")), \
+                mock.patch.object(watch_conflicts.observer, "notify"):
+            watch_conflicts._review_only_next(self.loop, self.st, 7, old, OWNER, "b" * 40,
+                                              {7: {**self.live, "mergeable_state": "behind"}})
+        block, _ = self.reviewer_gate(OWNER, rounds=cap)
+        block.assert_called_once()
+        self.assertEqual(block.call_args.args[2:5], ("reviewer", 7, HEAD))
+
     def test_another_round_belongs_to_the_head_it_was_granted_on(self):
         self.st.review_cap_grant(7, "d" * 40, self.loop["cap"])
         block, _ = self.reviewer_gate(OWNER, rounds=self.loop["cap"])
