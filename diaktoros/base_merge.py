@@ -309,10 +309,35 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
     finally:
         hold.release()
     new = done["new_head"]
+    carry_grant(loop, st, number, head, new)
     log(f"#{number} @ {head[:7]} merged {loop['base']} in: {new[:7]}"
         + (" (approval carried over)" if carry.get("done") else ""))
     _notify(loop, st, number, head, new, carry)
     return new
+
+
+def carry_grant(loop: dict, st, number: int, old: str, new: str) -> None:
+    """After the host's own base merge moves ``old`` to ``new`` (``update_behind`` here,
+    ``review_only_update`` in ``watch_conflicts``): a maintainer's unspent review-cap grant at
+    ``old`` holds at ``new`` (#2401). A grant is only given at a head with no verdict
+    (``review_asks``), so a verdict there since, an approval included, spent it. The reviews are
+    read here, after the push, so a grant made or a verdict landed at any point before is seen
+    (#2543 review, F6, F7): a change request stays at ``old``, and GitHub moves an approval at
+    ``old`` to ``new``, so a verdict at either head spent it. Written as a locked swap of that
+    very grant, so a newer one is never overwritten. Best effort: a lost carry leaves the cap to
+    be granted again, as before."""
+    try:
+        grant = st.review_cap_entry(number).get("grant")
+        if not (new and isinstance(grant, dict) and grant.get("head") == old
+                and isinstance(grant.get("rounds"), int)):
+            return
+        reviews = gh.reviews(loop, number)
+        if (isinstance(reviews, list)
+                and not any(gate.reviewed_at_head(reviews, loop, h) for h in (old, new))
+                and st.review_cap_grant(number, new, grant["rounds"], replacing=grant)):
+            log(f"#{number} @ {new[:7]} the review-cap grant at {old[:7]} carries over")
+    except Exception as exc:
+        log(f"#{number} @ {new[:7]} review-cap grant not carried: {type(exc).__name__}")
 
 
 def _notify(loop: dict, st, number: int, head: str, new: str, carry: dict) -> None:
