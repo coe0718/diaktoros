@@ -77,7 +77,7 @@
     "diaktoros/trusted_turn.py::run_turn": 260,
     "diaktoros/watch_health.py::read_health": 93,
     "diaktoros/watch_stacked.py::reconcile_stacked": 106,
-    "scripts/gate_fixer.py::main": 300,
+    "scripts/gate_fixer.py::main": 298,
     "scripts/gate_reviewer.py::decide": 217
   }
 }
