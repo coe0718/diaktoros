@@ -548,6 +548,33 @@ class Split(unittest.TestCase):
         exec(compile(other, "<f>", "exec"), namespace)
         self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
 
+    def test_an_unbinding_in_a_nested_scope_counts_only_under_nonlocal(self):
+        # #2536 review round 7 F7: a nested function's ``except ... as`` or ``del`` unbinds its own
+        # (or a global) name, not the enclosing import, unless it declares the name nonlocal.
+        imp = "from diaktoros.run_supervisor import views\n"
+        def source(decl, unbind):
+            return (imp + "def f():\n    try:\n        " + imp + "        def inner():\n"
+                    + f"            {decl} views\n" + unbind + "        inner()\n"
+                    + "    except ImportError:\n        return None\n    else:\n        return views\n")
+        catch = ("            try:\n                raise ValueError()\n"
+                 "            except ValueError as views:\n                pass\n")
+        for unbind in (catch, "            views = 1\n            del views\n"):
+            with self.subTest(unbind=unbind.split()[0], decl="global"):
+                safe = source("global", unbind)
+                self.assertNotIn((len(safe.splitlines()), "views"), _shadowed_submodules(safe))
+                self.assertEqual(_local_submodule_shadows(safe, "x.py"), [])
+                namespace = {}
+                exec(compile(safe, "<f>", "exec"), namespace)
+                self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
+            with self.subTest(unbind=unbind.split()[0], decl="nonlocal"):
+                unbound = source("nonlocal", unbind)
+                self.assertIn((len(unbound.splitlines()), "views"), _shadowed_submodules(unbound))
+                self.assertEqual(_local_submodule_shadows(unbound, "x.py"), [("f", "views")])
+                namespace = {}
+                exec(compile(unbound, "<f>", "exec"), namespace)
+                with self.assertRaises(NameError):
+                    namespace["f"]()
+
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
         # (etc.); a real function of that name is still a function and is checked.

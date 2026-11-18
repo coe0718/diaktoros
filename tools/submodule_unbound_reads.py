@@ -57,11 +57,24 @@ def _imports(node: ast.AST, name: str) -> bool:
 
 
 def _deletes(stmts: list, name: str) -> bool:
-    """Whether anything in these statements may unbind ``name``: a ``del`` (#2536 review F6), or
-    an ``except ... as`` of that name, which Python deletes when the handler ends (round 6)."""
-    return any((isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name)
-               or (isinstance(n, ast.ExceptHandler) and n.name == name)
-               for stmt in stmts for n in ast.walk(stmt))
+    """Whether anything in these statements' own scope may unbind ``name``: a ``del`` (#2536
+    review F6), or an ``except ... as`` of that name, which Python deletes when the handler ends
+    (round 6). A nested function or class has its own scope, so its unbindings count only where
+    it declares the name ``nonlocal`` (round 7)."""
+    for n in _scope_walk(list(stmts), module=False):
+        if ((isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name)
+                or (isinstance(n, ast.ExceptHandler) and n.name == name)):
+            return True
+        if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and _declares_nonlocal(n.body, name) and _deletes(n.body, name)):
+            return True
+    return False
+
+
+def _declares_nonlocal(stmts: list, name: str) -> bool:
+    """Whether these statements' own scope declares ``name`` nonlocal."""
+    return any(isinstance(n, ast.Nonlocal) and name in n.names
+               for n in _scope_walk(list(stmts), module=False))
 
 
 def _from_delete(stmts: list, name: str) -> list:
