@@ -52,7 +52,8 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_selftest(args) -> int:
-    """Verify the live isolated path for one loop; every step and its fix live in selftest.py.
+    """Verify the live isolated path for one loop; each step and its fix live in selftest.py, but
+    step 3 (inference) in selftest_inference.py (#2531).
 
     Unlike ``doctor`` this touches the real capabilities (bubblewrap, the model, GitHub reads, and
     with ``--live-turn`` one real reviewer turn) — but it only reads from GitHub unless ``--ping``
