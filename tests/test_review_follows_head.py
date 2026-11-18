@@ -352,6 +352,39 @@ class ReviewOnlyUpdateWaits(fg.Base):
         self.assertIsNone(self.next_step(""))
         self.assertFalse(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
 
+    def test_a_grant_made_while_the_merge_is_pushed_still_carries(self):
+        # Review of #2543, F6: no grant was held when the merge began, so no reviews were read
+        # before the push; a maintainer grants the still-live head while the merge is pushed.
+        # The carry reads the reviews after the push instead, so the round is not stranded.
+        rounds, new = int(self.loop["cap"]), "e" * 40
+        facts = {"number": 7, "head": fg.HEAD, "branch": "fix-7", "fork": False, "merged": [],
+                 "conflicted": [], "workflows": False, "error": "", "clean": True}
+
+        def update_granted_meanwhile(_loop, number, head, _facts):
+            self.st.review_cap_grant(7, fg.HEAD, rounds)
+            return new, ""
+
+        def merge():
+            with mock.patch.object(base_merge, "in_flight", return_value=""), \
+                    mock.patch.object(base_merge.gh, "reviews",
+                                      side_effect=lambda *_a, **_k: list(self.reviews)), \
+                    mock.patch.object(review_only_conflict, "assess", return_value=facts), \
+                    mock.patch.object(review_only_conflict, "update",
+                                      side_effect=update_granted_meanwhile), \
+                    mock.patch.object(watch_conflicts.observer, "notify"):
+                watch_conflicts._review_only_next(
+                    self.loop, self.st, 7, fg.HEAD, "tuck", "b" * 40,
+                    {7: {**fg.LIVE, "mergeable_state": "behind"}})
+        merge()
+        self.assertFalse(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+        # Control: had the granted verdict landed, as an approval GitHub then moved to the merged
+        # head, the same race carries nothing.
+        self.st.review_cap_grant(7, "f" * 40, rounds)            # reset to a grant elsewhere
+        self.reviews = [{**fg.verdict(20, "APPROVED"), "commit_id": new}]
+        merge()
+        self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+        self.assertTrue(self.st.review_cap_granted(7, fg.HEAD, rounds))
+
     def test_a_newer_grant_made_during_the_carry_is_never_overwritten(self):
         # Review of #2543, F2: a maintainer grants a newer head between the carry's read and its
         # write. The carry swaps only the grant it read, under the lock, so the newer one stands.

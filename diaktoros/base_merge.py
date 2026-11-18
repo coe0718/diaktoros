@@ -314,13 +314,21 @@ def carry_grant(loop: dict, st, number: int, old: str, new: str, reviews) -> Non
     ``review_only_update`` in ``watch_conflicts``): a maintainer's unspent review-cap grant at
     ``old`` holds at ``new`` (#2401). A grant is only given at a head with no verdict
     (``review_asks``), so any verdict at ``old`` in ``reviews`` (read before the push), an
-    approval included, spent it. Written as a locked swap of that very grant, so a newer one is
-    never overwritten. Best effort: a lost carry leaves the cap to be granted again, as before."""
+    approval included, spent it. With no such read (no grant was held when the merge began, and
+    one was made during it, #2543 review F6), they are read now: GitHub has by then moved an
+    approval at ``old`` to ``new``, so a verdict at either head spent it. Written as a locked
+    swap of that very grant, so a newer one is never overwritten. Best effort: a lost carry
+    leaves the cap to be granted again, as before."""
     try:
         grant = st.review_cap_entry(number).get("grant")
-        if (new and isinstance(grant, dict) and grant.get("head") == old
-                and isinstance(grant.get("rounds"), int) and isinstance(reviews, list)
-                and not gate.reviewed_at_head(reviews, loop, old)
+        if not (new and isinstance(grant, dict) and grant.get("head") == old
+                and isinstance(grant.get("rounds"), int)):
+            return
+        heads = (old,)
+        if reviews is None:
+            reviews, heads = gh.reviews(loop, number), (old, new)
+        if (isinstance(reviews, list)
+                and not any(gate.reviewed_at_head(reviews, loop, h) for h in heads)
                 and st.review_cap_grant(number, new, grant["rounds"], replacing=grant)):
             log(f"#{number} @ {new[:7]} the review-cap grant at {old[:7]} carries over")
     except Exception as exc:
