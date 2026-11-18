@@ -182,8 +182,8 @@ def cmd_history(args) -> int:
     answers, shadow reviews, rulings, filed issues and writes from the ledger and the state dir,
     plus review bodies, commits and comments from GitHub unless ``--offline``. Read-only; every
     free text passes the loop's redactor. ``--since DATE --out DIR`` writes each merged PR's
-    cycle since then to its own file (``history_batch``). Exit 2 on a bad flag set, no loop, or
-    an ``--out`` that cannot be written (#2204)."""
+    cycle since then to its own file (``history_batch``). Exit 2 on a bad flag set, no loop, an
+    ``--out`` that cannot be written (#2204), a partial export or an unreadable ledger (#2181)."""
     from .. import history, history_batch, history_render, run_supervisor, selftest, stats
     from .operations import _one_loop
     if (args.pr is None) == (args.since is None) or (args.since is None) != (args.out is None):
@@ -206,7 +206,7 @@ def cmd_history(args) -> int:
             print(f"cannot write to {out}: {exc.strerror or type(exc).__name__}")
             return 2
         print(history_batch.listing(result, out, args.offline))
-        return 2 if result["failed"] else 0
+        return history_batch.exit_code(result)
     data = history.collect(loop, run_supervisor.production_ledger(), args.pr, args.offline,
                            selftest.redactor_for(loop))
     if args.format == "json":

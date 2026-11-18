@@ -23,6 +23,7 @@ from . import history, history_render
 from .run_supervisor import ISSUE_SEATS, views
 
 _SUFFIX = {"json": "json", "markdown": "md", "text": "txt"}
+NO_LEDGER = "no run ledger"         # an empty window; every other gap is an unreadable ledger
 
 
 def prs_since(db: Path, repo: str, since: float) -> tuple[list[int], str]:
@@ -34,7 +35,7 @@ def prs_since(db: Path, repo: str, since: float) -> tuple[list[int], str]:
     except sqlite3.Error as exc:
         return [], f"the run ledger is unreadable ({type(exc).__name__})"
     if con is None:
-        return [], "no run ledger"
+        return [], NO_LEDGER
     try:
         seats = ",".join("?" * len(ISSUE_SEATS))
         rows = con.execute("SELECT pr, MIN(created) AS first FROM runs WHERE repo=? AND "
@@ -60,11 +61,14 @@ def render(data: dict, fmt: str) -> str:
 def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: bool,
            redact) -> dict:
     """Write each merged cycle to ``out/pr-N.<suffix>``. Returns ``{written, skipped, failed,
-    gap}``: ``written`` as ``[{pr, file}]``, ``skipped`` as ``[{pr, why}]`` (not merged, its
-    state), ``failed`` as ``{pr, file, why}`` when a write failed, which stops the export there
-    with the files before it kept (#2200). A ``DIR`` that cannot be made raises ``OSError``."""
+    gap, unreadable}``: ``written`` as ``[{pr, file}]``, ``skipped`` as ``[{pr, why}]`` (not
+    merged, its state), ``failed`` as ``{pr, file, why}`` when a write failed, which stops the
+    export there with the files before it kept (#2200); ``unreadable`` when the ledger could not
+    be read, so nothing is known of the window (#2181). A ``DIR`` that cannot be made raises
+    ``OSError``."""
     numbers, gap = prs_since(db, loop["repo"], since)
-    result: dict = {"written": [], "skipped": [], "failed": None, "gap": gap}
+    result: dict = {"written": [], "skipped": [], "failed": None, "gap": gap,
+                    "unreadable": gap not in ("", NO_LEDGER)}
     if not numbers:
         _probe(out)         # an unwritable DIR refuses even with no PR in the window (#2204)
         return result
@@ -125,7 +129,16 @@ def listing(result: dict, out: Path, offline: bool) -> str:
     if offline and result["written"]:
         lines.append("--offline: merge state not read, so a PR was written whether it merged or "
                      "not" + (" (up to the failure above)" if failed else ""))   # #2229
-    lines.append(f"{len(result['written'])} cycle(s) written to {out}"
-                 if result["written"] or failed
-                 else "no merged PR with a turn in that window: nothing written")
+    if result["written"] or failed:
+        lines.append(f"{len(result['written'])} cycle(s) written to {out}")
+    elif result.get("unreadable"):         # #2181: the window is unknown, not empty
+        lines.append("the run ledger could not be read, so the window is unknown: nothing written")
+    else:
+        lines.append("no merged PR with a turn in that window: nothing written")
     return "\n".join(lines)
+
+
+def exit_code(result: dict) -> int:
+    """2 for a partial export (#2200) or an unreadable ledger (#2181), so a publishing job can
+    tell either from an empty window; else 0."""
+    return 2 if result["failed"] or result.get("unreadable") else 0

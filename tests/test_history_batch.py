@@ -114,12 +114,18 @@ class Batch(fg.Base):
         self.other_pr(10, th.T + 950, "issue_fixer", config.TRIAGE_HEAD)
         rc, out = self.run_cli("--since", SINCE, "--out", str(self.out), "--offline")
         self.assertEqual(rc, 0, out)
-        self.assertNotIn("#9", out)
-        self.assertNotIn("#10", out)
+        self.assertNotRegex(out, r"#(9|10)\b")
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["pr-7.txt"])
+        self.assertEqual(self.run_cli("--since", SINCE, "--out", str(self.out))[0], 0)
+        self.assertEqual([p for p in self.reads if p.endswith(("/9", "/10"))], [])
+
+    def test_an_unreadable_ledger_is_not_an_empty_window(self):
+        """#2181: nothing is known of the window, so no "nothing in it" line, and exit 2."""
+        self.db.write_bytes(b"not a database" * 100)
         rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
-        self.assertEqual(rc, 0, out)
-        self.assertFalse([path for path in self.reads if path.endswith(("/9", "/10"))])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("the run ledger could not be read, so the window is unknown", out)
+        self.assertNotIn("no merged PR", out)
 
     def test_a_bad_flag_set_exits_2(self):
         for argv in ((), ("--pr", "7", "--since", "7d", "--out", "x"), ("--since", "7d"),
