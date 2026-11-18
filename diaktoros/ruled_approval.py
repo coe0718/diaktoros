@@ -36,7 +36,7 @@ from __future__ import annotations
 import time
 
 from . import broker, ci, config, gate, gh, pr_hold
-from .run_supervisor import Supervisor, production_ledger, views
+from .run_supervisor import CI_WAIT_MAX_S, Supervisor, production_ledger, views
 
 
 def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
@@ -76,17 +76,36 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
     return moved
 
 
-def overruled(reviews: list, loop: dict, head: str, ruled_at: float) -> dict | None:
+def overruled(reviews: list, loop: dict, head: str, ruled_at: float,
+              saw: frozenset[int] | None = None) -> dict | None:
     """The one review an ACCEPT at ``head`` overruled: the reviewer seat's latest effective
     verdict there, a change request submitted before the ruling. GitHub dates a review to the
-    second, so one dated within the ruling's own second may have come after it. None when there
-    is none, or when it can't be told (an unproved order): then nothing is dismissed."""
+    second, so one dated within the ruling's own second may have come after it. With no reviewer
+    verdict at ``head`` (the head moved after an earlier ruling, #2402), it is the reviewer's
+    standing change request from an earlier head, the one GitHub still counts, if the ruling's
+    prompt showed it (``saw``, recorded at its launch; None: nothing was). None when there is
+    none, or when it can't be told (an unproved order): then nothing is dismissed."""
     mine = [r for r in reviews if isinstance(r, dict) and gate.is_reviewer(r, loop)]
     latest = gate.latest_effective_review_at_head(mine, loop, head)
+    if latest is None:
+        # A reviewer review at ``head`` that reads as no verdict (undatable, unfamiliar) is an
+        # unknown verdict, not none: nothing from an earlier head is overruled over it. What the
+        # gate counts as no verdict at all (``gate.NOT_VERDICTS``: a comment, a dismissal, a
+        # pending review) is none here too.
+        if any(r.get("commit_id") == head and gh.review_state(r) not in gate.NOT_VERDICTS
+               for r in mine):
+            return None
+        standing = [r for r in gate.blocking_reviews(mine) if r.get("commit_id") != head]
+        latest = standing[0] if len(standing) == 1 and saw and standing[0].get("id") in saw else None
     if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
         return None
     when = gate._review_when(latest)
     return latest if when is not None and when[0].timestamp() + 1 <= float(ruled_at) else None
+
+
+def _saw(ruling: dict) -> frozenset[int] | None:
+    """The reviewer reviews this ruling's prompt showed, as its launch recorded them (#2402)."""
+    return views.ruling_saw(production_ledger(), str(ruling.get("run_id") or ""))
 
 
 def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
@@ -114,7 +133,7 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     branch = str((pr.get("head") or {}).get("ref") or "")
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
     if step == "approve":
-        found = overruled(reviews, loop, head, ruling["created"])
+        found = overruled(reviews, loop, head, ruling["created"], _saw(ruling))
         if found is None:
             return False                               # no change request it overruled
         if gate.is_ruled_approval(latest, loop):       # approved already, by hand
@@ -145,7 +164,9 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
       was posted by hand), and is nothing owed when there is none. An older ruling's pending step
       is never acted on again, so it waits on nothing.
     * No record here and no adjudicator's approval as the head's verdict (``ruled`` false):
-      nothing to act on. A record or ruling that can't be read is not settled.
+      nothing to act on, unless an ACCEPT here overruled the reviewer's standing request from an
+      earlier head that it saw (#2402): its approval is still owed. A record or ruling that can't
+      be read is not settled.
     * With ``adjudicator_approves`` off, the sweep acts on nothing and reads nothing back, so no
       wait could end: ''."""
     if not config.adjudicator_approves(loop):
@@ -158,9 +179,9 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         for step in ("approve", "dismiss"):
             if (state := row.get(step) or "pending") in ("posting", "uncertain"):
                 return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
-    if not rows and not ruled:
-        return ""
     ruling = views.ruling_row(db, loop["repo"], number) or {}
+    if not rows and not ruled:
+        return _owed_at_a_moved_head(loop, db, ruling, reviews, head)
     newest = ruling.get("run_id")
     if not newest:
         return "the adjudicator's ruling can't be read"
@@ -168,8 +189,12 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         return ""                              # superseded: its pending steps are never acted on
     mine = next((row for row in rows if row.get("ruling") == newest), None)
     if mine is None:
-        if overruled(reviews, loop, head, ruling.get("created") or 0) is None:
+        found = overruled(reviews, loop, head, ruling.get("created") or 0,
+                          views.ruling_saw(db, newest))
+        if found is None:
             return ""                          # no change request to dismiss: nothing to act on
+        if found.get("commit_id") != head:     # an earlier head's request: its wait is bounded
+            return _owed_at_a_moved_head(loop, db, ruling, reviews, head)
         return "the adjudicator's ACCEPT has not been acted on yet"
     # Only what ``_act`` still takes: the approval, then the dismissal, while the dismissal is
     # pending and the approval was not denied (a denied approval leaves its dismissal pending for
@@ -179,6 +204,28 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         step, state = ("approve", approve) if approve == "pending" else ("dismiss", dismiss)
         return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
     return ""
+
+
+def _owed_at_a_moved_head(loop: dict, db, ruling: dict, reviews: list, head: str) -> str:
+    """``unsettled`` when the newest ruling has no record yet (#2402), whatever older rulings'
+    records at this head say (#2544 review, round 5, F6): an ACCEPT here that overruled the
+    reviewer's standing request from an earlier head still owes its approval, and a merge now
+    would strand that request again. With nothing it can overrule (no record, not
+    seen), nothing waits; nor while a required check is red or cancelled here, since the approval
+    waits for green and the merge may be what turns it green (#2544 review, F6); nor past
+    ``CI_WAIT_MAX_S`` since the ruling, so a required check that never reports or never finishes
+    can't hold it for good. The merged head then goes for a ruling again, and that ACCEPT
+    dismisses the request it sees."""
+    if (ruling.get("head"), ruling.get("verdict")) != (head, "ACCEPT") or overruled(
+            reviews, loop, head, ruling.get("created") or 0,
+            views.ruling_saw(db, str(ruling.get("run_id") or ""))) is None:
+        return ""
+    gating = ci.gating(ci.read(loop, head), config.required_checks(loop))
+    if gating is not None and (gating.failed or gating.cancelled):
+        return ""
+    if time.time() - float(ruling.get("created") or 0) >= CI_WAIT_MAX_S:
+        return ""
+    return "the adjudicator's ACCEPT has not been acted on yet"
 
 
 POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off
@@ -281,7 +328,7 @@ def _still_current(loop: dict, number: int, ruling: dict, step: str, target) -> 
     if not isinstance(reviews, list):
         return False
     if step == "approve":
-        found = overruled(reviews, loop, head, ruling["created"])
+        found = overruled(reviews, loop, head, ruling["created"], _saw(ruling))
         return found is not None and found.get("id") == target
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
     review = next((r for r in reviews if isinstance(r, dict) and r.get("id") == target), None)
