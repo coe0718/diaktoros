@@ -203,6 +203,7 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
 OPERATOR_ESCALATION = "operator"       # ... and for ``hermes dk escalate`` (#459, #1246)
+CYCLE_ESCALATION = "cycle"             # ... and for a finding that asks for the PR's own work (#754)
 
 
 def _ledger_of(supervisor) -> str | pathlib.Path | None:
@@ -798,6 +799,8 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
                     if by == "dispute" else
                     "the shadow review requested changes at an approved head"
                     if by == SHADOW_ESCALATION else
+                    f"a blocking finding asks for this PR's own work at {marker['rounds']}/"
+                    f"{loop['cap']} verdicts" if by == CYCLE_ESCALATION else
                     f"escalated by the operator at {marker['rounds']}/{loop['cap']} verdicts")
                    if marker.get("escalated") else
                    f"{marker['rounds']}/{loop['cap']} verdicts, no approval")

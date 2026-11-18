@@ -75,19 +75,25 @@ class Base(fg.Base):
             con.execute("UPDATE runs SET state='running'")
         return sup
 
-    def fixer_gate(self, review, reviews, breach_outcome="new"):
-        """Drive the fixer gate on one verdict webhook; (stderr, enqueue mock, breach mock)."""
+    def fixer_gate(self, review, reviews, breach_outcome="new", pr=None, real_breach=False):
+        """Drive the fixer gate on one verdict webhook; (stderr, enqueue mock, breach mock).
+        ``pr``: the webhook's (and live) PR, default ``fg.LIVE``; ``real_breach``: let
+        ``gate.breach`` park the head for real (the adjudicator's wake is mocked)."""
+        pr = fg.LIVE if pr is None else pr
         payload = {"action": "submitted", "repository": {"full_name": fg.REPO},
-                   "pull_request": fg.LIVE, "review": review}
+                   "pull_request": pr, "review": review}
+        breach_patch = (mock.patch.object(gate, "breach", wraps=gate.breach) if real_breach
+                        else mock.patch.object(gate, "breach", return_value=breach_outcome))
         with mock.patch.object(gate_fixer.sys, "stdin", io.StringIO(json.dumps(payload))), \
                 contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()) as err, \
-                mock.patch.object(gate_fixer.gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate_fixer.gh, "pr", return_value=pr), \
                 mock.patch.object(gate_fixer.gh, "reviews", return_value=reviews), \
                 mock.patch.object(gate_fixer.gate, "fetch_reviews", return_value=reviews), \
                 mock.patch.object(gate_fixer.gate, "drain_seat"), \
                 mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
-                mock.patch.object(gate, "breach", return_value=breach_outcome) as breach, \
+                mock.patch.object(gate, "wake_adjudicator", return_value=True), \
+                breach_patch as breach, \
                 mock.patch.object(gate_fixer.observer, "notify") as notify, \
                 mock.patch.object(gate_fixer.observer, "verified_base_sha",
                                   side_effect=lambda loop, pr: (pr.get("base") or {}).get("sha")), \
