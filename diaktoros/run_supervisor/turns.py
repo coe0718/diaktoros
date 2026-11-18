@@ -1076,7 +1076,8 @@ class ClaimAndLaunch:
                 # The shadow sees what the real reviewer saw when both were queued (#218): a
                 # review posted since, the real one's included, would tell it the answer.
                 reviews = [r for r in reviews if _before_shadow_queued(r, row['created'])]
-        prompt, prompt_row, change, shadow = self._verdict_prompt(loop, row, reviews, marker)
+        seen: list = []
+        prompt, prompt_row, change, shadow = self._verdict_prompt(loop, row, reviews, marker, seen)
         # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
         # the ledger (explain, the receipt claim) and in the scope the broker is built from.
         # Nothing inside the namespace can reach either.
@@ -1085,6 +1086,7 @@ class ClaimAndLaunch:
         scope = self._verdict_scope(row, prompt_row, head, partial, shadow)
         if row['seat'] == 'adjudicator':
             from .. import state as state_mod
+            self.record_saw(turn.run_id, turn.owner, seen)     # what its ACCEPT may dismiss
             # Last step before launch: mark the breach as being ruled on. Anyone else's
             # claim (a legacy gateway route included) refuses this one.
             if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
@@ -1094,9 +1096,10 @@ class ClaimAndLaunch:
         return _Launch(prompt, scope, change=change)
 
     @staticmethod
-    def _verdict_prompt(loop: dict, row, reviews, marker) -> tuple:
+    def _verdict_prompt(loop: dict, row, reviews, marker, seen: list | None = None) -> tuple:
         """The verdict seat's prompt, and what the launch needs from building it: the row it was
-        prompted as, the change it saw and the shadow review a ruling's prompt showed."""
+        prompted as, the change it saw and the shadow review a ruling's prompt showed. A ruling's
+        prompt also fills ``seen`` with the reviewer reviews it showed (#2402)."""
         from .. import config
         # The reviewer and fixer see the change itself (#50); the adjudicator needs both
         # sides' comments. A read that failed is transient (retry); a moved head is not.
@@ -1116,6 +1119,8 @@ class ClaimAndLaunch:
                     and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
                 shadow = turn_prompts.newest_shadow_review(row)
                 extra = {'shadow': shadow}
+            if row['seat'] == 'adjudicator':
+                extra['seen'] = seen
             elif row['seat'] == run_supervisor.SHADOW:
                 # Prompted as the reviewer, but told its own step budget (#2199).
                 extra = {'steps': config.max_steps(loop, run_supervisor.SHADOW)}

@@ -32,20 +32,23 @@ What the scan covers, and what it does not (perfect static detection is not poss
   ``os.open`` calls sharing one flags variable count two. Branches are followed: an assignment
   counts if it may reach the open on any path (``if``/``else``, ``try``/``except``, ``match``,
   a loop's next pass or ``break``), so a non-append rebinding on one branch does not hide the
-  open; the read errs toward counting more, never fewer (``_Bindings``).
+  open; a ``with`` body may be left partway (``contextlib.suppress``), so every value it
+  assigns reaches the code after it (#2467). The read errs toward counting more, never fewer
+  (``_Bindings``).
 * Flags count as append unless the scan proves them append-free (#2377, ``_flags_may_append``).
   Append-free are: ``os.O_X`` or ``getattr(os, "O_X"[, default])`` for an ``O_`` flag other than
   ``O_APPEND`` that the host running the guard defines without the append bit; an int constant
   without that bit; ``a | b`` and ``a ^ b`` of append-free values, ``a & b`` with one append-free
   side, ``a if c else b`` and ``a or b`` of append-free values; and a name every value of which
-  is append-free. A name is followed to its innermost binding scope: a lambda, the function,
-  then the enclosing functions and the module (a module constant, a closure variable).
-  Everything else counts as append: any other ``os`` attribute (``os.ST_NOATIME`` is 1024, the
-  Linux ``O_APPEND``), ``~``, ``<<`` (``1 << 10``), ``+`` and every other operator, a parameter
-  (a lambda's included), an import, a ``for``, ``with``, ``except ... as`` or ``match`` capture
-  target, a ``global`` or ``nonlocal`` name, a name nothing binds, any other call, an
-  ``os.open(*args)`` or ``(**kw)``. A false alarm only asks for a registry entry; a miss is an
-  unbounded file. Which bit is ``O_APPEND`` is read on the host running the guard (CI's Linux).
+  is append-free (``x |= v`` and ``x ^= v`` read as ``x | v``, ``x &= v`` as ``x & v``). A name
+  is followed to its innermost binding scope: a lambda, the function, then the enclosing
+  functions and the module (a module constant, a closure variable). Everything else counts as
+  append: any other ``os`` attribute (``os.ST_NOATIME`` is 1024, the Linux ``O_APPEND``), ``~``,
+  ``<<`` (``1 << 10``), ``+`` and every other operator, augmented too (``fl += 512``,
+  ``fl <<= 10``, #2471), a parameter (a lambda's included), an import, a ``for``, ``with``,
+  ``except ... as`` or ``match`` capture target, a ``global`` or ``nonlocal`` name, a name
+  nothing binds, any other call, an ``os.open(*args)`` or ``(**kw)``. A false alarm only asks
+  for a registry entry; a miss is an unbounded file. Which bit is ``O_APPEND`` is read on the host running the guard (CI's Linux).
 * A mention of ``O_APPEND`` that reaches no ``os.open`` is not an open and is not counted
   (#2377). Flags handed to a helper are counted at the helper's own ``os.open``, whose flags
   parameter the scan cannot resolve, so it counts as append there.
@@ -251,7 +254,9 @@ def _bindings(scope, name: str):
             read.update(map(id, simple))
         elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr)) \
                 and isinstance(node.target, ast.Name) and node.target.id == name:
-            values += [node.value] if node.value is not None else []
+            # ``fl += 512`` is kept whole: no rule proves it append-free, so it counts (#2471).
+            values += ([node] if _arithmetic(node)
+                       else [node.value] if node.value is not None else [])
             read.add(id(node.target))
     for node in _body_nodes(scope):
         if (isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
@@ -261,6 +266,13 @@ def _bindings(scope, name: str):
 
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+_BIT_OPS = (ast.BitOr, ast.BitXor, ast.BitAnd)
+
+
+def _arithmetic(node) -> bool:
+    """An augmented assignment other than ``|=``, ``^=`` or ``&=`` (``fl += 512``, ``fl <<= 10``):
+    it can make the append bit from flags without it, so it is never append-free (#2471)."""
+    return isinstance(node, ast.AugAssign) and not isinstance(node.op, _BIT_OPS)
 
 
 def _scope_nodes(node):
@@ -317,12 +329,14 @@ class _Bindings:
     value on the path after it, so in ``flags = os.O_APPEND; helper(flags); flags = os.O_APPEND;
     os.open(p, flags)`` the open reads only the second value. Every path reaches the code after
     it: both arms of an ``if`` or ``try``, each ``match`` case, a loop's body back to its own top
-    and, through ``break``, to the code after the loop. So after ``flags = os.O_APPEND`` and
-    ``if c: flags = os.O_RDONLY``, ``os.open(p, flags)`` may read either value and is an append
-    open. Where it cannot tell it keeps more assignments, never fewer: ``return``, ``raise`` and
-    ``continue`` are read as falling through too, an ``except`` sees every value its ``try``
-    assigns, a ``:=``, a tuple or ``for`` target or an import does not hide the earlier value. It
-    may over-count, which fails the guard; it does not hide an append open."""
+    and, through ``break``, to the code after the loop; every value a ``try`` or ``with`` body
+    assigns reaches the code after it (a context manager may swallow an exception, #2467). So
+    after ``flags = os.O_APPEND`` and ``if c: flags = os.O_RDONLY``, ``os.open(p, flags)`` may
+    read either value and is an append open. Where it cannot tell it keeps more assignments,
+    never fewer: ``return``, ``raise`` and ``continue`` are read as falling through too, an
+    ``except`` sees every value its ``try`` assigns, a ``:=``, a tuple or ``for`` target or an
+    import does not hide the earlier value. It may over-count, which fails the guard; it does not
+    hide an append open."""
 
     def __init__(self, scope):
         self.defs: list = []          # every assignment to a plain name, in visiting order
@@ -376,13 +390,18 @@ class _Bindings:
             top = again
         return _merge(self._block(stmt.orelse, dict(top)), top, *breaks)
 
+    def _escapes(self, body: list, env: dict) -> tuple[dict, dict]:
+        """``body`` run from ``env``: the values at its end, and the values that may leave it
+        partway (before it, at its end, and every value it assigns), as an exception does."""
+        done = self._block(body, dict(env))
+        assigned = [{name: frozenset({d})} for s in body for n in _own(s)
+                    for d in self.defs if d is n for name in self.names[id(d)]]
+        return done, _merge(env, done, *assigned)
+
     def _try(self, stmt, env: dict) -> dict:
         """Each ``except`` may start anywhere in the ``try``: it sees every value the ``try``
         assigns and the values before it."""
-        done = self._block(stmt.body, dict(env))
-        assigned = [{name: frozenset({d})} for s in stmt.body for n in _own(s)
-                    for d in self.defs if d is n for name in self.names[id(d)]]
-        start = _merge(env, done, *assigned)
+        done, start = self._escapes(stmt.body, env)
         handled = []
         for handler in stmt.handlers:
             if handler.type is not None:
@@ -405,9 +424,11 @@ class _Bindings:
         if isinstance(stmt, _TRIES):
             return self._try(stmt, env)
         if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            # A context manager may leave its body partway and go on after it (``suppress``):
+            # every value the body assigns may reach the code after it (#2467).
             for item in stmt.items:
                 self._expr(item, env)
-            return self._block(stmt.body, env)
+            return self._escapes(stmt.body, env)[1]
         if isinstance(stmt, ast.Match):
             self._expr(stmt.subject, env)
             cases = []
@@ -538,8 +559,10 @@ def _name_may_append(name, chain, bindings, seen) -> bool:
 
 def _defs_may_append(defs, chain, bindings, seen) -> bool:
     """May any of the local assignments ``defs`` (``_Bindings``) give ``O_APPEND`` flags? An
-    ``x |= ...`` also brings the earlier value of ``x``; an assignment reached again (a loop) is
-    judged once. No assignment reaching a name the scope binds counts as append."""
+    ``x |= ...`` or ``x ^= ...`` also brings the earlier value of ``x``; ``x &= ...`` is
+    append-free when either side is; any other augmented operator counts as append (#2471). An
+    assignment reached again (a loop) is judged once. No assignment reaching a name the scope
+    binds counts as append."""
     if not defs:
         return True
     results = []
@@ -547,10 +570,12 @@ def _defs_may_append(defs, chain, bindings, seen) -> bool:
         if id(d) in seen:
             continue
         inner = seen | {id(d)}
-        results.append(_flags_may_append(d.value, chain, bindings, inner))
-        if isinstance(d, ast.AugAssign):
-            results.append(_defs_may_append(bindings.reads.get(id(d), frozenset()), chain,
-                                            bindings, inner))
+        value = _arithmetic(d) or _flags_may_append(d.value, chain, bindings, inner)
+        if isinstance(d, ast.AugAssign) and not _arithmetic(d):
+            earlier = _defs_may_append(bindings.reads.get(id(d), frozenset()), chain,
+                                       bindings, inner)
+            value = value and earlier if isinstance(d.op, ast.BitAnd) else value or earlier
+        results.append(value)
     return any(results)
 
 
@@ -745,6 +770,11 @@ class Guard(unittest.TestCase):
                      f"{pad}        os.close(os.open(path, shadow | os.O_WRONLY, 0o600))\n",
             "invert": f"{pad}os.close(os.open(path, ~os.O_RDONLY & ~os.O_CREAT, 0o600))\n",
             "add": f"{pad}os.close(os.open(path, os.O_WRONLY + 1024, 0o600))\n",
+            # #2471: augmented arithmetic makes the bit as the plain operator does.
+            "augmented add": f"{pad}fl = 512\n{pad}fl += 512\n"
+                             f"{pad}os.close(os.open(path, fl | os.O_WRONLY, 0o600))\n",
+            "augmented shift": f"{pad}fl = 1\n{pad}fl <<= 10\n"
+                               f"{pad}os.close(os.open(path, fl, 0o600))\n",
         }
         for name, extra in extras.items():
             with self.subTest(name):
@@ -757,6 +787,13 @@ class Guard(unittest.TestCase):
             "    os.open(p, os.O_RDWR & (1 << 10)); os.open(p, getattr(os, 'O_NOFOLLOW', 0))\n"
             "    os.open(p, getattr(os, 'O_NO_SUCH_FLAG', 0))\n", "x.py")),
             {"x.py::f": 1})
+        # #2471: ``+=`` at module level too; ``|=``, ``^=`` of append-free values and ``&=`` with
+        # an append-free side stay append-free.
+        self.assertEqual(dict(append_sites(
+            "FL = 512\nFL += 512\ndef g(p):\n    os.open(p, FL | os.O_WRONLY)\n"
+            "def h(p):\n    fl = os.O_WRONLY\n    fl |= os.O_CREAT\n    fl ^= os.O_EXCL\n"
+            "    os.open(p, fl)\n    fl = 1 << 10\n    fl &= os.O_WRONLY\n    os.open(p, fl)\n",
+            "x.py")), {"x.py::g": 1})
 
     def test_a_second_os_open_in_worker_log_fails_the_guard(self):
         """The review's case on the real tree: a second ``os.open(path, flags, 0o600)`` added to
@@ -770,6 +807,32 @@ class Guard(unittest.TestCase):
         key = f"{relative}::WorkerLifecycle._worker_log"
         self.assertEqual(sorted((grown - registered()).items()), [(key, 1)])
         self.assertEqual(append_sites(source, relative) - registered(), collections.Counter())
+
+    def test_values_a_with_body_assigns_reach_the_code_after_it(self):
+        """#2467: ``suppress`` can leave the body after ``may_raise()``, before the ``O_RDONLY``
+        rebinding, so both opens after it may append, as in the ``try`` form. Flags that are
+        ``O_RDONLY`` on every path stay plain. In ``_worker_log`` the same shape plus a second
+        ``os.open`` fails the guard."""
+        body = ("    with suppress(Exception):\n        may_raise()\n        flags = os.O_RDONLY\n"
+                "    os.open(p, flags)\n    os.open(p, flags)\n")
+        for opener in ("with", "async with"):
+            with self.subTest(opener):
+                source = f"async def f(p):\n    flags = os.O_APPEND\n{body}".replace(
+                    "with", opener)
+                self.assertEqual(dict(append_sites(source, "x.py")), {"x.py::f": 2})
+        self.assertEqual(dict(append_sites(
+            f"def f(p):\n    flags = os.O_RDONLY\n{body}", "x.py")), {})
+        key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log"
+        source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
+        pad = "            "
+        grown = source.replace(f'{pad}return os.fdopen(os.open(path, flags, 0o600), "ab")\n',
+                               f"{pad}with contextlib.suppress(OSError):\n"
+                               f"{pad}    path.stat()\n{pad}    flags = os.O_RDONLY\n"
+                               f"{pad}os.close(os.open(path, flags, 0o600))\n"
+                               f'{pad}return os.fdopen(os.open(path, flags, 0o600), "ab")\n')
+        self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
+        found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
+        self.assertEqual(sorted((found - registered()).items()), [(key, 1)])
 
     def test_a_second_open_in_a_registered_function_fails_the_guard(self):
         """The review's case: ``corpus.record`` is registered for its one ``append_keeping``; an

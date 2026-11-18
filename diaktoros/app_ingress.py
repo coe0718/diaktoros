@@ -78,28 +78,43 @@ def paused_reason(loop: dict) -> str:
     return f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
 
 
-def redrive_held(loop: dict, st) -> bool:
-    """Whether this process is a watchdog re-drive of an App delivery for a loop that is paused
-    (#1297). The dispatcher (``gate_app.py``) never sees a re-drive, so the gate drops it itself
-    (``gate.context``), and nothing the gate does on its way out acts either (the reviewer's
-    declined-head merge-check refresh sees the drop's mark, ``held_drop``, and does not ask this
-    again). The operator's in-process runs (``hermes dk review``) are not re-drives and still
-    act."""
+def drop_reason(loop: dict, flag: bool | None) -> str:
+    """Why a delivery is dropped when ``pause_flag`` read ``flag`` (``True`` or ``None``). An
+    unreadable or malformed flag drops too (#1295: fail closed), but is said to be unknown, not
+    paused, by the dispatcher and a held re-drive alike (#1975, #1976)."""
+    if flag:
+        return paused_reason(loop)
+    return (f"⚠️ {loop['id']}'s pause flag ({FILE}) cannot be read or is malformed: the App's "
+            f"delivery is dropped, not guessed armed (`hermes dk arm --loop {loop['id']}` "
+            "rewrites it)")
+
+
+def redrive_held(loop: dict, st) -> str:
+    """Why this process, a watchdog re-drive of an App delivery for a loop that is paused or whose
+    pause flag is unknown, is held (#1297), or '' when it is not. The dispatcher (``gate_app.py``)
+    never sees a re-drive, so the gate drops it itself (``gate.context``), and nothing the gate
+    does on its way out acts either (the reviewer's declined-head merge-check refresh sees the
+    drop's mark, ``held_drop``, and does not ask this again). The operator's in-process runs
+    (``hermes dk review``) are not re-drives and still act. The flag is read once: the reason is
+    the one that read gave (#1975)."""
     from . import config
-    return bool(config.app_ingress(loop)) and redriven() and paused(st)
+    if not (config.app_ingress(loop) and redriven()):
+        return ""
+    flag = pause_flag(st)
+    return "" if flag is False else drop_reason(loop, flag)
 
 
 _HELD_MARK = "diaktoros_paused_redrive"
 
 
-def drop_held_redrive(loop: dict):
-    """End a re-drive ``redrive_held`` held (#1297): ``silence`` with ``paused_reason``, its
+def drop_held_redrive(reason: str):
+    """End a re-drive ``redrive_held`` held (#1297): ``silence`` with its reason, the
     ``SystemExit`` marked as this drop so the gate's exit (the reviewer's declined-head refresh,
     ``scripts/gate_reviewer.refreshes_declined_head``) knows nothing may act, without reading
     the pause flag again: an ``arm`` between two reads would let a dropped delivery act."""
     from .util import silence
     try:
-        silence(paused_reason(loop))
+        silence(reason)
     except SystemExit as exc:
         setattr(exc, _HELD_MARK, True)
         raise

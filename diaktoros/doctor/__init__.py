@@ -197,7 +197,19 @@ def hooks_fix(loop: dict, what: str) -> str:
 
 
 def _env_keys(path: pathlib.Path) -> set[str]:
-    """Keys with nonempty values in a profile env; never return or report the values."""
+    """Keys with nonempty values in a profile env; never return or report the values. Parsed by
+    Hermes's own ``.env`` tokenizer (``agent.secret_scope.load_env_file``, #2374) when Hermes is
+    importable, as it is under ``hermes dk``, so ``export``, quoting and comments read as Hermes
+    reads them; otherwise by the line reader below."""
+    try:
+        from agent.secret_scope import load_env_file
+    except Exception:
+        load_env_file = None
+    if load_env_file is not None:
+        try:
+            return {str(key) for key, value in load_env_file(path).items() if str(value).strip()}
+        except Exception:
+            return set()
     try:
         lines = path.read_text().splitlines()
     except Exception:
