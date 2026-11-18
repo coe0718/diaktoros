@@ -31,6 +31,7 @@ from diaktoros import (  # noqa: E402
     escalate_pending,
     gate,
     gh,
+    issue_facts,
     observer,
     transition,
 )
@@ -61,6 +62,33 @@ def _take_pending_escalation(loop: dict, st, number: int, pr_head: str, prior: i
     escalate_pending.take(st, number)
     silence(f"#{number} @ {pr_head[:7]} pending escalation taken at verdict {prior + 1} — "
             "handed to adjudication instead of a fix", "accepted")
+
+
+def _escalate_instead(loop: dict, st, number: int, pr_head: str, prior: int, pr: dict,
+                      review: dict) -> None:
+    """A ruling instead of a fix round at this changes-requested verdict, when one is owed: the
+    operator's pending escalation (#1246), else a blocking finding that names the PR itself or
+    an issue it closes (#754: the fixer cannot deliver its own PR's work, and a round there only
+    burns the cap). Returns only when neither applies, and the fixer gets the finding."""
+    pending = escalate_pending.get(st, number)
+    if pending:
+        _take_pending_escalation(loop, st, number, pr_head, prior, pending)
+    cited = issue_facts.cited_own_work(loop, number, pr.get("body"),
+                                       (pr.get("head") or {}).get("ref"), review.get("body"))
+    if not cited:
+        return
+    import secrets
+    from diaktoros.util import now_iso
+    why = (f"a blocking finding names {', '.join(f'#{n}' for n in cited)}, this PR or an issue "
+           "it closes: a fix round cannot deliver the PR's own work")
+    outcome = gate.breach(loop, st, number, pr_head, prior + 1, f"escalated: {why}",
+                          escalated={"by": gate.CYCLE_ESCALATION, "at": now_iso(), "reason": why,
+                                     "operation_id": secrets.token_hex(16)})
+    if outcome not in PARKED:
+        silence(f"#{number} @ {pr_head[:7]} finding cites the PR's own work, but the breach was "
+                f"{outcome}: nothing parked, no fix queued")
+    silence(f"#{number} @ {pr_head[:7]} {why} — handed to adjudication instead of a fix",
+            "accepted")
 
 
 def _author(loop: dict, pr: dict) -> str:
@@ -292,9 +320,7 @@ def main() -> None:
                     "no fix queued; the next verdict tries again")
         escalate_pending.take(st, number)          # the cap's breach is the ruling (#1246)
         silence(f"cap reached on #{number} — handed to adjudication instead of a fix")
-    pending = escalate_pending.get(st, number)
-    if pending:
-        _take_pending_escalation(loop, st, number, pr_head, prior, pending)
+    _escalate_instead(loop, st, number, pr_head, prior, pr, review)
 
     # A loop that has not opted in to unattended fixer pushes gets no fixer turn: it could not
     # publish, so it would spend a model conversation and fail. block_pr_agent holds the verdict
