@@ -20,13 +20,15 @@ import tempfile
 from pathlib import Path
 
 from . import history, history_render
-from .run_supervisor import views
+from .run_supervisor import ISSUE_SEATS, views
 
 _SUFFIX = {"json": "json", "markdown": "md", "text": "txt"}
 
 
 def prs_since(db: Path, repo: str, since: float) -> tuple[list[int], str]:
-    """``(PR numbers with a turn since `since`, oldest first; a gap or "")``. Read-only."""
+    """``(PR numbers with a turn since `since`, oldest first; a gap or "")``. Read-only. The issue
+    seats' rows are keyed by issue number, so they are left out, as ``views.closed_history``
+    leaves them out (#2179)."""
     try:
         con = views.read_only_connect(db)
     except sqlite3.Error as exc:
@@ -34,9 +36,11 @@ def prs_since(db: Path, repo: str, since: float) -> tuple[list[int], str]:
     if con is None:
         return [], "no run ledger"
     try:
+        seats = ",".join("?" * len(ISSUE_SEATS))
         rows = con.execute("SELECT pr, MIN(created) AS first FROM runs WHERE repo=? AND "
-                           "created>=? AND pr IS NOT NULL GROUP BY pr ORDER BY first, pr",
-                           (repo, since)).fetchall()
+                           f"created>=? AND pr IS NOT NULL AND seat NOT IN ({seats}) "
+                           "GROUP BY pr ORDER BY first, pr",
+                           (repo, since, *ISSUE_SEATS)).fetchall()
     except sqlite3.Error as exc:
         return [], f"the run ledger's runs are unreadable ({type(exc).__name__})"
     finally:
