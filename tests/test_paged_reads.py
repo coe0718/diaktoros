@@ -220,7 +220,7 @@ def _evaluated_outside(node: ast.AST) -> list[ast.AST]:
             *([node.returns] if node.returns else [])]
 
 
-def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
+def _name_loads(scope: ast.AST, name: str, module: bool = False) -> list[ast.Name]:
     """Every load of ``name`` that reads ``scope``'s binding: in ``scope``'s body and in the
     nested functions and lambdas that capture it (#2363: a closure's ``fetch(loop, path)``
     reads ``path`` too). A nested function or lambda that rebinds ``name`` reads its own in
@@ -231,8 +231,13 @@ def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
     in a class are nested scopes; a class's own binding does not reach its methods.
 
     A function that rebinds ``name`` may still hold one that declares it ``global``, which
-    reads the module's binding (#2423, ``_global_loads``). A comprehension whose ``for``
-    target is ``name`` reads its own ``name`` everywhere but its first ``iter`` (#2424)."""
+    reads the module's binding (#2423, ``_global_loads``): so wherever ``scope``'s ``name``
+    is the module's (``module``: the module itself, a function declaring it ``global``, or one
+    capturing it from either), a rebinding function is searched for a deeper ``global``
+    (#2536 review F3: under a ``global`` function, a shadowing one hid the ``global`` below
+    it). A comprehension whose ``for`` target is ``name`` reads its own ``name`` everywhere
+    but its first ``iter`` (#2424, ``_comp_binds``)."""
+    module = module or isinstance(scope, ast.Module)
     loads: list[ast.Name] = []
     stack = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
     while stack:
@@ -244,16 +249,21 @@ def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
             if isinstance(node, ast.ClassDef):
                 stack += node.body
             elif not isinstance(scope, ast.ClassDef) and not _binds(node, name):
-                loads += _name_loads(node, name)
-            elif isinstance(scope, ast.Module):
+                loads += _name_loads(node, name, module)
+            elif module:
                 loads += _global_loads(node, name)
-        elif isinstance(node, COMPS) and any(
-                isinstance(n, ast.Name) and n.id == name
-                for gen in node.generators for n in ast.walk(gen.target)):
+        elif isinstance(node, COMPS) and _comp_binds(node, name):
             stack.append(node.generators[0].iter)
         else:
             stack += ast.iter_child_nodes(node)
     return loads
+
+
+def _comp_binds(comp: ast.AST, name: str) -> bool:
+    """Whether a comprehension's ``for`` targets bind ``name``, making it the comprehension's
+    own (#2424)."""
+    return any(isinstance(n, ast.Name) and n.id == name
+               for gen in comp.generators for n in ast.walk(gen.target))
 
 
 def _global_loads(shadow: ast.AST, name: str) -> list[ast.Name]:
@@ -262,14 +272,15 @@ def _global_loads(shadow: ast.AST, name: str) -> list[ast.Name]:
     do the functions nested in that one (#2423: ``def outer(): path = "/own"; def inner():
     global path; return gh.fetch(None, path)`` read the module's path unpaged). ``nonlocal``
     cannot reach past ``shadow``: the nearest enclosing function binding it is ``shadow`` or
-    one inside it."""
+    one inside it. The search stops at such a function: ``_name_loads`` reads it whole, a
+    deeper shadow included (#2536 review F3), so no load is counted twice."""
     loads: list[ast.Name] = []
     stack = list(ast.iter_child_nodes(shadow))
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
                 isinstance(n, ast.Global) and name in n.names for n in _own(node)):
-            loads += _name_loads(node, name)
+            loads += _name_loads(node, name, module=True)
         else:
             stack += ast.iter_child_nodes(node)
     return loads
@@ -479,6 +490,46 @@ class Scan(unittest.TestCase):
                                  ["diaktoros/new.py::<module>::/unsafe?per_page=100"])
         own = '    path = "/own"\n    def inner():\n        return gh.fetch(None, path)\n'
         self.assertEqual(_one(head + own + tail), [])
+
+    def test_a_global_under_a_shadow_under_a_global_reads_the_module_name(self):
+        # #2536 review F3: ``inner`` declares ``path`` global, ``shadow`` rebinds it, and
+        # ``deeper`` declares it global again and fetches it: the module's ``path``, unpaged.
+        # The search for a ``global`` stopped at ``inner`` and never looked past ``shadow``.
+        source = ('from diaktoros import gh\npath = "/unsafe?per_page=100"\ndef outer():\n'
+                  '    path = "/own"\n    def inner():\n        global path\n'
+                  '        def shadow():\n            path = "/inner"\n'
+                  '            def deeper():\n                global path\n'
+                  '                return gh.fetch(None, path)\n'
+                  '            return deeper()\n        return shadow()\n    return inner()\n'
+                  'gh._read_pages(None, path, "x", 3)\n')
+        bad = ["diaktoros/new.py::<module>::/unsafe?per_page=100"]
+        self.assertEqual(_one(source), bad)
+        # Without ``deeper``'s ``global`` it reads ``shadow``'s own ``path``: still paged.
+        self.assertEqual(_one(source.replace("                global path\n", "")), [])
+        # Review F1: the scan shares this file, so the change proof's base run has the fix too;
+        # dropping ``module`` (the scan before F3) loses the read.
+        real = _name_loads
+        with mock.patch(f"{__name__}._name_loads",
+                        lambda scope, name, module=False: real(scope, name)):
+            self.assertEqual(_one(source), [])
+
+    def test_the_global_and_comprehension_rules_are_each_needed(self):
+        # #2536 review F1: the scan shares this file with its tests, so the change proof's base
+        # run (the PR's tests on the base) has #2423's and #2424's rules too. Undone here, the
+        # scan misses #2423's global read and reports #2424's comprehension's own ``path``.
+        glob = ('from diaktoros import gh\npath = "/unsafe?per_page=100"\ndef outer():\n'
+                '    path = "/own"\n    def inner():\n        global path\n'
+                '        return gh.fetch(None, path)\n    return inner()\n'
+                'gh._read_pages(None, path, "x", 3)\n')
+        comp = ('from diaktoros import gh\ndef f(loop):\n    path = "/safe?per_page=100"\n'
+                '    x = [gh.fetch(loop, path) for path in ["/other"]]\n'
+                '    gh._read_pages(loop, path, "x", 3)\n')
+        self.assertEqual(_one(glob), ["diaktoros/new.py::<module>::/unsafe?per_page=100"])
+        self.assertEqual(_one(comp), [])
+        with mock.patch(f"{__name__}._global_loads", lambda node, name: []):
+            self.assertEqual(_one(glob), [])
+        with mock.patch(f"{__name__}._comp_binds", lambda node, name: False):
+            self.assertEqual(_one(comp), ["diaktoros/new.py::f::/safe?per_page=100"])
 
     def test_a_comprehension_binding_the_name_reads_its_own(self):
         # #2424: ``[gh.fetch(loop, path) for path in ...]`` reads the comprehension's ``path``,
