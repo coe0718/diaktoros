@@ -88,6 +88,10 @@ def overruled(reviews: list, loop: dict, head: str, ruled_at: float,
     mine = [r for r in reviews if isinstance(r, dict) and gate.is_reviewer(r, loop)]
     latest = gate.latest_effective_review_at_head(mine, loop, head)
     if latest is None:
+        # A reviewer review at ``head`` that reads as no verdict (undatable, unfamiliar) is an
+        # unknown verdict, not none: nothing from an earlier head is overruled over it.
+        if any(r.get("commit_id") == head and gh.review_state(r) != "COMMENTED" for r in mine):
+            return None
         standing = [r for r in gate.blocking_reviews(mine) if r.get("commit_id") != head]
         latest = standing[0] if len(standing) == 1 and saw and standing[0].get("id") in saw else None
     if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
@@ -157,7 +161,9 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
       was posted by hand), and is nothing owed when there is none. An older ruling's pending step
       is never acted on again, so it waits on nothing.
     * No record here and no adjudicator's approval as the head's verdict (``ruled`` false):
-      nothing to act on. A record or ruling that can't be read is not settled.
+      nothing to act on, unless an ACCEPT here overruled the reviewer's standing request from an
+      earlier head that it saw (#2402): its approval is still owed. A record or ruling that can't
+      be read is not settled.
     * With ``adjudicator_approves`` off, the sweep acts on nothing and reads nothing back, so no
       wait could end: ''."""
     if not config.adjudicator_approves(loop):
@@ -170,9 +176,16 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         for step in ("approve", "dismiss"):
             if (state := row.get(step) or "pending") in ("posting", "uncertain"):
                 return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
-    if not rows and not ruled:
-        return ""
     ruling = views.ruling_row(db, loop["repo"], number) or {}
+    if not rows and not ruled:
+        # #2402: at a head with no verdict yet, an ACCEPT that overruled the reviewer's standing
+        # request from an earlier head still owes its approval; a merge now would strand that
+        # request again. With nothing it can overrule (no record, not seen), nothing waits.
+        if (ruling.get("head"), ruling.get("verdict")) != (head, "ACCEPT") or overruled(
+                reviews, loop, head, ruling.get("created") or 0,
+                views.ruling_saw(db, str(ruling.get("run_id") or ""))) is None:
+            return ""
+        return "the adjudicator's ACCEPT has not been acted on yet"
     newest = ruling.get("run_id")
     if not newest:
         return "the adjudicator's ruling can't be read"

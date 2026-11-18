@@ -609,6 +609,37 @@ class Ruled(Base):
         self.ruling = {"head": ruled_head, "verdict": "ACCEPT", "run_id": "r1"}
         self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, "9" * 40), [])
 
+    def moved_head(self, saw):
+        """#2402 review, F2: the ruled head moved, the reviewer has no verdict at the new one, and
+        an ACCEPT there overrules the reviewer's request still standing at the old head. Until
+        the sweep approves, nothing names that request at this head."""
+        self.reviews = [approval("e" * 40, review_id=11, state="CHANGES_REQUESTED")]
+        self.rows = []                                # the sweep has not acted yet
+        patch = mock.patch.object(views, "ruling_saw", return_value=saw)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_at_a_moved_head_the_merge_waits_for_the_approval_the_accept_owes(self):
+        # A behind merge now would strand the request again: update_behind waits.
+        self.moved_head(frozenset({11}))
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews,
+                                                  ruled=False),
+                         "the adjudicator's ACCEPT has not been acted on yet")
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+
+    def test_at_a_moved_head_with_nothing_it_can_overrule_the_wait_ends(self):
+        # No launch record, or a request the ruling never saw: the sweep will act on nothing, so
+        # nothing may wait for it.
+        for saw in (None, frozenset({99})):
+            with self.subTest(saw=saw):
+                self.moved_head(saw)
+                self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews,
+                                                          ruled=False), "")
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
+
     def test_a_dismissal_posted_on_red_ci_lets_the_base_merge_go(self):
         # #2402 (1): the sweep dismisses the overruled request without waiting for green
         # (test_ruled_approval_sweep), so the merge that may turn the head green isn't held. A

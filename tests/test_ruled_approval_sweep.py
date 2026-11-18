@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_ruled_approval as tra  # noqa: E402
 from diaktoros import broker, ci, config, gate, merge_check, pr_hold, ruled_approval  # noqa: E402
-from diaktoros import run_supervisor  # noqa: E402
+from diaktoros import ready, run_supervisor  # noqa: E402
 
 PR = {**fg.LIVE, "user": {"login": "fixer"}}
 CHANGES, DISMISSED, TUCK = tra.CHANGES, tra.DISMISSED, tra.TUCK
@@ -597,6 +597,50 @@ class HeadMoved(Base):
         self.sweep()
         self.approve.assert_not_called()
         self.dismiss.assert_not_called()
+        # Review of #2544, F3: the same ruling with its launch record dismisses the same request.
+        self.saw(5)
+        self.sweep()
+        self.sweep()
+        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
+
+    def test_an_unreadable_verdict_at_the_ruled_head_is_not_taken_for_none(self):
+        # Review of #2544, F1: an undatable reviewer approval at the ruled head reads as no
+        # effective verdict, but it is an unknown one: the earlier head's request is not
+        # overruled over it, and nothing is approved that could not then be dismissed.
+        undatable = {**tra.review(6, "APPROVED"), "submitted_at": None}
+        self.assertIsNone(gate.latest_effective_review_at_head([undatable], self.loop, fg.HEAD))
+        self.reviews = [self.standing, undatable]
+        self.ruled("ACCEPT")
+        self.saw(5)
+        self.sweep()
+        self.sweep()
+        self.approve.assert_not_called()
+        self.dismiss.assert_not_called()
+
+    def kinds(self):
+        """The merge check's real inputs for the PR as the reviews now stand."""
+        pr = {**fg.LIVE, "user": {"login": "fixer"}}
+        with mock.patch.object(gate.shadows, "shadow_state", return_value=("", "", "")), \
+                mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            return ready.assess_kinds({**self.loop, "required_checks": []}, self.st, pr,
+                                      list(self.reviews), tra.GREEN, tra.CLEAN)
+
+    def test_the_merge_check_goes_green_with_no_person_but_not_over_another_login(self):
+        # Review of #2544, F5: the real merge-check decision before and after the sweep acts.
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        self.saw(5)
+        self.assertNotEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
+        self.sweep()
+        self.sweep()
+        self.assertEqual(self.kinds(), [])
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
+        # Another login's request still standing at the old head keeps it red, and is named.
+        self.reviews = [*self.reviews, tra.review(12, "CHANGES_REQUESTED", login="coe0718",
+                                                  head=OLD)]
+        state, why = merge_check.decide(self.kinds())[:2]
+        self.assertNotEqual(state, merge_check.SUCCESS)
+        self.assertIn("coe0718", str(self.kinds()))
 
     def test_a_verdict_at_the_ruled_head_still_decides(self):
         # The reviewer did review the new head: that request is the one overruled, as before
@@ -631,7 +675,7 @@ class RulingRecordsWhatItSaw(tra.Base):
     """#2402: the adjudicator's real launch (``_prepare_launch``, with the real ``pr_record``)
     records the reviewer reviews its prompt showed, before the seat starts."""
 
-    def launch(self, reviews):
+    def launch(self, reviews, turn_key="breach:1"):
         import sqlite3
         import time
         from contextlib import closing
@@ -639,11 +683,11 @@ class RulingRecordsWhatItSaw(tra.Base):
         from diaktoros.run_supervisor import pr_facts
         marker = self.mark_escalated(by="reviewer", status="awaiting-adjudication")
         sup = run_supervisor.Supervisor(self.db)
-        key = f"{fg.REPO}:7:{fg.HEAD}:adjudicator:breach:1"
-        sup.enqueue(key, fg.REPO, 7, fg.HEAD, "adjudicator", turn_key="breach:1")
+        key = f"{fg.REPO}:7:{fg.HEAD}:adjudicator:{turn_key}"
+        sup.enqueue(key, fg.REPO, 7, fg.HEAD, "adjudicator", turn_key=turn_key)
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET state='running', owner='w', launch_intent=? "
-                        "WHERE seat='adjudicator'", (time.time(),))
+                        "WHERE seat='adjudicator' AND turn_key=?", (time.time(), turn_key))
         row = sup.get(key)
         turn = run_supervisor._Turn(row["id"], "w", 60, row=row, loop=self.loop)
         pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
@@ -666,6 +710,31 @@ class RulingRecordsWhatItSaw(tra.Base):
         self.assertIsNotNone(launch)
         self.assertEqual(saw, frozenset({5, 6}))          # the reviewer's; never another login's
         self.assertIn("CHANGES_REQUESTED at eeeeeeeeeeee", launch.prompt)
+
+    def test_a_ruling_whose_view_cannot_be_recorded_never_starts(self):
+        # Review of #2544, F4. Control: a launch records what its prompt showed and goes ahead.
+        import sqlite3
+        from contextlib import closing
+        from diaktoros import state as state_mod
+        reviews = [tra.review(5, "CHANGES_REQUESTED", head=OLD)]
+        launch, saw = self.launch(reviews)
+        self.assertIsNotNone(launch)
+        self.assertEqual(saw, frozenset({5}))
+        # A second ruling turn loses its run between the view's record and the ruling's: the
+        # write lands nowhere, so the launch stops there, and the breach is never marked as
+        # being ruled on (the seat's last step before it starts).
+        real = run_supervisor.Supervisor.record_view
+
+        def view_then_lose_the_run(sup, run_id, owner, partial):
+            real(sup, run_id, owner, partial)
+            with closing(sqlite3.connect(self.db)) as con, con:
+                con.execute("UPDATE runs SET owner='another-worker' WHERE id=?", (run_id,))
+        with mock.patch.object(run_supervisor.Supervisor, "record_view", autospec=True,
+                               side_effect=view_then_lose_the_run), \
+                mock.patch.object(state_mod.LoopState, "breach_start") as start:
+            with self.assertRaisesRegex(ValueError, "ruling's view was recorded"):
+                self.launch(reviews, turn_key="breach:2")
+        start.assert_not_called()
 
     def test_the_record_lists_only_what_survives_its_caps(self):
         from diaktoros.run_supervisor import pr_facts
