@@ -589,7 +589,7 @@ def _local_state(c) -> None:
     # shadow hold says the fixer answers it, and the next event is the fixer's.
     c.shadow_fix = gate.shadows.shadow_fix_owed(c.loop, c.marker, c.head)
     # #2262: that fixer turn may have ended with no push, and the sweep re-arms only some.
-    c.shadow_turn = explain_next.shadow_fix_turn(c) if c.shadow_fix else ("", "")
+    c.shadow_turn = explain_next.shadow_fix_turn(c) if c.shadow_fix else ("", "", "")
     if c.shadow_fix:
         c.parked, c.ruled = False, None
 

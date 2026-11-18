@@ -169,6 +169,33 @@ class Operator(ruling.Base):
                 with closing(sqlite3.connect(self.db)) as con, con:
                     con.execute("DELETE FROM runs WHERE seat='fixer'")
 
+    def test_retry_of_an_older_rulings_shadow_turn_is_not_named_for_this_one(self):
+        # #2535 review F1: an older ruling's shadow turn at the same head, cancelled, is the only
+        # row retry re-arms; explain named that retry for the current ruling's turn (and for an
+        # uncertain one, dropped the reconcile). The current turn is the one the step names.
+        self.upheld_marker()
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        retry = f"hermes dk retry --loop {self.loop['id']} --pr 7 --seat fixer"
+        old = f"{run_supervisor.SHADOW_FIX_KEY}1"
+        for state, kind, step in (("uncertain", "operator", "reconcile it first"),
+                                  ("succeeded", "operator", f"`retry` would re-arm only {old} "
+                                   "(cancelled), not this ruling's turn")):
+            with self.subTest(state=state):
+                sup = self.shadow_fix_row(state)
+                with mock.patch.object(sup, "_spawn"):
+                    sup.enqueue(f"{fg.REPO}:7:{fg.HEAD}:fixer:{old}", fg.REPO, 7, fg.HEAD,
+                                "fixer", turn_key=old)
+                with closing(sqlite3.connect(self.db)) as con, con:
+                    con.execute("UPDATE runs SET state='cancelled', error=?, push_admitted=1 "
+                                "WHERE turn_key=?", (run_supervisor.OPERATOR_CANCEL, old))
+                report = self.explain()
+                self.assertEqual(report["next"]["kind"], kind, report["next"])
+                self.assertIn(step, report["next"]["action"])
+                self.assertNotIn(f"`{retry}` re-arms it", report["next"]["action"])
+                self.assertIn(f"is {state} with no fix pushed", report["next"]["action"])
+                with closing(sqlite3.connect(self.db)) as con, con:
+                    con.execute("DELETE FROM runs WHERE seat='fixer'")
+
     def ruling_notice(self, author="fixer", verdict="REJECT", shown=None, **live):
         """#2258: the operator's ruling notice for a new ruling that was shown shadow review
         ``shown`` (default: the newest one recorded), with the live PR changed by ``live``."""
