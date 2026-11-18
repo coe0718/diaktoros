@@ -19,8 +19,8 @@ a lock-named file holding data is archived) and in-progress temp files (``util.a
 name shape *and* held open by their writer), so ``restore`` never writes them back. A listed file
 that is gone by the time it is read (a temp renamed into place, an ``artifacts/<n>/`` file
 cleaned up) is left out as well, not a failed backup. The manifest's ``skipped`` names every temp
-and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print them
-(``cli.lifecycle._report_left_out``).
+and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print their count
+and the first five names (``cli.lifecycle._left_out``, #2417, #2459).
 
 Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
 archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (``DEFAULT_KEEP``;

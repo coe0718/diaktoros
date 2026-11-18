@@ -129,7 +129,8 @@ def _green(loop: dict, st, path, memory: dict, head: str) -> None:
 
 
 def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
-    """One watchdog pass over main (no model, no write). True when a notice was sent now."""
+    """One watchdog pass over main (no model; one GitHub write, the flake rerun, when
+    ``main_flake_rerun`` is on: #2283). True when a notice was sent now."""
     from . import observer
     ref = gh.api(loop, f"/repos/{loop['repo']}/commits/{loop['base']}",
                  login=loop.get("read_token"))

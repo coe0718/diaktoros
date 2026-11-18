@@ -48,7 +48,9 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     holding a `:` (a `user:password`, however short) or that has a digit, `+`, `/` or `=`, a
     capital after its first letter or is 20 or more characters, an App JWT, a private key) and
     every token this run holds, the person's included, is replaced by `[REDACTED]`. "Basic" followed
-    by an ordinary word ("Basic authentication failed") is kept. A credential
+    by most ordinary words ("Basic authentication failed") is kept, but not by every one: a
+    lower-case word that happens to decode as base64 to bytes holding a `:` ("Basic chorizo") is
+    cut too, the price of catching a short credential (#2523). A credential
     GitHub echoes in some other shape
     that this run does not hold would not be recognised: the log is still a spike's, read before
     it is shared. The review, reviewer-request and check-run steps are
