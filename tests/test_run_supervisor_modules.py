@@ -491,6 +491,15 @@ class Split(unittest.TestCase):
         nested = head + "        if c:\n            from diaktoros.run_supervisor import views\n" + tail
         self.assertEqual(_shadowed_submodules(nested), [(len(nested.splitlines()), "views")])
         self.assertEqual(_local_submodule_shadows(nested, "x.py"), [("f", "views")])
+        # #2536 review F6: a ``del`` in the body unbinds it again, so the else's read raises.
+        deleted = (head + "        from diaktoros.run_supervisor import views\n"
+                   "        del views\n" + tail)
+        self.assertEqual(_shadowed_submodules(deleted), [(len(deleted.splitlines()), "views")])
+        self.assertEqual(_local_submodule_shadows(deleted, "x.py"), [("f", "views")])
+        namespace = {}
+        exec(compile(deleted, "<f>", "exec"), namespace)
+        with self.assertRaises(UnboundLocalError):
+            namespace["f"](True)
 
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`

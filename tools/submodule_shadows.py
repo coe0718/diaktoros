@@ -141,6 +141,12 @@ def _imports(node: ast.AST, name: str) -> bool:
             and any((a.asname or a.name.split(".")[0]) == name for a in node.names))
 
 
+def _deletes(stmts: list, name: str) -> bool:
+    """Whether a ``del`` anywhere in these statements may unbind ``name`` (#2536 review F6)."""
+    return any(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name
+               for stmt in stmts for n in ast.walk(stmt))
+
+
 def _reads(nodes, name: str) -> list[tuple[int, int]]:
     """(line, column) of each read of ``name`` in these nodes, nested scopes' bodies excluded."""
     return [(n.lineno, n.col_offset) for n in _scope_walk(list(nodes), module=False)
@@ -153,13 +159,15 @@ def _block_reads(stmts: list, name: str) -> list[tuple[int, int]]:
     an if, loop, with, try, except handler or match case) starts unbound: an import inside one
     binds the rest of that block only, since the block may not run (``if False: import ...``).
     The one exception is a ``try``'s ``else``: it runs only once the ``try`` body has finished, so
-    an import at that body's top level has bound it (#2522)."""
+    an import at that body's top level has bound it (#2522), unless that body also ``del``s the
+    name (#2536 review F6)."""
     found = []
     for stmt in stmts:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             found += _reads([stmt], name)          # decorators, bases, defaults: not the body
         else:
-            bound_else = isinstance(stmt, _TRIES) and any(_imports(s, name) for s in stmt.body)
+            bound_else = (isinstance(stmt, _TRIES) and any(_imports(s, name) for s in stmt.body)
+                          and not _deletes(stmt.body, name))
             for field, value in ast.iter_fields(stmt):
                 if bound_else and field == "orelse":
                     continue
@@ -187,7 +195,8 @@ def unbound_read(func: ast.AST, name: str) -> int | None:
     An import binds the statements after it in its own block and in the blocks those hold (see
     _block_reads), so ``try: import views; views.x()`` is safe while ``if c: import views`` then
     ``views.x()`` after the ``if`` is not, and neither is a read after a ``try`` whose body
-    imports it (an exception may skip the import); its ``else`` is bound (#2522). Not seen: a read in a nested
+    imports it (an exception may skip the import); its ``else`` is bound (#2522) unless that body
+    ``del``s it. Not seen: a read in a nested
     function or lambda (a closure cell), a ``del`` of the name after its import, and a read in a
     loop body that follows the import in the text but runs first on a later iteration."""
     if not any(_imports(n, name) for n in scope_nodes(func)):
