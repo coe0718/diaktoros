@@ -1412,15 +1412,14 @@ class LoopState:
             self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
-    def review_cap_grant(self, number: int, head: str, rounds: int) -> bool:
-        """Allow exactly one more verdict at ``head`` once ``rounds`` verdicts are spent.
-
-        False when this head already holds an unspent grant for these rounds.
-        """
+    def review_cap_grant(self, number: int, head: str, rounds: int, replacing=None) -> bool:
+        """Allow one more verdict at ``head`` once ``rounds`` are spent. False when the head holds
+        that grant already, or ``replacing`` (#2401) is no longer the grant."""
         with self.locked():
             data = self._review_caps()
             entry = data.get(str(number)) if isinstance(data.get(str(number)), dict) else {}
-            if entry.get("grant") == {"head": head, "rounds": rounds}:
+            if (entry.get("grant") == {"head": head, "rounds": rounds}
+                    or replacing is not None and entry.get("grant") != replacing):
                 return False
             data[str(number)] = {**entry, "grant": {"head": head, "rounds": rounds}}
             self._save_strict(self.dir / "review-only-caps.json", data)
