@@ -228,6 +228,34 @@ class AfterEnabling(Steps):
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
 
+    def test_with_pushes_on_an_ended_turn_is_no_run_that_did_not_start(self):
+        # #2077: below the cap with pushes on, a failed or cancelled fixer turn at the head got
+        # "the fixer gate did not start one" and a step to re-deliver "after checking why its run
+        # did not start". The gate did start it; the step is the ledger's own recovery.
+        redeliver = "re-deliver the changes-requested review event for head aaaaaaa"
+        for state, error, rearmed in (("failed", "", True),
+                                      ("cancelled", run_supervisor.OPERATOR_CANCEL, False)):
+            with self.subTest(state=state):
+                sup, _ = self.ledgered(state, error)
+                self.set_push(True)
+                report = self.report()
+                step = report["next"]
+                self.assertEqual(step["kind"], "fixer-retry", step)
+                self.assertNotIn("did not start", step["action"])
+                self.assertIn(f"the fixer turn at head aaaaaaa is {state} with no fix pushed",
+                              step["action"])
+                self.assertIn(self.retry(), step["action"])      # the plan offers both rows
+                self.assertEqual(redeliver in step["action"], rearmed, step["action"])
+                self.assertFalse([b for b in report["blockers"] if "did not start" in b],
+                                 report["blockers"])
+                self.assertTrue([b for b in report["blockers"]
+                                 if f"is {state} with no fix pushed" in b], report["blockers"])
+                with mock.patch.object(sup, "_spawn"):       # the rule the step read: submit's
+                    outcome = sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer")
+                self.assertEqual(outcome == "rearmed", rearmed, outcome)
+                with sup._connect() as con:
+                    con.execute("DELETE FROM runs")
+
     def two_rows(self, gate_state, other_key, other_state):
         """A fixer row of another turn at this head (``other_key``), newer than the gate's verdict
         turn (``gate_state``; None for no verdict turn at all) — the shape of #1615 and #1659."""
@@ -287,6 +315,56 @@ class AfterEnabling(Steps):
         self.set_push(True)
         with mock.patch.object(sup, "_spawn"):
             self.assertEqual(sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer"), "enqueued")
+
+    def test_a_pending_verdict_turn_is_no_refused_redelivery(self):
+        # #2437: a pending verdict turn beside a newer failed shadow-fix turn. The step said a
+        # redelivered verdict "is a duplicate the ledger refuses"; the real ``submit`` answers
+        # ``pending`` and wakes a worker for it.
+        sup = self.two_rows("pending", f"{run_supervisor.SHADOW_FIX_KEY}1", "failed")
+        self.set_push(False)
+        report = self.report()
+        ended = [b for b in report["blockers"] if "is failed with no fix pushed" in b]
+        self.assertEqual(len(ended), 1, report["blockers"])
+        for text in (report["next"]["action"], ended[0]):
+            self.assertNotIn("duplicate the ledger refuses", text)
+        self.assertIn("a redelivered verdict re-arms nothing: the verdict turn at this head is "
+                      "already pending, and submit only wakes a worker for it (the shadow-fix "
+                      "fixer turn is not it)", report["next"]["action"])
+        self.set_push(True)
+        with mock.patch.object(sup, "_spawn") as spawn:
+            self.assertEqual(sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer"), "pending")
+        spawn.assert_called_once()
+
+    def test_at_the_spent_cap_a_redelivery_starts_no_fix_rather_than_being_refused(self):
+        # #2439: at the spent cap a failed verdict turn read "a redelivered verdict is a duplicate
+        # the ledger refuses". The ledger would re-arm it, but the fixer gate never submits the
+        # cap's verdict: it hands it to adjudication (#1494).
+        gate_fixer = fg.gate_fixer
+        self.ledgered("failed")
+        self.set_push(False)
+        report = self.report(verdicts=3)
+        ended = [b for b in report["blockers"] if "is failed with no fix pushed" in b]
+        self.assertEqual(len(ended), 1, report["blockers"])
+        for text in (report["next"]["action"], ended[0]):
+            self.assertNotIn("duplicate the ledger refuses", text)
+        self.assertIn("a redelivered verdict starts no fix: at the spent cap the fixer gate "
+                      "hands it to adjudication instead", report["next"]["action"])
+        self.set_push(True)                                    # the gate, as the step says
+        payload = {"action": "submitted", "repository": {"full_name": fg.REPO},
+                   "pull_request": fg.LIVE, "review": fg.verdict(3) | {"state": "changes_requested"}}
+        with mock.patch.object(gate_fixer.sys, "stdin", fg.io.StringIO(fg.json.dumps(payload))), \
+             contextlib.redirect_stdout(fg.io.StringIO()), contextlib.redirect_stderr(fg.io.StringIO()), \
+             mock.patch.object(gate_fixer.gh, "pr", return_value=fg.LIVE), \
+             mock.patch.object(gate_fixer.gate, "fetch_reviews",
+                               return_value=[fg.verdict(rid) for rid in (1, 2, 3)]), \
+             mock.patch.object(gate_fixer.gate, "drain_seat"), \
+             mock.patch.object(gate_fixer.gate, "breach", return_value="new") as breach, \
+             mock.patch.object(gate, "enqueue_isolated") as enqueue, \
+             mock.patch.object(gate_fixer.observer, "notify"):
+            with self.assertRaises(SystemExit):
+                gate_fixer.main()
+        enqueue.assert_not_called()
+        breach.assert_called_once()
 
     def shadow_beside_failed_verdict(self):
         """#2410 review: a failed verdict turn and a newer uncertain shadow-fix turn, and the
@@ -506,6 +584,30 @@ class AfterEnabling(Steps):
         fire.assert_not_called()
         self.assertEqual(self.st.queue_items("fixer")[f"{fg.REPO}#7"]["reason"], reason)
 
+    def test_a_stale_head_entry_is_dropped_unless_its_post_is_unverified(self):
+        # #2281: a queue entry for an older head read "the watchdog drops it", but the drain
+        # checks an unverified route POST before the stale-head drop and leaves that one as is.
+        from diaktoros import drain as drain_mod
+        self.set_push(True)
+        key, old = f"{fg.REPO}#7", "0" * 40
+        for reason, dropped in ((drain_mod.ROUTE_UNCERTAIN, False), ("waiting for a slot", True)):
+            with self.subTest(reason=reason):
+                self.st.queue_add("fixer", key, old, "url", reason)
+                blockers = explain.explain(self.loop, self.st, 7, {
+                    "pr": fg.LIVE, "reviews": [fg.verdict()], "armed": True,
+                    "read_at": time.time()})["blockers"]
+                stale = [b for b in blockers if b.startswith("fixer queue targets head 0000000")]
+                self.assertEqual(len(stale), 1, blockers)
+                self.assertEqual("the watchdog drops it" in stale[0], dropped, stale[0])
+                started, fire = self.drain()                   # what the blocker says
+                self.assertEqual(started, 0)
+                fire.assert_not_called()
+                self.assertEqual(key in self.st.queue_items("fixer"), not dropped)
+                if not dropped:
+                    self.assertIn("unverified route POST", stale[0])
+                    self.assertIn("leaves as is at any head", stale[0])
+                    self.st.queue_pop("fixer", key)
+
     def ledgered(self, state, error="", seat="fixer"):
         """A ``seat`` turn (the fixer's by default) at this head in ``state``, and the queue entry
         the gate declined it with."""
@@ -608,6 +710,17 @@ class AfterEnabling(Steps):
         declined = gate.declined_reason("fixer", "duplicate failed")
         blockers = self.report(queued=declined, inflight_fix=True)["blockers"]
         self.assertFalse([b for b in blockers if "no capacity" in b], blockers)
+
+    def test_a_declined_entry_under_a_live_fix_names_the_fix_already_out(self):
+        # #2078: with pushes on (no push-off step first) and no ledger row, a live fix mark makes
+        # the fix live: the fixer turn already out answers the verdict, not a re-delivery.
+        self.set_push(True)
+        declined = gate.declined_reason("fixer", "duplicate failed")
+        step = self.report(queued=declined, inflight_fix=True)["next"]
+        self.assertEqual(step["kind"], "fixer-push", step)
+        self.assertIn("the fixer turn already out answers the verdict", step["action"])
+        self.assertIn("the gate declined the fixer turn for head aaaaaaa", step["action"])
+        self.assertNotIn("re-deliver", step["action"])
 
     def test_a_reviewer_queue_entry_is_no_fixer_work_order(self):
         # Shadow review on #1510: the last queue entry read is any seat's, so a declined or
