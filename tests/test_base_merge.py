@@ -162,9 +162,14 @@ class Carries(Base):
     def test_update_behind_carries_no_grant_an_approval_at_the_head_spent(self):
         # Review of #2543, F1: the approval at the head (this fixture's) is the granted verdict.
         self.st.review_cap_grant(7, self.head, 4)
+        before = list(self.reviews)
         new = self.update()
         self.assertFalse(self.st.review_cap_granted(7, new, 4))
         self.assertTrue(self.st.review_cap_granted(7, self.head, 4))
+        # F5: with that approval left out of the same pre-push reviews, the same grant carries.
+        base_merge.carry_grant(self.loop, self.st, 7, self.head, new,
+                               [r for r in before if r["state"] != "APPROVED"])
+        self.assertTrue(self.st.review_cap_granted(7, new, 4))
 
     def test_ready_counts_the_carried_approval_at_the_new_head_and_still_needs_ci(self):
         new = self.update()

@@ -346,6 +346,11 @@ class ReviewOnlyUpdateWaits(fg.Base):
                 self.assertIsNone(self.next_step(""))
                 self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
                 self.assertTrue(self.st.review_cap_granted(7, fg.HEAD, rounds))
+        # Review of #2543, F5: the same merge with no verdict at HEAD does carry the grant, so
+        # the exclusion above is the verdict's doing, not a carry that never happens.
+        self.reviews = []
+        self.assertIsNone(self.next_step(""))
+        self.assertFalse(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
 
     def test_a_newer_grant_made_during_the_carry_is_never_overwritten(self):
         # Review of #2543, F2: a maintainer grants a newer head between the carry's read and its
