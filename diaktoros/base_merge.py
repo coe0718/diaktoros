@@ -60,7 +60,8 @@ def _records(loop: dict) -> dict:
 
 def carried(loop: dict, reviews: list, head: str) -> list:
     """The approval the host's base merge carried to ``head``, as a copy at ``head`` marked
-    ``carried_from``; ``[]`` when there is none. ``gate`` counts it with the head's own reviews.
+    ``carried_from`` and ``carried_at`` (when the merge made ``head``, from its record: the approval
+    reached ``head`` then, #2291); ``[]`` when there is none. ``gate`` counts it with the head's own reviews.
     The approval must still be the old head's latest effective verdict, the recorded review (the
     reviewer's, or the adjudicator's on its ACCEPT), on the recorded PR: the carried one is never
     more than the old head's own."""
@@ -78,7 +79,7 @@ def carried(loop: dict, reviews: list, head: str) -> list:
             or latest.get("id") != record.get("review")
             or gate._review_pr(latest, loop["repo"]) != record.get("number")):
         return []
-    return [{**latest, "commit_id": head, "carried_from": old}]
+    return [{**latest, "commit_id": head, "carried_from": old, "carried_at": record.get("at")}]
 
 
 def ruled_at(loop: dict, reviews: list, ruling: dict, head: str, approval: dict) -> bool:

@@ -6,9 +6,10 @@ ready-to-merge queue can exclude the PR through :func:`is_stale`) and sends one 
 notice per PR and head. Nothing is written to GitHub. A PR that is not approved at its current head
 is never flagged, and a new head clears the record (it has no approval yet).
 
-A missing required check only counts once ``MISSING_WAIT_S`` has passed since the approval was
-submitted. It can only fire when ``required_checks`` names checks: with none, every reported check
-gates and none can be "missing".
+A missing required check only counts once ``MISSING_WAIT_S`` has passed since the approval reached
+that head: when it was submitted, or, for an approval the host's base merge carried to a head it
+made, when that merge made it (#2291), not the old head's submission. It can only fire when
+``required_checks`` names checks: with none, every reported check gates and none can be "missing".
 """
 from __future__ import annotations
 
@@ -21,8 +22,14 @@ MISSING_WAIT_S = 30 * 60
 
 
 def _epoch(review: dict) -> float | None:
+    """When the approval reached its head: a carried one's merge time, else its submission."""
     from .util import iso_epoch
-    return iso_epoch(review.get("submitted_at") if isinstance(review, dict) else None)
+    if not isinstance(review, dict):
+        return None
+    carried = review.get("carried_at")
+    if isinstance(carried, (int, float)) and not isinstance(carried, bool):
+        return float(carried)
+    return iso_epoch(review.get("submitted_at"))
 
 
 def assess(loop: dict, state: ci.CIState | None, approved_at: float | None,
