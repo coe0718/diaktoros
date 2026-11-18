@@ -378,7 +378,11 @@ verdict is proved current at the merged head, or when the reviewer has a pending
 one never proved by then is not recorded. Since the host cannot see a pending review beside a
 verdict either, a merge after an approval is also read again each sweep for one day after the
 merge (#1761), so a changes-requested the reviewer held pending at that head and submits within
-that day is recorded; one submitted later is not. The report lists them by the day of the merge,
+that day is recorded. The day bounds when the merge is marked checked, not which submissions count:
+the first sweep after it that still finds the approval latest marks the merge checked, and a
+checked merge is not read again. A later submission is therefore recorded only when no sweep
+marked the merge checked first (the watchdog not running in between) and the PR is still within
+the 7 days and the 30 listed (#2517). The report lists them by the day of the merge,
 with a count per model and per category of the findings still open (each blocking finding carries one of
 `correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
 `F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
@@ -1276,8 +1280,9 @@ the name of one of its own locks directly in a state directory; a lock-named fil
 is archived) and in-progress temp files (a writer's temp name that the writer holds open). A file
 that is listed but removed before it is read (for example under a loop's `artifacts/<n>/` by
 cleanup) is left out too instead of failing the backup. The manifest lists each temp and vanished
-file it skipped, and both `backup` and `migrate`'s automatic backup print them as a `left out`
-line; the empty lock files are not listed. None of these are restored.
+file it skipped, and both `backup` and `migrate`'s automatic backup print a `left out` line with
+their count and the first five names (#2417); the manifest has the rest. The empty lock files are
+not listed. None of these are restored.
 
 It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate` or
 `restore` is running, or a `migrate` died before it finished (#1054). The
