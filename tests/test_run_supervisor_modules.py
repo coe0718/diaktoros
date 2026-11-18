@@ -521,6 +521,33 @@ class Split(unittest.TestCase):
         exec(compile(before, "<f>", "exec"), namespace)
         self.assertEqual(namespace["f"](), "diaktoros.run_supervisor.views")
 
+    def test_an_except_as_of_the_name_unbinds_a_try_else(self):
+        # #2536 review round 6 F6: Python deletes an ``except ... as`` target when the handler
+        # ends, so one named like the import, in the try body or in the else, leaves the else's
+        # later read unbound. A handler bound to another name keeps the import.
+        imp = "from diaktoros.run_supervisor import views\n"
+        def source(body, orelse):
+            return (imp + "def f():\n    try:\n        " + imp + body
+                    + "    except ImportError:\n        return None\n    else:\n" + orelse)
+        catch = "{0}try:\n{0}    raise ValueError()\n{0}except ValueError as {1}:\n{0}    pass\n"
+        cases = {"body": source(catch.format(" " * 8, "views"), "        return views\n"),
+                 "else": source("", catch.format(" " * 8, "views") + "        return views\n")}
+        for where, unbound in cases.items():
+            with self.subTest(where=where):
+                self.assertIn((len(unbound.splitlines()), "views"), _shadowed_submodules(unbound))
+                self.assertEqual(_local_submodule_shadows(unbound, "x.py"), [("f", "views")])
+                namespace = {}
+                exec(compile(unbound, "<f>", "exec"), namespace)
+                with self.assertRaises(UnboundLocalError):
+                    namespace["f"]()
+        other = source(catch.format(" " * 8, "err"), catch.format(" " * 8, "err")
+                       + "        return views\n")
+        self.assertEqual(_shadowed_submodules(other), [])
+        self.assertEqual(_local_submodule_shadows(other, "x.py"), [])
+        namespace = {}
+        exec(compile(other, "<f>", "exec"), namespace)
+        self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
+
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
         # (etc.); a real function of that name is still a function and is checked.

@@ -57,8 +57,10 @@ def _imports(node: ast.AST, name: str) -> bool:
 
 
 def _deletes(stmts: list, name: str) -> bool:
-    """Whether a ``del`` anywhere in these statements may unbind ``name`` (#2536 review F6)."""
-    return any(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name
+    """Whether anything in these statements may unbind ``name``: a ``del`` (#2536 review F6), or
+    an ``except ... as`` of that name, which Python deletes when the handler ends (round 6)."""
+    return any((isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del) and n.id == name)
+               or (isinstance(n, ast.ExceptHandler) and n.name == name)
                for stmt in stmts for n in ast.walk(stmt))
 
 
@@ -84,8 +86,8 @@ def _block_reads(stmts: list, name: str) -> list[tuple[int, int]]:
     binds the rest of that block only, since the block may not run (``if False: import ...``).
     The one exception is a ``try``'s ``else``: it runs only once the ``try`` body has finished, so
     an import at that body's top level has bound it (#2522), unless that body also ``del``s the
-    name (#2536 review F6). A ``del`` in the ``else`` itself unbinds it from that statement on,
-    so the else is scanned from there (#2536 review round 5 F6)."""
+    name (#2536 review F6). An unbinding in the ``else`` itself (see _deletes) counts from that
+    statement on, so the else is scanned from there (#2536 review round 5 F6)."""
     found = []
     for stmt in stmts:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -120,10 +122,11 @@ def unbound_read(func: ast.AST, name: str) -> int | None:
     An import binds the statements after it in its own block and in the blocks those hold (see
     _block_reads), so ``try: import views; views.x()`` is safe while ``if c: import views`` then
     ``views.x()`` after the ``if`` is not, and neither is a read after a ``try`` whose body
-    imports it (an exception may skip the import); its ``else`` is bound (#2522) unless that body
-    ``del``s it. Not seen: a read in a nested
-    function or lambda (a closure cell), a ``del`` of the name after its import, and a read in a
-    loop body that follows the import in the text but runs first on a later iteration."""
+    imports it (an exception may skip the import); its ``else`` is bound (#2522) until a ``del``
+    or ``except ... as`` of the name in that body or the else unbinds it (#2536). Not seen: a read
+    in a nested function or lambda (a closure cell), such an unbinding after an import outside a
+    try's else, and a read in a loop body that follows the import in the text but runs first on
+    a later iteration."""
     if not any(_imports(n, name) for n in scope_nodes(func)):
         return None
     reads = _block_reads(func.body, name)
