@@ -535,6 +535,10 @@ class SiteRefreshTests(unittest.TestCase):
             ('<table><tbody data-site="k"><tr><td>1<tbody><tr><td>2</table>', ("k", "1")),
             ('<table><thead data-site="k"><tr><td>1<tfoot><tr><td>2</table>', ("k", "1")),
             ('<table><tr data-site="k"><td>1</td><tr><td>2</table>', ("k", "1")),
+            # The snippets of #2366 and #2368 (duplicates of #2378), as filed.
+            ('<table><tr data-site="stars" title="x"><td>1<tr><td>1</td></tr></table>',
+             ("stars", "1")),
+            ('<table><tbody data-site="s"><tr><td>1<tbody><tr><td>2</table>', ("s", "1")),
             # A row inside a nested table closes only the nested row.
             ('<table><tr data-site="k"><td>1<table><tr><td>2<tr><td>3</table>4</table>',
              ("k", "1234")),
