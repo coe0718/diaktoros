@@ -41,64 +41,57 @@ WAIT_DAYS = 14          # a comment older than this no longer waits for a reply
 
 
 def sweep(loop: dict, st, lines: list[str]) -> None:
-    """Queue the fix of each issue a maintainer replied on; note the ones still waiting. Its
-    writes change only what it decided, never a webhook wake's meanwhile (``fix_reply_state``)."""
-    now, guard = time.time(), kept.guard(st)
-    oldest = min([now, *(entry["at"] for entry in guard.values())]) - WAIT_DAYS * 86400
+    """Queue the fix of each issue a maintainer replied on; note the ones still waiting. Each
+    issue's decision is committed as ``fix_reply_state`` says: the newest reads decide."""
+    read_at, now, guard = kept.stamp(), time.time(), kept.guard(st)
     try:
         sup = gate.isolated_supervisor(loop)
         rows = list(sup.issue_fix_comment_waits(loop["repo"], now - WAIT_DAYS * 86400))
         if guard:                       # a guarded reply outlives its comment's window
             seen = {row["number"] for row in rows}
+            oldest = min(entry["at"] for entry in guard.values()) - WAIT_DAYS * 86400
             rows += [row for row in sup.issue_fix_comment_waits(loop["repo"], oldest)
                      if str(row["number"]) in guard and row["number"] not in seen]
     except Exception as exc:            # no ledger yet, or unreadable: the PR holds still run
         log(f"maintainer replies to issue-fix comments not checked: {type(exc).__name__}: {exc}")
         return
-    before, waiting = kept.waiting(st), {}
-    gone = {key: entry for key, entry in guard.items()      # no row waits on it any more
-            if key not in {str(row["number"]) for row in rows}}
+    listed = {str(row["number"]) for row in rows}
+    for key in (set(kept.waiting(st)) | set(guard)) - listed:   # no comment waits on it now
+        kept.commit(st, key, read_at, wait=None, seen=None)
     for row in rows:
         number, key = row["number"], str(row["number"])
         if row["active"] or number in st.fix_ask_open():
-            gone[key] = guard.get(key)  # a turn will write again, or the ask's own sweep owns it
+            # A turn will write again, or the ask's own sweep owns it.
+            kept.commit(st, key, read_at, wait=None, seen=None)
             continue
         try:
             outcome = wake(loop, st, row)
-        except Exception as exc:        # retried on the next sweep
+        except Exception as exc:        # retried on the next sweep; nothing it kept changes
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")
             outcome = "failed"
-        if outcome == "waiting":
-            waiting[key] = row["comment_id"]
-        elif outcome == "unreadable" and key in before:
-            waiting[key] = before[key]  # unknown is not "no wait" (#2019)
         entry = kept.guard(st).get(key)
         # A known reply outlives any read that fails (#2549 review), up to WAIT_DAYS more.
         if entry and outcome in ("unlisted", "unreadable", "failed") \
                 and now - entry["at"] >= WAIT_DAYS * 86400:
-            gone[key] = entry
+            kept.commit(st, key, kept.stamp(), seen=None, expect_at=entry["at"])
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, but the open PR listing "
                          f"or the issue stayed unreadable for {WAIT_DAYS} days; fix not queued")
-    kept.unguard(st, gone)
-    began = {str(row["number"]): row["began"] for row in rows}   # no turn queued since (F6)
-    kept.publish_waiting(st, waiting, lambda: {
-        str(row["number"]) for row in sup.issue_fix_comment_waits(loop["repo"], oldest)
-        if not row["active"] and row["began"] == began.get(str(row["number"]))})
 
 
 def wake(loop: dict, st, row: dict) -> str:
     """``queued``, ``waiting`` (no reply yet), ``ineligible``, ``unreadable``, or ``unlisted``
-    (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue. Any
-    outcome read in full settles a guarded reply here, and a queued or ineligible one its waiting
-    line, so the webhook's wake clears them too and status never names a wait it read past."""
-    key = str(row["number"])
-    seen = kept.guard(st).get(key)      # the sighting this wake decides on, never a later one
+    (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue,
+    committed from reads begun now, for the sweep and the webhook alike. What it could not read
+    (``unreadable``, or an exception) changes nothing kept: a wait stays, none is made (#2019)."""
+    read_at, key = kept.stamp(), str(row["number"])
     outcome = _wake(loop, st, row)
-    if outcome not in ("unreadable", "unlisted"):
-        kept.unguard(st, {key: seen})
-    if outcome in ("queued", "ineligible"):     # no longer waits for a reply either (F4)
-        kept.settled(st, key)
+    if outcome in ("queued", "ineligible"):     # no longer waits, on a reply or the listing
+        kept.commit(st, key, read_at, wait=None, seen=None)
+    elif outcome == "waiting":
+        kept.commit(st, key, read_at, wait=row["comment_id"], seen=None)
+    elif outcome == "unlisted":
+        kept.commit(st, key, read_at, seen={"at": time.time()})
     return outcome
 
 
@@ -130,7 +123,6 @@ def _wake(loop: dict, st, row: dict) -> str:
     prs, error = gh.open_prs_read(loop)
     if prs is None:
         log(f"issue #{number}: open PR listing unreadable, reply wake waits: {error}")
-        kept.sighted(st, str(number), time.time())
         return "unlisted"
     existing = fix_hold._closing(loop, prs, number)
     if existing is not None:

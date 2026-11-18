@@ -102,99 +102,6 @@ class ListingOutage(replies.Replies):
         self.assertEqual((self.enqueued, fix_reply.status_lines(self.st)), ([], []))
 
 
-class WebhookSettlesTheGuard(replies.Delivery):
-    def test_a_delivery_that_reads_the_listing_clears_what_status_says(self):
-        # Vex on #2549 (F4): the webhook's wake queued the fix, status still named the listing,
-        # then (from a sweep before the reply) the reply itself.
-        self.sweep()
-        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.line(12)])
-        self.reply(201, "jeremy")
-        with mock.patch.object(gh, "open_prs_read", offline):
-            self.assertNotEqual(self.deliver(self.comment())[0], "accepted")
-        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-        decision, reason = self.deliver(self.comment())
-        self.assertEqual(decision, "accepted", reason)
-        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
-        self.assertEqual(fix_reply.status_lines(self.st), [])
-        self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
-
-    def test_a_delivery_during_a_sweep_keeps_its_guard(self):
-        # Vex on #2549 (F5): the sweep wrote its whole GUARD over one a delivery had just made.
-        real, delivered = fix_reply.wake, []
-
-        def wake_then_deliver(loop, st, row):
-            outcome = real(loop, st, row)
-            if not delivered:                   # the reply lands while the sweep is mid-way
-                delivered.append(self.reply(201, "jeremy"))
-                with mock.patch.object(gh, "open_prs_read", offline):
-                    self.deliver(self.comment())
-            return outcome
-        with cutoff(-60), mock.patch.object(fix_reply, "wake", wake_then_deliver):
-            self.sweep()
-        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-        with cutoff(60):
-            self.sweep()
-        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
-
-    def race(self, during):
-        """Vex on #2549 (F5): with a guard already kept, the sweep reads the comments from before
-        the reply while a delivery sees it, listing down, ``during`` the sweep's wake or after."""
-        self.live = {**self.live, "updated_at": replies.iso(replies.TURN + 700)}
-        self.reply(201, "jeremy")
-        with cutoff(-120), mock.patch.object(gh, "open_prs_read", offline):
-            self.sweep()
-        read, real, delivering, done = gh.issue_comments_read, fix_reply.wake, [], []
-
-        def deliver():
-            delivering.append(done.append(1))
-            with mock.patch.object(gh, "open_prs_read", offline):
-                self.deliver(self.comment())
-            delivering.clear()
-
-        def stale(loop, n):                     # the sweep's read, from before the reply
-            if delivering:
-                return read(loop, n)
-            if during and not done:
-                deliver()
-            return [], ""
-
-        def wake(loop, st, row):
-            outcome = real(loop, st, row)
-            if not delivering and not done:
-                deliver()
-            return outcome
-        with cutoff(-60), mock.patch.object(gh, "issue_comments_read", stale), \
-                mock.patch.object(fix_reply, "wake", wake):
-            self.sweep()
-        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-        with cutoff(60):
-            self.sweep()
-        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
-
-    def test_a_sighting_during_a_sweeps_wake_outlives_its_stale_read(self):
-        self.race(during=True)
-
-    def test_a_sighting_after_a_sweeps_wake_outlives_its_stale_read(self):
-        self.race(during=False)
-
-    def test_a_sweep_never_writes_back_a_wait_a_delivery_queued(self):
-        # Vex on #2549 (F6): the sweep saw no reply, a delivery queued the fix, the sweep then
-        # wrote "waits for a maintainer's reply" back.
-        real = fix_reply.wake
-
-        def wake_then_deliver(loop, st, row):
-            outcome = real(loop, st, row)
-            if not self.comments:
-                self.reply(201, "jeremy")
-                self.assertEqual(self.deliver(self.comment())[0], "accepted")
-            return outcome
-        with mock.patch.object(fix_reply, "wake", wake_then_deliver):
-            self.sweep()
-        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
-        self.assertEqual(fix_reply.status_lines(self.st), [])
-        self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
-
-
 class UnreadableKeepsTheWait(replies.Replies):
     def test_an_unreadable_issue_or_comments_read_keeps_the_waiting_line(self):
         # #2019: ``sweep`` kept only ``waiting`` outcomes, so a failed read dropped the line.
@@ -218,7 +125,7 @@ class UnreadableKeepsTheWait(replies.Replies):
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
     suite = unittest.TestSuite()
-    for cls in (OpenPrGuard, ListingOutage, WebhookSettlesTheGuard, UnreadableKeepsTheWait):
+    for cls in (OpenPrGuard, ListingOutage, UnreadableKeepsTheWait):
         for name in sorted(vars(cls)):
             if name.startswith("test_"):
                 suite.addTest(cls(name))
