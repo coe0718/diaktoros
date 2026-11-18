@@ -691,15 +691,18 @@ def _connect(address, timeout, source_address=None):
     """``socket.create_connection``, but each resolved address gets at most ``CONNECT_TIMEOUT``
     to connect; the socket then waits ``timeout`` for reads (#1993). Otherwise a host whose
     IPv6 route is dead spends the whole read timeout on each IPv6 address before IPv4 is tried,
-    and every request fails while the provider is fine."""
+    and every request fails while the provider is fine. ``timeout`` None (no read timeout) or
+    ``http.client``'s default sentinel mean what they do to ``create_connection`` (#2010)."""
     host, port = address
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        timeout = socket.getdefaulttimeout()
     error = None
     for family, kind, proto, _name, sockaddr in socket.getaddrinfo(host, port, 0,
                                                                     socket.SOCK_STREAM):
         sock = None
         try:
             sock = socket.socket(family, kind, proto)   # inside: a family the kernel lacks falls through
-            sock.settimeout(min(CONNECT_TIMEOUT, timeout))
+            sock.settimeout(CONNECT_TIMEOUT if timeout is None else min(CONNECT_TIMEOUT, timeout))
             if source_address:
                 sock.bind(source_address)
             sock.connect(sockaddr)

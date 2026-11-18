@@ -860,6 +860,20 @@ class UpstreamConnect(unittest.TestCase):
         with self.resolving('127.0.0.1'):
             self.assertEqual(self.post()[0], 200)
 
+    def test_no_timeout_or_the_default_sentinel_connects_as_create_connection_would(self):
+        """#2010: ``timeout=None`` (no read timeout) raised TypeError in ``min``; the
+        ``http.client`` default sentinel did too. Both now connect within ``CONNECT_TIMEOUT``
+        and leave the socket as ``socket.create_connection`` would."""
+        listener = socket.create_server(('127.0.0.1', 0))
+        self.addCleanup(listener.close)
+        address = ('127.0.0.1', listener.getsockname()[1])
+        for timeout, expected in ((None, None),
+                                  (socket._GLOBAL_DEFAULT_TIMEOUT, socket.getdefaulttimeout())):
+            with self.subTest(timeout=timeout):
+                sock = inference_proxy._connect(address, timeout)
+                self.addCleanup(sock.close)
+                self.assertEqual(sock.gettimeout(), expected)
+
     def test_an_upstream_with_no_live_address_is_a_502_that_says_unreachable(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d, \
                 self.resolving(DEAD, DEAD), \
