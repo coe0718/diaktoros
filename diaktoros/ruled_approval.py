@@ -36,7 +36,7 @@ from __future__ import annotations
 import time
 
 from . import broker, ci, config, gate, gh, pr_hold
-from .run_supervisor import Supervisor, production_ledger, views
+from .run_supervisor import CI_WAIT_MAX_S, Supervisor, production_ledger, views
 
 
 def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
@@ -205,14 +205,18 @@ def _owed_at_a_moved_head(loop: dict, db, ruling: dict, reviews: list, head: str
     overruled the reviewer's standing request from an earlier head still owes its approval, and a
     merge now would strand that request again. With nothing it can overrule (no record, not
     seen), nothing waits; nor while a required check is red or cancelled here, since the approval
-    waits for green and the merge may be what turns it green (#2544 review, F6). The merged head
-    then goes for a ruling again, and that ACCEPT dismisses the request it sees."""
+    waits for green and the merge may be what turns it green (#2544 review, F6); nor past
+    ``CI_WAIT_MAX_S`` since the ruling, so a required check that never reports or never finishes
+    can't hold it for good. The merged head then goes for a ruling again, and that ACCEPT
+    dismisses the request it sees."""
     if (ruling.get("head"), ruling.get("verdict")) != (head, "ACCEPT") or overruled(
             reviews, loop, head, ruling.get("created") or 0,
             views.ruling_saw(db, str(ruling.get("run_id") or ""))) is None:
         return ""
     gating = ci.gating(ci.read(loop, head), config.required_checks(loop))
     if gating is not None and (gating.failed or gating.cancelled):
+        return ""
+    if time.time() - float(ruling.get("created") or 0) >= CI_WAIT_MAX_S:
         return ""
     return "the adjudicator's ACCEPT has not been acted on yet"
 

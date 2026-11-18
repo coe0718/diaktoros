@@ -615,6 +615,7 @@ class Ruled(Base):
         the sweep approves, nothing names that request at this head."""
         self.reviews = [approval("e" * 40, review_id=11, state="CHANGES_REQUESTED")]
         self.rows = []                                # the sweep has not acted yet
+        self.ruling["created"] = self.ruled_at = time.time() - 60      # ruled a minute ago
         patch = mock.patch.object(views, "ruling_saw", return_value=saw)
         patch.start()
         self.addCleanup(patch.stop)
@@ -648,6 +649,33 @@ class Ruled(Base):
         found = ruled_approval.overruled(self.reviews, self.loop, new, self.ruled_at,
                                          frozenset({11}))
         self.assertEqual(found["id"], 11)
+
+    def test_at_a_moved_head_ci_that_never_reports_or_finishes_holds_it_only_so_long(self):
+        # Review of #2544, round 4, F6: a required check that never reports (missing) or never
+        # finishes (pending) would hold the merge for good, since the approval waits for it too.
+        # The wait ends CI_WAIT_MAX_S after the ruling; a failing optional check ends nothing.
+        from diaktoros import run_supervisor
+        self.moved_head(frozenset({11}))
+        self.loop["required_checks"] = ["tests"]
+        for label, state in (("missing", ci.CIState(passed=["lint"])),
+                             ("pending", ci.CIState(pending=["tests"])),
+                             ("optional red", ci.CIState(pending=["tests"], failed=["lint"]))):
+            with self.subTest(label), mock.patch.object(ci, "read", return_value=state):
+                self.ruling["created"] = time.time() - 60
+                self.assertTrue(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews,
+                                                         ruled=False))
+                self.ruling["created"] = time.time() - run_supervisor.CI_WAIT_MAX_S - 1
+                self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews,
+                                                          ruled=False), "")
+        # Through update_behind: held while young, merged once the bound has passed.
+        self.ci_state = ci.CIState(passed=["lint"])                   # "tests" never reported
+        self.ruling["created"] = time.time() - 60
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+        self.ruling["created"] = time.time() - run_supervisor.CI_WAIT_MAX_S - 1
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
 
     def test_at_a_moved_head_with_nothing_it_can_overrule_the_wait_ends(self):
         # No launch record, or a request the ruling never saw: the sweep will act on nothing, so
