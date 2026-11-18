@@ -69,11 +69,7 @@ def main() -> None:
     flag = app_ingress.pause_flag(st)
     if flag is not False:
         # Fail closed (#1295): an unreadable or malformed flag is unknown, and unknown drops.
-        reason = (app_ingress.paused_reason(loop)
-                  if flag else
-                  f"⚠️ {loop['id']}'s pause flag ({app_ingress.FILE}) cannot be read or is "
-                  f"malformed: the App's delivery is dropped, not guessed armed "
-                  f"(`hermes dk arm --loop {loop['id']}` rewrites it)")
+        reason = app_ingress.drop_reason(loop, flag)
         try:
             gate_decisions.record(loop, name, payload, "declined", reason)
         except Exception:

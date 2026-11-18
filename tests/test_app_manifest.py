@@ -43,6 +43,17 @@ class Manifests(unittest.TestCase):
                 self.assertEqual(body["default_permissions"]["metadata"], "read")
         self.assertEqual(am.manifest("w", "reviewer", HOST, "r", "u")["default_permissions"]["checks"],
                          "write")
+
+    def test_the_readers_webhook_route_is_configs_app_route(self):
+        # #2296: the manifest spells the route with config's one prefix, so the App it creates
+        # posts to the route config.app_route names, whatever that prefix is.
+        from diaktoros import config
+        loop = {"ingress": "app-webhook", "ingress_app": "widgets-dk-reader[bot]"}
+        url = am.manifest("widgets-dk", "reader", HOST, "r", "u")["hook_attributes"]["url"]
+        self.assertEqual(url, f"{HOST}/webhooks/{config.app_route(loop)}")
+        with mock.patch.object(am, "APP_ROUTE_PREFIX", "dk-hook-"):
+            url = am.manifest("widgets-dk", "reader", HOST, "r", "u")["hook_attributes"]["url"]
+        self.assertEqual(url, f"{HOST}/webhooks/dk-hook-widgets-dk-reader")
         with self.assertRaisesRegex(am.WizardError, "longer than GitHub allows"):
             am.app_name("x" * 30, "adjudicator")
 

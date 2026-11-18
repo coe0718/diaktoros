@@ -117,7 +117,11 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: s
     known = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
     lines = parse(body, known)
     # #2199: a first-round body that gave states or repeated an id cost shadow turns their steps.
-    first = ("" if known else " This is the PR's first review round: no finding has a state yet, "
+    # #2275/#2278: "first round" is ``last_head`` unset, the round-N rules' own test below; an
+    # empty findings dict is also a later round that recorded none, which this hint must not call
+    # the first.
+    later = bool(entry.get("last_head"))
+    first = ("" if later else " This is the PR's first review round: no finding has a state yet, "
              "so number each finding once (F1, F2, …) and give no `fixed`/`open` lines.")
     stated = {}
     new = []
@@ -143,7 +147,6 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: s
         if still:
             return (f"cannot APPROVE with open finding(s) {', '.join(sorted(set(still)))}: mark each "
                     "one fixed or withdrawn, or request changes; nothing was written, resubmit")
-    later = bool(entry.get("last_head"))
     if later:
         omitted = [f for f in open_ids(entry) if f not in stated]
         if omitted:
