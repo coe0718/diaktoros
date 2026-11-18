@@ -263,16 +263,22 @@ class Flow(app_cli.Base):
         ledger = gate_failures.loop_ledger(loop)
         key = gate_failures.fingerprint("gate_reviewer", raw)
         env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
-        for paused in (True, False):
+        # #1975/#1976: a damaged flag drops the re-drive too, but says unknown, as the dispatcher.
+        damaged = "pause flag (app-ingress.json) cannot be read or is malformed"
+        for paused in (True, False, None):
             with self.subTest(paused=paused), mock.patch.dict(os.environ, env, clear=True):
-                app_ingress.set_paused(st, paused)
+                if paused is None:
+                    (st.dir / app_ingress.FILE).write_text("{not json")
+                else:
+                    app_ingress.set_paused(st, paused)
                 decisions.unlink(missing_ok=True)
                 ledger.record(key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7,
                                     "repo": "acme/widgets", "redrivable": True}, raw)
                 lines = gate_failures.sweep(ledger, "widgets", root / "scripts", cooldown_s=0)
                 text = decisions.read_text() if decisions.exists() else ""
-                self.assertEqual("widgets is paused: the App's delivery is dropped" in text, paused,
-                                 f"{lines}\n{text}")
+                self.assertEqual("widgets is paused: the App's delivery is dropped" in text,
+                                 paused is True, f"{lines}\n{text}")
+                self.assertEqual(damaged in text, paused is None, f"{lines}\n{text}")
 
     def test_a_paused_redrive_through_the_reviewer_gate_refreshes_no_merge_check(self):
         # #1297 (review of #1963): the reviewer gate's wrapper refreshes the merge check for a
@@ -322,10 +328,10 @@ class Flow(app_cli.Base):
             "sender": {"login": tfs.FIX}})
         st = state_mod.state_for(self.loop())
         app_ingress.set_paused(st, True)
-        real_paused, reads = app_ingress.paused, []
+        real_flag, reads = app_ingress.pause_flag, []
 
         def paused_then_armed(state):
-            reads.append(real_paused(state))
+            reads.append(real_flag(state))
             app_ingress.set_paused(st, False)        # the operator's `arm` lands right after
             return reads[-1]
         env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
@@ -333,7 +339,7 @@ class Flow(app_cli.Base):
                 mock.patch.object(gate_reviewer.sys, "stdin", io.StringIO(payload)), \
                 mock.patch.object(gate_reviewer.merge_check, "refresh_new_head") as refresh, \
                 mock.patch.object(app_ingress, "woken_by_repo_hook", return_value=False), \
-                mock.patch.object(app_ingress, "paused", side_effect=paused_then_armed), \
+                mock.patch.object(app_ingress, "pause_flag", side_effect=paused_then_armed), \
                 contextlib.redirect_stdout(io.StringIO()) as out, \
                 contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as stop:
