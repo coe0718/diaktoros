@@ -131,13 +131,14 @@ def _review_only_next(loop: dict, st: state_mod.LoopState, number: int, head: st
         # A stop that is not a fact about the pair (pushes off, a broker refusal, a
         # failed push) keeps the dry merge but is attempted again (shadow on #1151).
         if attempt and not busy:
+            before = base_merge.grant_reviews(loop, st, number, head)       # #2401
             pushed, tried = review_only_conflict.update(loop, number, head, facts)
             if not pushed and key[2] and "clean" in facts:   # the dry merge ran
                 st.review_only_conflict_set(
                     *key, facts, tried,
                     retry=isinstance(tried, review_only_conflict.Retry))
         if pushed:
-            base_merge.carry_grant(st, number, head, pushed)
+            base_merge.carry_grant(loop, st, number, head, pushed, before)
             log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
             observer.notify(loop, st, "updated", number, pushed, identity="updated",
                             outcome=f"merged {loop['base']} into #{number} at "

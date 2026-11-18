@@ -151,11 +151,20 @@ class Carries(Base):
         self.assertEqual(gate.verdicts(self.reviews, self.loop), [])     # no round spent
 
     def test_update_behind_carries_an_unspent_review_cap_grant(self):
-        # #2401, update_behind's side: the host's merge moves a head that holds a grant.
+        # #2401, update_behind's side: the host's merge moves a head that holds a grant and has
+        # no verdict yet.
+        self.reviews = []
         self.st.review_cap_grant(7, self.head, 4)
         new = self.update()
         self.assertTrue(self.st.review_cap_granted(7, new, 4))
         self.assertFalse(self.st.review_cap_granted(7, self.head, 4))
+
+    def test_update_behind_carries_no_grant_an_approval_at_the_head_spent(self):
+        # Review of #2543, F1: the approval at the head (this fixture's) is the granted verdict.
+        self.st.review_cap_grant(7, self.head, 4)
+        new = self.update()
+        self.assertFalse(self.st.review_cap_granted(7, new, 4))
+        self.assertTrue(self.st.review_cap_granted(7, self.head, 4))
 
     def test_ready_counts_the_carried_approval_at_the_new_head_and_still_needs_ci(self):
         new = self.update()
