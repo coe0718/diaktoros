@@ -73,8 +73,8 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
         entry = kept.guard(st).get(key)
         # A known reply outlives any read that fails (#2549 review), up to WAIT_DAYS more.
         if entry and outcome in ("unlisted", "unreadable", "failed") \
-                and now - entry["at"] >= WAIT_DAYS * 86400:
-            kept.commit(st, key, kept.stamp(), seen=None, expect_at=entry["at"])
+                and now - entry["at"] >= WAIT_DAYS * 86400 \
+                and kept.commit(st, key, kept.stamp(), wait=None, seen=None, expect_at=entry["at"]):
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, but the open PR listing "
                          f"or the issue stayed unreadable for {WAIT_DAYS} days; fix not queued")
 

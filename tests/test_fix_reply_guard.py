@@ -93,6 +93,9 @@ class ListingOutage(replies.Replies):
         self.assertEqual(fix_hold.explain_lines(self.st, 12), [fix_reply.guarded_line(12)])
 
     def test_a_listing_down_for_another_window_ends_the_retry_and_says_so(self):
+        # Vex on #2549 (F9): the wait it had before the reply ends with the retry too.
+        self.sweep()
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.line(12)])
         self.reply(201, "jeremy")
         with mock.patch.object(gh, "open_prs_read", self.offline):
             self.sweep()
@@ -100,6 +103,7 @@ class ListingOutage(replies.Replies):
                 lines = self.sweep()
         self.assertTrue(any("stayed unreadable" in x for x in lines or []), lines)
         self.assertEqual((self.enqueued, fix_reply.status_lines(self.st)), ([], []))
+        self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
 
 
 class UnreadableKeepsTheWait(replies.Replies):

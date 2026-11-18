@@ -49,11 +49,14 @@ def waiting(st) -> dict:
 def commit(st, key: str, read_at: int, *, wait=KEEP, seen=KEEP, expect_at=None) -> bool:
     """Commit one decision about issue ``key``, made from reads begun at ``read_at``: ``wait`` its
     ``WAITING`` value (``None`` drops it), ``seen`` its ``GUARD`` sighting (``{"at": now}``, an
-    earlier ``at`` kept; ``None`` drops it, only while its ``at`` is ``expect_at`` when given).
-    False, and nothing written, when a decision from later reads was committed first."""
+    earlier ``at`` kept; ``None`` drops it). False, and nothing written, when a decision from
+    later reads was committed first, or ``expect_at`` is given and its sighting is not that one."""
     with st.locked():
         stamps = _read(st, STAMPS)
         if int(stamps.get(key) or 0) > read_at:
+            return False
+        old = _read(st, GUARD).get(key)
+        if expect_at is not None and not (_entry(old) and old["at"] == expect_at):
             return False
         cutoff = stamp() - _STAMP_DAYS * 86400 * 10**9
         stamps = {k: v for k, v in stamps.items() if isinstance(v, int) and v > cutoff}
@@ -64,10 +67,9 @@ def commit(st, key: str, read_at: int, *, wait=KEEP, seen=KEEP, expect_at=None) 
             st.kv_set(st.dir / WAITING, found)
         if seen is not KEEP:
             found = _read(st, GUARD)
-            old = found.get(key)
             if seen is not None:
                 found[key] = old if _entry(old) else seen
-            elif expect_at is None or (_entry(old) and old["at"] == expect_at):
+            else:
                 found.pop(key, None)
             st.kv_set(st.dir / GUARD, found)
         st.kv_set(st.dir / STAMPS, stamps)
