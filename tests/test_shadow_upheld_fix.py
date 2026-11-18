@@ -114,6 +114,61 @@ class Operator(ruling.Base):
         self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
         self.assertNotIn("your decision", report["next"]["action"])
 
+    def shadow_fix_row(self, state, error=""):
+        """The upheld ruling's fixer turn (``shadow:<ruling time>``) in ``state``, in a production
+        ledger, so the sweep's own resubmission can be run against it."""
+        ruled = gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        key = f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}"
+        settings = self.root / "runtime.json"
+        settings.write_text("{}")
+        settings.chmod(0o600)
+        sup = run_supervisor.Supervisor(self.db, production_config=settings,
+                                        hermes_home=self.root / "home")
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue(f"{fg.REPO}:7:{fg.HEAD}:fixer:{key}", fg.REPO, 7, fg.HEAD, "fixer",
+                        turn_key=key)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state=?, error=?, push_admitted=1 WHERE seat='fixer'",
+                        (state, error))
+        return sup
+
+    def sweep_resubmits(self, sup):
+        """The watchdog's backstop for this turn: the real ``queue_shadow_fix`` and ``submit``."""
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(sup, "recover"), mock.patch.object(sup, "_spawn"), \
+                mock.patch.object(gh, "pr", return_value=fg.LIVE):
+            return gate.shadows.queue_shadow_fix(self.loop, 7, fg.HEAD, db=self.db)
+
+    def test_explain_names_a_shadow_fix_turn_that_ended_without_a_push(self):
+        # #2262/#2263: the step promised "the fixer's turn on the upheld findings answers it"
+        # whatever that turn's state. One the sweep re-arms (a pre-write failure) still answers
+        # it; one that ended otherwise is named, with retry's own plan or a person's step.
+        self.upheld_marker()
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        retry = f"hermes dk retry --loop {self.loop['id']} --pr 7 --seat fixer"
+        promise = "the fixer's turn on the upheld findings answers it"
+        for state, error, swept, kind, step in (
+                ("failed", "", "rearmed", "fixer-push", "the next armed watchdog sweep re-arms "
+                 "the failed shadow-fix fixer turn"),
+                ("succeeded", "", "duplicate succeeded", "operator", "`retry` has nothing to "
+                 "re-arm for it"),
+                ("cancelled", run_supervisor.OPERATOR_CANCEL, "duplicate cancelled", "fixer-retry",
+                 f"`{retry}` re-arms it"),
+                ("uncertain", "", "duplicate uncertain", "operator", "reconcile it first")):
+            with self.subTest(state=state):
+                sup = self.shadow_fix_row(state, error)
+                report = self.explain()
+                self.assertEqual(report["next"]["kind"], kind, report["next"])
+                self.assertIn(step, report["next"]["action"])
+                stuck = [b for b in report["blockers"] if b.startswith("shadow fix:")]
+                self.assertEqual(promise in report["next"]["action"], swept == "rearmed")
+                self.assertEqual(len(stuck), 0 if swept == "rearmed" else 1, report["blockers"])
+                if stuck:
+                    self.assertIn(f"is {state} with no fix pushed", stuck[0])
+                self.assertTrue(self.sweep_resubmits(sup).startswith(swept))
+                with closing(sqlite3.connect(self.db)) as con, con:
+                    con.execute("DELETE FROM runs WHERE seat='fixer'")
+
     def ruling_notice(self, author="fixer", verdict="REJECT", shown=None, **live):
         """#2258: the operator's ruling notice for a new ruling that was shown shadow review
         ``shown`` (default: the newest one recorded), with the live PR changed by ``live``."""

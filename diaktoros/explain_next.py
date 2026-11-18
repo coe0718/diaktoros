@@ -103,10 +103,14 @@ def _next_approval(c) -> tuple[str, str] | None:
         if c.shadow_held.startswith("waiting on"):
             kind = "wait"
             action = f"{c.shadow_held} — head {c.short} is approved but held until it lands"
+        elif c.shadow_fix and c.shadow_turn[0] and not c.shadow_turn[1]:
+            kind, action = _shadow_fix_ended(c)        # ended, and no sweep re-arms it (#2262)
         elif c.shadow_fix:
             kind = "fixer-push"
-            action = (f"{c.shadow_held} — do not merge head {c.short}; the fixer's turn on the "
-                      "upheld findings answers it")
+            again = (f"the next armed watchdog sweep re-arms the {c.shadow_turn[0]} shadow-fix "
+                     "fixer turn, and " if c.shadow_turn[1] == "rearmed" else "")
+            action = (f"{c.shadow_held} — do not merge head {c.short}; {again}the fixer's turn on "
+                      "the upheld findings answers it")
         else:
             kind = "operator"
             action = (f"your decision: {c.shadow_held} — do not merge head {c.short} until you have "
@@ -122,6 +126,53 @@ def _next_approval(c) -> tuple[str, str] | None:
     else:
         return None
     return kind, action
+
+
+def shadow_fix_turn(c) -> tuple[str, str]:
+    """The fixer turn answering this head's upheld shadow review (#2262): ``(state, how)``, its
+    ledger state ("" with none, or an unreadable ledger) and ``how`` it still answers the
+    findings: ``live`` (queued or running), ``rearmed`` (the sweep's ``queue_shadow_fix``
+    resubmits its turn key and ``submit`` re-arms it, by ``intake.redelivery_refusal``), or ""
+    when it ended and nothing restarts it. Read only when ``c.shadow_fix`` (pushes on)."""
+    import sqlite3
+    from .run_supervisor import NOT_ENDED, REARMABLE, SHADOW_FIX_KEY, intake, views
+    ruled = gate.shadows.upheld_shadow_ruling(c.loop, c.number, c.head)
+    try:
+        con = views.read_only_connect(config.host_path("ledger")) if ruled is not None else None
+        if con is None:
+            return "", ""
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                              "seat='fixer' AND turn_key=?", (c.repo, c.number, c.head,
+                                                              f"{SHADOW_FIX_KEY}{int(ruled)}")).fetchone()
+            if row is None:
+                return "", ""
+            rearms = row["state"] in REARMABLE and intake.redelivery_refusal(
+                con, row, admitted=True, production=True, seat="fixer") is None
+            return row["state"], ("live" if row["state"] in NOT_ENDED else
+                                  "rearmed" if rearms else "")
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return "", ""
+
+
+def _shadow_fix_ended(c) -> tuple[str, str]:
+    """An upheld shadow review whose fixer turn ended with no push, which the sweep does not
+    re-arm (#2262): the fix is no longer coming by itself, so the step is retry's own plan, a
+    reconcile for a run that may have written, or a fix by hand."""
+    from .run_supervisor import SHADOW_FIX_KEY
+    rearm, why, reconcile, rows = fixer_retry(c)
+    if any(key.startswith(SHADOW_FIX_KEY) for key, _ in rows):
+        kind, step = "fixer-retry", f"{rearm} re-arms it"
+    elif reconcile or c.shadow_turn[0] == "uncertain":
+        kind, step = "operator", _reconcile_first(c, why or "a worker may have written")
+    else:
+        kind, step = "operator", f"`retry` has nothing to re-arm for it ({why or 'not offered'})"
+    return kind, (f"{c.shadow_held} — do not merge head {c.short}; the shadow-fix fixer turn "
+                  f"at this head is {c.shadow_turn[0]} with no fix pushed, and no watchdog sweep "
+                  f"re-arms it: {step}; or fix it by hand, push, and re-request review")
 
 
 def _next_person(c) -> tuple[str, str] | None:
