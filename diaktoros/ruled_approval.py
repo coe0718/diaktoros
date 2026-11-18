@@ -76,17 +76,29 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
     return moved
 
 
-def overruled(reviews: list, loop: dict, head: str, ruled_at: float) -> dict | None:
+def overruled(reviews: list, loop: dict, head: str, ruled_at: float,
+              saw: frozenset[int] | None = None) -> dict | None:
     """The one review an ACCEPT at ``head`` overruled: the reviewer seat's latest effective
     verdict there, a change request submitted before the ruling. GitHub dates a review to the
-    second, so one dated within the ruling's own second may have come after it. None when there
-    is none, or when it can't be told (an unproved order): then nothing is dismissed."""
+    second, so one dated within the ruling's own second may have come after it. With no reviewer
+    verdict at ``head`` (the head moved after an earlier ruling, #2402), it is the reviewer's
+    standing change request from an earlier head, the one GitHub still counts, if the ruling's
+    prompt showed it (``saw``, recorded at its launch; None: nothing was). None when there is
+    none, or when it can't be told (an unproved order): then nothing is dismissed."""
     mine = [r for r in reviews if isinstance(r, dict) and gate.is_reviewer(r, loop)]
     latest = gate.latest_effective_review_at_head(mine, loop, head)
+    if latest is None:
+        standing = [r for r in gate.blocking_reviews(mine) if r.get("commit_id") != head]
+        latest = standing[0] if len(standing) == 1 and saw and standing[0].get("id") in saw else None
     if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
         return None
     when = gate._review_when(latest)
     return latest if when is not None and when[0].timestamp() + 1 <= float(ruled_at) else None
+
+
+def _saw(ruling: dict) -> frozenset[int] | None:
+    """The reviewer reviews this ruling's prompt showed, as its launch recorded them (#2402)."""
+    return views.ruling_saw(production_ledger(), str(ruling.get("run_id") or ""))
 
 
 def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
@@ -114,7 +126,7 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     branch = str((pr.get("head") or {}).get("ref") or "")
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
     if step == "approve":
-        found = overruled(reviews, loop, head, ruling["created"])
+        found = overruled(reviews, loop, head, ruling["created"], _saw(ruling))
         if found is None:
             return False                               # no change request it overruled
         if gate.is_ruled_approval(latest, loop):       # approved already, by hand
@@ -168,7 +180,8 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         return ""                              # superseded: its pending steps are never acted on
     mine = next((row for row in rows if row.get("ruling") == newest), None)
     if mine is None:
-        if overruled(reviews, loop, head, ruling.get("created") or 0) is None:
+        if overruled(reviews, loop, head, ruling.get("created") or 0,
+                     views.ruling_saw(db, newest)) is None:
             return ""                          # no change request to dismiss: nothing to act on
         return "the adjudicator's ACCEPT has not been acted on yet"
     # Only what ``_act`` still takes: the approval, then the dismissal, while the dismissal is
@@ -281,7 +294,7 @@ def _still_current(loop: dict, number: int, ruling: dict, step: str, target) -> 
     if not isinstance(reviews, list):
         return False
     if step == "approve":
-        found = overruled(reviews, loop, head, ruling["created"])
+        found = overruled(reviews, loop, head, ruling["created"], _saw(ruling))
         return found is not None and found.get("id") == target
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
     review = next((r for r in reviews if isinstance(r, dict) and r.get("id") == target), None)

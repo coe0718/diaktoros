@@ -540,6 +540,149 @@ class LeftToAPerson(Base):
                 self.assertEqual(self.row()["dismiss"], "posted")
 
 
+OLD = "e" * 40                                            # the head the ruling's PR moved from
+
+
+class HeadMoved(Base):
+    """#2402: a ruled head moved (a fixer push, a base merge), the reviewer did not review the new
+    head, and a later ACCEPT there must also clear the reviewer's change request still standing at
+    the old head, which GitHub keeps counting. Only one its ruling's prompt showed."""
+
+    def setUp(self):
+        super().setUp()
+        self.standing = tra.review(5, "CHANGES_REQUESTED", head=OLD)
+        self.reviews = [self.standing]
+
+    def saw(self, *ids, run=None):
+        """The ruling's launch record: the reviewer reviews its prompt showed."""
+        import json
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db)) as con, con:
+            run = run or f"r{self.n}"
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, created, "
+                        "updated, turn_key, saw_reviews) VALUES (?, ?, ?, 7, ?, 'adjudicator', "
+                        "'succeeded', 0, 0, ?, ?)",
+                        (run, f"d-{run}", fg.REPO, fg.HEAD, run, json.dumps(list(ids))))
+
+    def _dismissed(self, *_a, review_id, **_kw):
+        self.reviews = [{**r, "state": "DISMISSED"} if r["id"] == review_id else r
+                        for r in self.reviews]
+
+    def test_a_later_accept_dismisses_the_standing_request_its_ruling_saw(self):
+        self.ruled("ACCEPT")
+        self.saw(5)
+        self.sweep()
+        self.approve.assert_called_once()
+        self.sweep()
+        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
+        self.assertEqual((self.row()["overruled"], self.row()["dismiss"]), (5, "posted"))
+        self.assertEqual(gate.blocking_reviews(self.reviews), [])   # nothing left for GitHub
+        self.assertIn("nothing else blocks the merge", self.logged[-1])
+
+    def test_a_request_the_ruling_never_saw_is_never_dismissed(self):
+        # Posted while its turn ran, or cut from its prompt's record: not in what it saw.
+        for seen in ((), (99,)):
+            with self.subTest(saw=seen):
+                self.ruled("ACCEPT")
+                self.saw(*seen)
+                self.sweep()
+                self.sweep()
+                self.approve.assert_not_called()
+                self.dismiss.assert_not_called()
+
+    def test_a_ruling_with_no_launch_record_dismisses_nothing_from_an_earlier_head(self):
+        self.ruled("ACCEPT")                                # no runs row: launched before #2402
+        self.sweep()
+        self.sweep()
+        self.approve.assert_not_called()
+        self.dismiss.assert_not_called()
+
+    def test_a_verdict_at_the_ruled_head_still_decides(self):
+        # The reviewer did review the new head: that request is the one overruled, as before
+        # (#905), never the old head's, even though the ruling saw both.
+        at_head = tra.review(6, "CHANGES_REQUESTED", at="2026-01-01T06:00:00Z")
+        self.reviews = [self.standing, at_head]
+        self.ruled("ACCEPT")
+        self.saw(5, 6)
+        self.sweep()
+        self.sweep()
+        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [6])
+
+    def test_another_logins_standing_request_is_never_dismissed(self):
+        human = tra.review(12, "CHANGES_REQUESTED", login="coe0718", head=OLD)
+        self.reviews = [human]
+        self.ruled("ACCEPT")
+        self.saw(12)
+        self.sweep()
+        self.sweep()
+        self.dismiss.assert_not_called()
+
+    def test_a_request_from_after_the_ruling_is_not_overruled_even_if_listed(self):
+        self.reviews = [tra.review(5, "CHANGES_REQUESTED", head=OLD, at="2099-01-01T00:00:00Z")]
+        self.ruled("ACCEPT")
+        self.saw(5)
+        self.sweep()
+        self.sweep()
+        self.dismiss.assert_not_called()
+
+
+class RulingRecordsWhatItSaw(tra.Base):
+    """#2402: the adjudicator's real launch (``_prepare_launch``, with the real ``pr_record``)
+    records the reviewer reviews its prompt showed, before the seat starts."""
+
+    def launch(self, reviews):
+        import sqlite3
+        import time
+        from contextlib import closing
+        from diaktoros import gh, issue_facts
+        from diaktoros.run_supervisor import pr_facts
+        marker = self.mark_escalated(by="reviewer", status="awaiting-adjudication")
+        sup = run_supervisor.Supervisor(self.db)
+        key = f"{fg.REPO}:7:{fg.HEAD}:adjudicator:breach:1"
+        sup.enqueue(key, fg.REPO, 7, fg.HEAD, "adjudicator", turn_key="breach:1")
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='running', owner='w', launch_intent=? "
+                        "WHERE seat='adjudicator'", (time.time(),))
+        row = sup.get(key)
+        turn = run_supervisor._Turn(row["id"], "w", 60, row=row, loop=self.loop)
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                mock.patch.object(issue_facts, "section", return_value=""), \
+                mock.patch.object(ci, "read", return_value=None), \
+                mock.patch.object(ci, "section", return_value=""), \
+                mock.patch.object(pr_facts, "adjudication_state",
+                                  return_value=("ok", {"reviews": reviews, "marker": marker})):
+            launch = sup._prepare_launch(turn)
+        from diaktoros.run_supervisor import views
+        return launch, views.ruling_saw(self.db, row["id"])
+
+    def test_the_launch_records_the_reviewer_reviews_its_prompt_showed(self):
+        human = tra.review(12, "CHANGES_REQUESTED", login="coe0718")
+        reviews = [tra.review(5, "CHANGES_REQUESTED", head=OLD),
+                   tra.review(6, "CHANGES_REQUESTED", at="2026-01-01T06:00:00Z"), human]
+        launch, saw = self.launch(reviews)
+        self.assertIsNotNone(launch)
+        self.assertEqual(saw, frozenset({5, 6}))          # the reviewer's; never another login's
+        self.assertIn("CHANGES_REQUESTED at eeeeeeeeeeee", launch.prompt)
+
+    def test_the_record_lists_only_what_survives_its_caps(self):
+        from diaktoros.run_supervisor import pr_facts
+        many = [tra.review(100 + i, "CHANGES_REQUESTED", at=f"2026-01-01T00:{i:02d}:00Z")
+                for i in range(pr_facts.RECORD_ITEMS + 5)]
+        seen: list = []
+        pr_facts.pr_record(self.loop, None, many, [], seen=seen)
+        self.assertEqual(sorted(seen), [r["id"] for r in many[-pr_facts.RECORD_ITEMS:]])
+        # An oversized newest item crowds out older ones under RECORD_BYTES: they are not seen.
+        bodied = [{**r, "body": "y" * 400} for r in many]
+        big = {**many[-1], "body": "x" * pr_facts.RECORD_ITEM_BYTES}
+        seen = []
+        with mock.patch.object(pr_facts, "RECORD_BYTES", pr_facts.RECORD_ITEM_BYTES + 300):
+            pr_facts.pr_record(self.loop, None, [*bodied[:-1], big], [], seen=seen)
+        self.assertEqual(seen, [big["id"]])
+
+
 class LaterRuling(Base):
     """Review of #1605, round 8, F12: the record is a ruling's, not a head's. A later ACCEPT at the
     same head is acted on afresh; an earlier ruling's write there is settled first, never sent
