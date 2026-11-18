@@ -586,6 +586,12 @@ def _next_run(c) -> tuple[str, str]:
                   + _reconcile_first(c, "a worker may have written")
                   + " (retry refuses a run that may have written); or fix it by hand, push, and "
                   "re-request review")
+    elif c.at_head and c.fixer_ended:
+        # Started, and ended with no push (failed, cancelled, succeeded): its run did start, and
+        # the ledger's own recovery is the step, as for a declined entry (#2077).
+        kind = "fixer-retry" if c.fixer_rearm[0] or c.redeliver else "operator"
+        action = (f"{shown_turn(c)} at head {c.short} is {c.fixer_turn} with no fix pushed — "
+                  f"{_ended_turn_recovery(c)}, push, and re-request review")
     elif c.at_head:
         kind = "fixer-retry"
         action = c.to_fixer + "after checking why its run did not start — no fixer is running to push a fix"

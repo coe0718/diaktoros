@@ -228,6 +228,34 @@ class AfterEnabling(Steps):
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
 
+    def test_with_pushes_on_an_ended_turn_is_no_run_that_did_not_start(self):
+        # #2077: below the cap with pushes on, a failed or cancelled fixer turn at the head got
+        # "the fixer gate did not start one" and a step to re-deliver "after checking why its run
+        # did not start". The gate did start it; the step is the ledger's own recovery.
+        redeliver = "re-deliver the changes-requested review event for head aaaaaaa"
+        for state, error, rearmed in (("failed", "", True),
+                                      ("cancelled", run_supervisor.OPERATOR_CANCEL, False)):
+            with self.subTest(state=state):
+                sup, _ = self.ledgered(state, error)
+                self.set_push(True)
+                report = self.report()
+                step = report["next"]
+                self.assertEqual(step["kind"], "fixer-retry", step)
+                self.assertNotIn("did not start", step["action"])
+                self.assertIn(f"the fixer turn at head aaaaaaa is {state} with no fix pushed",
+                              step["action"])
+                self.assertIn(self.retry(), step["action"])      # the plan offers both rows
+                self.assertEqual(redeliver in step["action"], rearmed, step["action"])
+                self.assertFalse([b for b in report["blockers"] if "did not start" in b],
+                                 report["blockers"])
+                self.assertTrue([b for b in report["blockers"]
+                                 if f"is {state} with no fix pushed" in b], report["blockers"])
+                with mock.patch.object(sup, "_spawn"):       # the rule the step read: submit's
+                    outcome = sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer")
+                self.assertEqual(outcome == "rearmed", rearmed, outcome)
+                with sup._connect() as con:
+                    con.execute("DELETE FROM runs")
+
     def two_rows(self, gate_state, other_key, other_state):
         """A fixer row of another turn at this head (``other_key``), newer than the gate's verdict
         turn (``gate_state``; None for no verdict turn at all) — the shape of #1615 and #1659."""
