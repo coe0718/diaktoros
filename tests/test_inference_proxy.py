@@ -18,7 +18,7 @@ from unittest import mock
 from diaktoros import contained
 from diaktoros import inference_proxy
 from diaktoros.inference_proxy import InferenceCapability, _UnixHTTP, PATH, MAX_OUTPUT_TOKENS
-from tests.hermes_prereqs import needs, skip_or_fail
+from tests.hermes_prereqs import skip_or_fail
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
 

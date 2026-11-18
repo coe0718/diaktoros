@@ -10,7 +10,6 @@ Escalation to the adjudicator (part 2) and upheld findings to the fixer (part 3)
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import json
 import pathlib
 import sqlite3
 import sys

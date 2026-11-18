@@ -281,7 +281,7 @@ class Watchdog(Home):
 
     def move(self, fail_create=False):
         self.fail_create = fail_create
-        with mock.patch.object(cli.subprocess, "run", side_effect=self.hermes), \
+        with mock.patch.object(subprocess, "run", side_effect=self.hermes), \
                 mock.patch.object(cli_common, "_hermes_bin", return_value="hermes"):
             return cli_lifecycle._move_watchdog_job(dry_run=False)
 

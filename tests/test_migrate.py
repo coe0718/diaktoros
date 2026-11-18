@@ -9,7 +9,6 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import argparse
 import contextlib
 import io
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -18,7 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, gh, run_supervisor  # noqa: E402
+from diaktoros import cli, config, gh  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 from diaktoros.state import migrate  # noqa: E402
 from diaktoros.gate import shims as gate_shims  # noqa: E402

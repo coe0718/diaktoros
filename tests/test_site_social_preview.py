@@ -6,7 +6,6 @@ so removing the features makes the tests fail even on lightweight CI runners.
 import _home_guard  # noqa: F401  # first import: temp HOME/HERMES_HOME
 from html.parser import HTMLParser
 import pathlib
-import re
 import unittest
 from urllib.parse import urlparse
 

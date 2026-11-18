@@ -3,8 +3,6 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import contextlib
 import io
 import json
-import pathlib
-import sys
 import tempfile
 import unittest
 from unittest import mock

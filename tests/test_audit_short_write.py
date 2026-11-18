@@ -10,7 +10,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, safe_push
+from diaktoros import broker, safe_push  # noqa: E402
 
 
 def short_write(real_write=os.write):

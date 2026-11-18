@@ -26,7 +26,7 @@ import test_fixer_gating as fg  # noqa: E402
 import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import (broker, config, contained, gh, # noqa: E402
-                         run_supervisor, safe_push, trusted_turn)
+                         safe_push, trusted_turn)
 from diaktoros.state import ledger
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import fixer_answers, wire  # noqa: E402

@@ -218,7 +218,6 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
     ``("", "", "")`` with escalate off; ``shadow_hold`` is the ``(hold, note)`` view of it."""
     if not config.shadow_escalate(loop):
         return "", "", ""
-    import sqlite3
     from pathlib import Path
     from .. import run_supervisor
     short = str(head)[:7]

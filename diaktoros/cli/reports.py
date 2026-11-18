@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import json
 import pathlib
-import shlex
 
-from .. import config, gh
+from .. import config
 from . import common as cli_common
 
 

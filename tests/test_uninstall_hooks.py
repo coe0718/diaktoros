@@ -20,6 +20,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros import gh  # noqa: E402
 from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -430,7 +431,7 @@ class PurgeTest(Base):
         LOOP_FILE.write_text(json.dumps(cfg))
         rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
         self.assertEqual(rc, 2, out)
-        line = next(l for l in out.splitlines() if "rm -rf --" in l)
+        line = next(ln for ln in out.splitlines() if "rm -rf --" in ln)
         self.assertEqual(shlex.split(line.split("&&")[-1])[-1], str(odd))
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 0, out)
@@ -753,16 +754,16 @@ class PurgeTest(Base):
         # is named live with its DELETE command; hook B's was accepted and is only unconfirmed.
         self.fresh_install()
         first, second = sorted(hook["id"] for hook in self.hooks())
-        real_fetch = cli.gh.fetch
+        real_fetch = gh.fetch
 
         def fetch(loop, path, method="GET", body=None, login=None):
             if method == "DELETE" and path.endswith(f"/hooks/{first}"):
                 return None, "HTTP 500 Internal Server Error"
             return real_fetch(loop, path, method=method, body=body, login=login)
         original = cli_common._loop_hooks
-        cli.gh.fetch = fetch
+        gh.fetch = fetch
         cli_common._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
-        self.addCleanup(setattr, cli.gh, "fetch", real_fetch)
+        self.addCleanup(setattr, gh, "fetch", real_fetch)
         self.addCleanup(setattr, cli_common, "_loop_hooks", original)
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)

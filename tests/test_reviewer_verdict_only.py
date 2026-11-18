@@ -21,11 +21,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros.state import ledger
-from diaktoros import broker, broker_client, gh, prompts, review_receipt, trusted_turn
-from diaktoros.broker import ipc as broker_ipc
-from diaktoros.run_supervisor import Supervisor
-from scripts import broker_client as script_client
+from diaktoros.state import ledger  # noqa: E402
+from diaktoros import broker, broker_client, gh, prompts, review_receipt, trusted_turn  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
+from scripts import broker_client as script_client  # noqa: E402
 
 HEAD = "a" * 40
 BASE = "b" * 40

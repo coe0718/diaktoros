@@ -1,0 +1,9 @@
+# CI's `lint` job runs `ruff check` with these rules and fails on any finding, so main stays at
+# zero: pyflakes (F) and pycodestyle's import, statement and syntax checks (E4, E7, E9).
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# The harness's area modules share fixture.py's namespace through `from .fixture import *`, on
+# purpose, so every name they use from it is a star-import name.
+"tests/harness/*.py" = ["F405"]

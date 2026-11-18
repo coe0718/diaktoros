@@ -12,7 +12,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import gate_fixer, gate_reviewer
+from scripts import gate_fixer, gate_reviewer  # noqa: E402
 
 HEAD_A = "a" * 40
 HEAD_B = "b" * 40

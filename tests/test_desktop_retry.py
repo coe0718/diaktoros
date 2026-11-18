@@ -15,7 +15,6 @@ import io
 import json
 import os
 import pathlib
-import re
 import sqlite3
 import tempfile
 import time

@@ -95,19 +95,24 @@ class LaunchTests(unittest.TestCase):
                 self.launch(self.argv + extra)
             self.assertFalse(self.marker.exists())
         for flag, value in [('--tools', 'Read'), ('--setting-sources', 'user'), ('--max-turns', '2'), ('--permission-mode', 'default')]:
-            argv = self.argv.copy(); argv[argv.index(flag) + 1] = value
+            argv = self.argv.copy()
+            argv[argv.index(flag) + 1] = value
             with self.subTest(flag=flag), self.assertRaises(guard.NativeLaunchRefused):
                 self.launch(argv)
             self.assertFalse(self.marker.exists())
 
     def test_mcp_settings_and_code_tampering_refused(self):
-        argv = self.argv.copy(); argv[argv.index('--mcp-config') + 1] = '{"mcpServers":{"evil":{"command":"sh"}}}'
-        with self.assertRaises(guard.NativeLaunchRefused): self.launch(argv)
+        argv = self.argv.copy()
+        argv[argv.index('--mcp-config') + 1] = '{"mcpServers":{"evil":{"command":"sh"}}}'
+        with self.assertRaises(guard.NativeLaunchRefused):
+            self.launch(argv)
         (self.root / 'settings.json').write_text('{"hooks": {}}')
-        with self.assertRaises(guard.NativeLaunchRefused): self.launch(self.argv)
+        with self.assertRaises(guard.NativeLaunchRefused):
+            self.launch(self.argv)
         (self.root / 'settings.json').write_text(json.dumps({'env': {'CLAUDE_CODE_EXTRA_BODY': '{}'}}))
         (self.plugin / 'inert_mcp.py').write_text('import os; os.system("evil")')
-        with self.assertRaises(guard.NativeLaunchRefused): self.launch(self.argv)
+        with self.assertRaises(guard.NativeLaunchRefused):
+            self.launch(self.argv)
         self.assertFalse(self.marker.exists())
 
     def test_real_helper_refuses_unsafe_provider_spawns(self):
@@ -125,7 +130,8 @@ class LaunchTests(unittest.TestCase):
             if flag == '--dangerously-skip-permissions':
                 argv.append(flag)
             else:
-                i = argv.index(flag); del argv[i:i + (2 if flag in pairs else 1)]
+                i = argv.index(flag)
+                del argv[i:i + (2 if flag in pairs else 1)]
             (self.plugin / 'directsdk.py').write_text('import subprocess\nclass Client:\n    def __init__(self, **kw):\n        subprocess.Popen(' + repr(argv) + ', cwd=' + repr(str(self.root)) + ')\n')
             result = subprocess.run([sys.executable, str(helper), str(source), str(self.plugin)],
                                     env=env, input='{}', text=True, capture_output=True, timeout=10)
@@ -136,7 +142,8 @@ class LaunchTests(unittest.TestCase):
 
     def test_mutation_without_guard_starts_unsafe_fixture(self):
         # Sensitivity control: the same bad argv runs if the guard is removed.
-        argv = self.argv.copy(); argv.remove('--strict-mcp-config')
+        argv = self.argv.copy()
+        argv.remove('--strict-mcp-config')
         with subprocess.Popen(argv, cwd=str(self.root)) as child:
             self.assertEqual(child.wait(), 0)
         self.assertTrue(self.marker.exists())

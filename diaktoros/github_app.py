@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
-import re
 import shutil
 import subprocess
 import threading

@@ -6,6 +6,7 @@
 
 - [Working on the plugin](#working-on-the-plugin)
 - [File and function sizes](#file-and-function-sizes-1349)
+- [Lint](#lint)
 - [Offline test lanes](#offline-test-lanes)
 - [Installed-mode checks](#installed-mode-checks)
 - [Real-Hermes verticals with local fakes](#real-hermes-verticals-with-local-fakes)
@@ -52,6 +53,22 @@ from today's sizes (#1349), so it can add and raise entries, loosening the ratch
 `tests/file_sizes_baseline.json` exists it refuses and changes nothing; `--snapshot --force`
 rewrites it anyway. That is a one-shot, reviewed change (re-founding the baseline), never a way to
 pass the check: to follow a shrink, use `--write`.
+
+## Lint
+
+Main has no lint findings, and CI's `lint` job keeps it that way: it runs `ruff check .` with the
+rules in [`ruff.toml`](../ruff.toml) (pyflakes, plus pycodestyle's import, statement and syntax
+checks) and fails on any finding. Run the same check locally with `ruff check .` from the checkout
+root; the job's pinned version is in [`ci.yml`](../.github/workflows/ci.yml). Ruff is a
+development tool only: the plugin and its tests stay stdlib-only. `tests/test_lint_job.py` also
+runs ruff on a scratch tree, to show a finding fails the check and the harness exemption stays that
+narrow. Without ruff those tests skip; the lint job sets `DIAKTOROS_REQUIRE_RUFF=1`, so there a
+missing ruff fails them.
+
+When an import is there on purpose but unused in its own file, say why on the line:
+`# noqa: F401 - <reason>` (a re-export, or a name tests patch through that module). On a
+multi-line import the `noqa` goes on the opening line. The only standing exemption is the
+harness's shared `from .fixture import *` namespace (`F405` under `tests/harness/`).
 
 ## Offline test lanes
 
@@ -281,6 +298,7 @@ Enabling unattended fixer push is a separate policy decision with a documented P
 | Job | What it actually exercises |
 |---|---|
 | `tests` | Python 3.11/3.14 syntax and behavioral harness only |
+| `lint` | `ruff check .` with [`ruff.toml`](../ruff.toml)'s rules at a pinned ruff release; any finding fails it |
 | `unit` | The leak-guarded unit suite sharded 3 ways across Python 3.11/3.14, with bubblewrap installed so the sandbox tests run; scheduled runs repeat boundary discovery |
 | `plugin-guard` | The Hermes install scanner at the pinned version; also Hermes `main` on scheduled/manual runs |
 | `plugin-validate` | Hermes's own catalog validation action against the manifest and the pinned Hermes checkout |

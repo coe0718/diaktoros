@@ -12,7 +12,6 @@ def group_settings() -> None:
     """`hermes dk set` — changing the knobs without hand-editing JSON."""
     import contextlib
     import io
-    from types import SimpleNamespace
 
     from diaktoros import cli, config
 
@@ -372,7 +371,7 @@ def make_loop(loop_id: str, repo: str, reviewer_profile: str, fixer_profile: str
     The seat-identity tests need several loops side by side (that is the whole point: one form,
     many repositories), and driving each one through ``init`` would only test ``init`` again.
     """
-    from diaktoros import cli as cli_mod, config
+    from diaktoros import config
 
     raw = {
         "id": loop_id, "repo": repo, "base": "main", "cap": 3,
@@ -397,7 +396,7 @@ def make_loop(loop_id: str, repo: str, reviewer_profile: str, fixer_profile: str
 def group_seat_identity() -> None:
     """Who serves each seat: the form names a profile and a login per role, and the loop, its
     routes and the guard rails all have to agree — per loop, never globally."""
-    from diaktoros import cli, config, gh
+    from diaktoros import cli, config, gh, routes
 
     section("seat identity — the settings form says who serves each seat")
 
@@ -478,7 +477,7 @@ def group_seat_identity() -> None:
     loop_state.mkdir(parents=True, exist_ok=True)
     (loop_state / "locks.json").write_text("{}")
     (loop_state / "pending.json").write_text(json.dumps(
-        {"reviewer": {f"acme/seats#7": {"at": time.time(), "head": HEAD_A, "url": "u",
+        {"reviewer": {"acme/seats#7": {"at": time.time(), "head": HEAD_A, "url": "u",
                                         "reason": "capacity"}}}))
     before = len(RECEIVED)
     out, _, _ = run("watchdog.py", None, "--loop", "seats", "--drain", "--seat", "reviewer")
@@ -502,9 +501,9 @@ def group_seat_identity() -> None:
 
     section("seat identity — a form that holds nothing rewrites nothing")
     reset(prs={})
-    north = make_loop("north", "acme/north", "critic", "coder")
-    south = make_loop("south", "acme/south", "reviewer-profile", "fixer-profile")
-    east = make_loop("east", "acme/east", "critic", "coder", adjudicator="arbiter")
+    make_loop("north", "acme/north", "critic", "coder")
+    make_loop("south", "acme/south", "reviewer-profile", "fixer-profile")
+    make_loop("east", "acme/east", "critic", "coder", adjudicator="arbiter")
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -574,11 +573,11 @@ def group_seat_identity() -> None:
           config.seat_profile(config.load_id("south"), "fixer"), "coder")
 
     section("seat identity — a seat mid-run is not rewritten underneath itself")
-    busy = make_loop("busy", "acme/busy", "reviewer-profile", "fixer-profile")
+    make_loop("busy", "acme/busy", "reviewer-profile", "fixer-profile")
     busy_state = STATE_DIR / "busy"
     busy_state.mkdir(parents=True, exist_ok=True)
     (busy_state / "locks.json").write_text(json.dumps(
-        {"reviewer": {f"acme/busy#7": {"at": time.time(), "head": HEAD_A, "why": "review"}}}))
+        {"reviewer": {"acme/busy#7": {"at": time.time(), "head": HEAD_A, "why": "review"}}}))
     before_bytes = loop_bytes("busy")
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "busy"]))
     check("a seat in flight → apply refused", rc, 2)
@@ -620,7 +619,7 @@ def group_seat_identity() -> None:
               fingerprint)
 
     # A loop that trusts both logins on both sides leaves only the two-seats-one-account rule.
-    overlap = make_loop("overlap", "acme/overlap", "reviewer-profile", "fixer-profile")
+    make_loop("overlap", "acme/overlap", "reviewer-profile", "fixer-profile")
     raw = json.loads(loop_bytes("overlap"))
     raw["reviewers"] = [REVIEWER, FIXER]
     (LOOPS_DIR / "overlap.json").write_text(json.dumps(raw))
@@ -631,7 +630,7 @@ def group_seat_identity() -> None:
     check("  and it says why", "both act as" in out, True)
     check("  nothing was written", (loop_bytes("overlap"), SUBS.read_text()), fingerprint)
 
-    shared = make_loop("shared", "acme/shared", "reviewer-profile", "fixer-profile")
+    make_loop("shared", "acme/shared", "reviewer-profile", "fixer-profile")
     raw = json.loads(loop_bytes("shared"))
     raw["tokens"] = {REVIEWER: str(SEAT_PATS[0]), FIXER: str(SEAT_PATS[0]), READ_LOGIN: str(READ_PAT)}
     (LOOPS_DIR / "shared.json").write_text(json.dumps(raw))
@@ -771,7 +770,7 @@ def group_seat_identity() -> None:
         check(f"{label} route → refused", rc, 2)
         check(f"  {label}: nothing was written", (loop_bytes("foreign"), SUBS.read_text()), fingerprint)
 
-    two_seats = make_loop("two-seats", "acme/two-seats", "reviewer-profile", "fixer-profile")
+    make_loop("two-seats", "acme/two-seats", "reviewer-profile", "fixer-profile")
     raw = json.loads(loop_bytes("two-seats"))
     raw["seats"]["fixer"]["route"] = raw["seats"]["reviewer"]["route"]   # one route, two seats
     (LOOPS_DIR / "two-seats.json").write_text(json.dumps(raw))
@@ -800,23 +799,23 @@ def group_seat_identity() -> None:
     # routes are read back after the refusal and must be byte-identical.
     make_loop("frozen", "acme/frozen", "reviewer-profile", "fixer-profile")
     fingerprint = (loop_bytes("frozen"), SUBS.read_text())
-    real_new_route = cli.routes.new_route
+    real_new_route = routes.new_route
 
     def refuse_route(*_args, **_kwargs):
         raise OSError("registry is on a read-only mount")
 
-    cli.routes.new_route = refuse_route
+    routes.new_route = refuse_route
     try:
         rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "frozen"]))
     finally:
-        cli.routes.new_route = real_new_route
+        routes.new_route = real_new_route
     check("a rebind the registry refuses → refused", rc, 2)
     check("  and it says config was unchanged", "config unchanged" in out, True)
     check("  loop and routes unchanged", (loop_bytes("frozen"), SUBS.read_text()), fingerprint)
 
     # `init` is the other half of the same promise: a loop whose routes cannot be written is not
     # left behind as a config with no route to wake it.
-    cli.routes.new_route = refuse_route
+    routes.new_route = refuse_route
     try:
         rc, out = run_cli(parser.parse_args(["init", "--repo", "acme/halfway", "--id", "halfway",
                                              "--fixer", FIXER, "--reviewer", REVIEWER,
@@ -824,7 +823,7 @@ def group_seat_identity() -> None:
                                              "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                                              "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]))
     finally:
-        cli.routes.new_route = real_new_route
+        routes.new_route = real_new_route
     check("a route install that fails → refused", rc, 2)
     check("  and it says previous state was restored", "previous config and routes restored" in out, True)
     check("  no loop config left behind", (LOOPS_DIR / "halfway.json").exists(), False)

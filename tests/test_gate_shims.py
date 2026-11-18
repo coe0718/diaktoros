@@ -18,7 +18,6 @@ import os
 import pathlib
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -1747,7 +1746,6 @@ class ObserverStatusDoctor(Base):
     }
 
     def sweep(self, with_record: bool):
-        from diaktoros import route_intent
         self.observer_install()
         if not with_record:
             self.forget_intent()
@@ -2304,7 +2302,6 @@ class CronJobRemedies(Base):
 class ShimRefusal(unittest.TestCase):
     def test_chmod_names_a_path_that_exists(self):
         """#354: a shim not created yet cannot be chmodded; its directory refused the write."""
-        from diaktoros import cli
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
             scripts = pathlib.Path(tmp) / "scripts"
             scripts.mkdir()

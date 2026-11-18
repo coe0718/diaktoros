@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 import test_seat_models as sm
-from diaktoros import ci, config, gh, observer, run_supervisor
+from diaktoros import config, gh, observer, run_supervisor
 from diaktoros.state import ledger
 from diaktoros.run_supervisor import CI_HOLD, Supervisor
 

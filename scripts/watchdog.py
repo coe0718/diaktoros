@@ -62,7 +62,7 @@ from diaktoros import (  # noqa: E402
     observer,
     pr_hold,
     route_intent,
-    routes,
+    routes,  # noqa: F401 - tests patch routes.fire as watchdog.routes
     ruled_approval,
     run_supervisor,
     stale_approval,

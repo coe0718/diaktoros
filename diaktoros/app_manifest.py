@@ -309,7 +309,7 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
 
 def next_steps(made: dict, owner: str, org: bool, loop_id: str | None) -> list[str]:
     """What the operator runs next: install each App, then map the identities."""
-    steps = [f"install each App on the repository (only that one): " +
+    steps = ["install each App on the repository (only that one): " +
              " · ".join(f"{GITHUB}/apps/{rec['slug']}/installations/new" for rec in made.values())]
     if loop_id:
         for role, rec in made.items():

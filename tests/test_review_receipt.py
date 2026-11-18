@@ -1,7 +1,6 @@
 """Adversarial offline host receipt checks; never contacts GitHub."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import copy
-import json
 import os
 from pathlib import Path
 import sqlite3

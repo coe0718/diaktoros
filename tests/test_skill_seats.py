@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import run_supervisor
+from diaktoros import run_supervisor  # noqa: E402
 
 SKILL = (ROOT / "skill" / "SKILL.md").read_text()
 # The heading each seat's section carries: the seat name, spelled as the doc spells it.

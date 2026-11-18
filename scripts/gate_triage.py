@@ -26,7 +26,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import config, gate, gh  # noqa: E402
-from diaktoros.util import log, silence  # noqa: E402
+from diaktoros.util import silence  # noqa: E402
 
 
 def fix(loop: dict, payload: dict) -> None:

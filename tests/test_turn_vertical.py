@@ -21,7 +21,6 @@ from diaktoros.state import ledger
 from diaktoros.broker.ipc import RunScope
 from diaktoros.run_supervisor import Supervisor
 from diaktoros.inference_proxy import PATH
-from tests.hermes_prereqs import needs
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
 RUST = _home_guard.RUST

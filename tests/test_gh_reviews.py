@@ -9,7 +9,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import gate, gh
+from diaktoros import gate, gh  # noqa: E402
 
 HEAD = "a" * 40
 LOOP = {"repo": "acme/widgets", "reviewers": ["reviewer"]}

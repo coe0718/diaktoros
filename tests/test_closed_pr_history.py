@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_issue_fix import BASE, LABEL, REPO, Base, issue  # noqa: E402
+from test_issue_fix import Base, issue  # noqa: E402
 
 from diaktoros import cli, config, gh, observer, run_supervisor, seat_model  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402

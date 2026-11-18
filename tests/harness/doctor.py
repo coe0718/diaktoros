@@ -47,7 +47,7 @@ def pinned_host_memory():
     return 256 * 1024 ** 3, 256 * 1024 ** 3
 
 
-from diaktoros import doctor as _doctor_module  # the same object the harness namespace re-exports
+from diaktoros import doctor as _doctor_module  # noqa: E402 - the object the harness namespace re-exports
 from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 
@@ -425,7 +425,6 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     Returns the paths it created, for the caller to remove: later groups rely on there being no
     runtime file (eligible gates then hold, fail closed).
     """
-    import sys
     home = TMP / "hermes-home"
     venv = TMP / "doctor-venv"
     rust = TMP / "doctor-rust"
@@ -584,7 +583,7 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
 
 def group_doctor() -> None:
     """`hermes dk doctor` — the read-only preflight of an installation."""
-    from diaktoros import cli, config, doctor
+    from diaktoros import cli, doctor
 
     section("doctor — a correct installation passes, and says nothing it cannot prove")
     check("doctor and init agree on the shim name", doctor.SHIM_NAME, cli.SHIM_NAME)
@@ -1222,11 +1221,11 @@ def group_doctor() -> None:
 
     for content_type in ("form", None):
         install_doctor_fixture()
-        config = DATA["world"]["hooks"][0]["config"]
+        hook_config = DATA["world"]["hooks"][0]["config"]
         if content_type is None:
-            config.pop("content_type")
+            hook_config.pop("content_type")
         else:
-            config["content_type"] = content_type
+            hook_config["content_type"] = content_type
         save_world()
         rc, out = run_doctor("--loop", "widgets")
         check(f"{content_type!r} hook content type fails", rc, 1)

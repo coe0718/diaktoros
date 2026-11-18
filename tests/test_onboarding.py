@@ -373,7 +373,7 @@ class Review1(Fixture):
         self.assertEqual(got["armed"], "stale")
         arm_action.plan = lambda loop, token_login=None: {"state": "armed"}
         self.assertEqual(onboarding.fingerprint(self.loop, "armed"),
-                         onboarding.fingerprint(self.loop, "armed", hook_state=lambda l: "armed"))
+                         onboarding.fingerprint(self.loop, "armed", hook_state=lambda loop: "armed"))
 
     def test_the_names_selftest_emits_cover_every_required_check(self):                    # F4
         import re
@@ -561,7 +561,7 @@ class Review2(Fixture):
             ["live_turn", {"pr": 12, "head": "", "prompt": prompts.revision("reviewer")}])
         onboarding.path(self.loop).write_text(json.dumps(stored))
         got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=self.resolver,
-                              pr_head=lambda loop, number: "", hook_state=lambda l: self.hooks)
+                              pr_head=lambda loop, number: "", hook_state=lambda loop: self.hooks)
         self.assertEqual(entry["status"], "passed")
         self.assertEqual(got["live_turn"], "stale")
 

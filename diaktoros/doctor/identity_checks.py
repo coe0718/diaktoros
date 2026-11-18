@@ -130,7 +130,6 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
 def check_credential(loop: dict, seat: str) -> doctor.Check:
     """The gates use gh.token_path, not the profile's GH_TOKEN environment variable."""
     login = str(loop["seats"][seat].get("login") or "")
-    tokens = loop.get("tokens") or {}
     from .. import github_app
     if login and gh.token_path(loop, login) is None and github_app.is_app(loop, login):
         return check_app_identity(loop, login, f"credential:{seat}")

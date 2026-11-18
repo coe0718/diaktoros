@@ -14,10 +14,12 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import cli, explain, gate, gh
+from diaktoros import cli, explain, gate, gh  # noqa: E402
+from diaktoros import config  # noqa: E402
+from diaktoros import routes  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
-from scripts import watchdog
+from scripts import watchdog  # noqa: E402
 
 HEAD = "a" * 40
 LOOP = {"id": "widgets", "repo": "acme/widgets", "base": "main", "cap": 5,
@@ -65,10 +67,10 @@ class ObserverInitCollisionTest(unittest.TestCase):
                 normalized = LOOP | {"host": "https://example.test",
                                      "adjudicator": {"route": "widgets-breach"},
                                      "observer": {"route": route, "deliver": "telegram"}}
-                with (mock.patch.object(cli.config, "normalize", return_value=normalized),
-                      mock.patch.object(cli.config, "webhook_host", return_value="https://example.test"),
-                      mock.patch.object(cli.config, "config_dir", return_value=pathlib.Path("/no-write")),
-                      mock.patch.object(cli.routes, "route", return_value={"script": "foreign.py"} if preexisting else None),
+                with (mock.patch.object(config, "normalize", return_value=normalized),
+                      mock.patch.object(config, "webhook_host", return_value="https://example.test"),
+                      mock.patch.object(config, "config_dir", return_value=pathlib.Path("/no-write")),
+                      mock.patch.object(routes, "route", return_value={"script": "foreign.py"} if preexisting else None),
                       mock.patch.object(cli_common, "_write_config") as write,
                       mock.patch.object(cli_common, "_install_routes") as install,
                       mock.patch.object(cli_common, "_install_hooks") as hooks,

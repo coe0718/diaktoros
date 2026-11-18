@@ -40,8 +40,8 @@ def _load_loop(args) -> dict:
             loop = config.load_id_for_reader_repair(args.loop,
                                                     str(getattr(args, "read_token", "") or "").strip())
         except config.ConfigError as other:
-            exc = other
-            loop = None
+            print(f"no such loop: {other}")
+            raise _Refused
         if loop is None:
             print(f"no such loop: {exc}")
             raise _Refused

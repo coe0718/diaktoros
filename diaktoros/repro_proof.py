@@ -495,7 +495,7 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
         nothing_ran = (proof.get("overall") == NONE_NAMED and not proof.get("hunk_tests"))
         unguarded = [h for h in hunks if h.get("status") == UNGUARDED]
         unchecked = [h for h in hunks if h.get("status") == NOT_CHECKED]
-        text += ((f"- hunk check (#1043): no test ran, so no source hunk could be noticed: "
+        text += (("- hunk check (#1043): no test ran, so no source hunk could be noticed: "
                   if nothing_ran else
                   f"- hunk check (#1043): the host reverted each changed source hunk on its own and "
                   f"ran the {tests_word}: ")

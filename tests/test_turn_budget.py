@@ -25,7 +25,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (cli, config, doctor, explain, gate, gh,  # noqa: E402
-                         run_supervisor, seat_model, selftest, trusted_turn)
+                         run_supervisor, seat_model, trusted_turn)
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import watch_stacked  # noqa: E402
 from diaktoros import watch_health  # noqa: E402
@@ -979,7 +979,6 @@ class GateToProductionWorker(unittest.TestCase):
     def test_a_failed_run_frees_its_claim_and_an_uncertain_one_keeps_it(self):
         from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
-        key = gate.seat_key(self.loop, 8)
 
         def killed(_loop, scope, **kw):
             raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)

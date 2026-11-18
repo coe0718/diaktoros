@@ -62,7 +62,7 @@ class DirectSDKBackend:
             raise ProxyError('invalid DirectSDK request') from None
         if len(body) > MAX_REQUEST:
             raise ProxyError('DirectSDK request too large')
-        from . import config, util
+        from . import util
         from .config import host_guards
         import pwd
         user_home = os.environ.get('HOME', '/') if host_guards.test_guard_active() else pwd.getpwuid(os.getuid()).pw_dir

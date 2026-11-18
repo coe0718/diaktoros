@@ -130,7 +130,7 @@ class MalformedMarkReaders(unittest.TestCase):
                 out = sweep()
                 self.assertEqual(
                     len([line for line in out.splitlines()
-                         if f"reviewer slot held" in line and GOOD in line]), 1, out)
+                         if "reviewer slot held" in line and GOOD in line]), 1, out)
                 self.assertNotIn(f"on {JUNK}", out)
                 self.assertNotIn(JUNK, t.load_state("locks.json").get("reviewer", {}))
 

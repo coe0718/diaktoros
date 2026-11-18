@@ -273,7 +273,8 @@ class BrowserRound(unittest.TestCase):
         # key cannot be saved, and the operator is told which App to give a new one.
         self.key_dir.mkdir(parents=True)
         (self.key_dir / "github-renamed.pem").write_text("another App's key")
-        renamed = lambda url: {"id": 77, "slug": "github-renamed", "pem": PEM, "webhook_secret": "w"}
+        def renamed(url):
+            return {"id": 77, "slug": "github-renamed", "pem": PEM, "webhook_secret": "w"}
         with self.assertRaisesRegex(am.WizardError, r"App github-renamed \(id 77\) was made without a "
                                                     "saved key: generate a new private key"):
             am.create(owner="coe0718", org=False, prefix="w-dk", roles=("reader",), host=HOST,

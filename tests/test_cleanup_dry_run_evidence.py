@@ -42,10 +42,10 @@ class DryRunEvidence(unittest.TestCase):
         dry_freed, dry_out = self.run_clean(True)
         self.assertTrue(self.evidence.exists())
         self.assertTrue(self.plain.exists())
-        self.assertTrue(any("SKIP (evidence pattern)" in l and str(self.evidence) in l
-                            for l in dry_out), dry_out)
-        self.assertFalse(any("would remove" in l and str(self.evidence) in l
-                             for l in dry_out), dry_out)
+        self.assertTrue(any("SKIP (evidence pattern)" in ln and str(self.evidence) in ln
+                            for ln in dry_out), dry_out)
+        self.assertFalse(any("would remove" in ln and str(self.evidence) in ln
+                             for ln in dry_out), dry_out)
         real_freed, _ = self.run_clean(False)
         self.assertTrue(self.evidence.exists())
         self.assertFalse(self.plain.exists())

@@ -18,6 +18,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import observer, ready, state as state_mod  # noqa: E402
+from diaktoros import config  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -111,7 +112,7 @@ class ReadyNotice(unittest.TestCase):
     def test_cmd_ready_never_notifies(self):
         from diaktoros import cli
         args = mock.Mock(loop="w")
-        with mock.patch.object(cli.config, "load_id", return_value=self.loop), \
+        with mock.patch.object(config, "load_id", return_value=self.loop), \
              mock.patch.object(ready, "collect", return_value=([entry(5)], [], "")), \
              mock.patch.object(observer, "notify") as notify:
             cli.cmd_ready(args)

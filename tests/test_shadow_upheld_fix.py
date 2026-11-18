@@ -23,7 +23,6 @@ import test_fixer_gating as fg  # noqa: E402
 import test_shadow_escalate_ruling as ruling  # noqa: E402
 from diaktoros import broker, gate, gh, run_supervisor, safe_push  # noqa: E402
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
-from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 
 class Upheld(ruling.Base):
@@ -286,7 +285,7 @@ class Launch(ruling.Base):
         sup, turn = self.row(key)
         change = mock.Mock(partial="", record="RECORD", diff="", author="fixer", description="")
         with mock.patch.object(gh, "reviews", return_value=list(ruling.APPROVED)), \
-                mock.patch.object(pr_facts, "effective_reviews", side_effect=lambda l, r, rv, d: rv), \
+                mock.patch.object(pr_facts, "effective_reviews", side_effect=lambda loop, r, rv, d: rv), \
                 mock.patch.object(pr_facts, "pr_change", return_value=change), \
                 mock.patch.object(pr_facts, "pr_record", return_value="RECORD"), \
                 mock.patch.object(issue_facts, "section", return_value=""), \

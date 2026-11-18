@@ -7,7 +7,6 @@ here launches Hermes, a sandbox or a network call.
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
 from pathlib import Path
-import sqlite3
 import sys
 import tempfile
 import time
@@ -630,7 +629,7 @@ class OperatorCommands(unittest.TestCase):
         with patch.object(gh, 'pr', return_value=pr):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                code = cli.cmd_retry(argparse.Namespace(loop='widgets', pr=7, seat=None))
+                cli.cmd_retry(argparse.Namespace(loop='widgets', pr=7, seat=None))
         text = out.getvalue()
         # The real head is named and its recoverable row is offered — not the abandoned head.
         self.assertIn(f'reviewer #7 @ {HEAD[:7]} re-armed', text)
