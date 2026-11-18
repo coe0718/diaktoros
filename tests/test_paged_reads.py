@@ -228,7 +228,11 @@ def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
     class body is walked as part of ``scope`` even when it assigns ``name``: at module level
     a load before that assignment reads the module's name, and in a function it is a
     ``NameError``, so counting it only ever reports a site, never clears one. The functions
-    in a class are nested scopes; a class's own binding does not reach its methods."""
+    in a class are nested scopes; a class's own binding does not reach its methods.
+
+    A function that rebinds ``name`` may still hold one that declares it ``global``, which
+    reads the module's binding (#2423, ``_global_loads``). A comprehension whose ``for``
+    target is ``name`` reads its own ``name`` everywhere but its first ``iter`` (#2424)."""
     loads: list[ast.Name] = []
     stack = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
     while stack:
@@ -241,6 +245,31 @@ def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
                 stack += node.body
             elif not isinstance(scope, ast.ClassDef) and not _binds(node, name):
                 loads += _name_loads(node, name)
+            elif isinstance(scope, ast.Module):
+                loads += _global_loads(node, name)
+        elif isinstance(node, COMPS) and any(
+                isinstance(n, ast.Name) and n.id == name
+                for gen in node.generators for n in ast.walk(gen.target)):
+            stack.append(node.generators[0].iter)
+        else:
+            stack += ast.iter_child_nodes(node)
+    return loads
+
+
+def _global_loads(shadow: ast.AST, name: str) -> list[ast.Name]:
+    """The loads of the module's ``name`` inside ``shadow``, a nested scope that rebinds it: a
+    function anywhere in it that declares ``global name`` reads the module's binding, and so
+    do the functions nested in that one (#2423: ``def outer(): path = "/own"; def inner():
+    global path; return gh.fetch(None, path)`` read the module's path unpaged). ``nonlocal``
+    cannot reach past ``shadow``: the nearest enclosing function binding it is ``shadow`` or
+    one inside it."""
+    loads: list[ast.Name] = []
+    stack = list(ast.iter_child_nodes(shadow))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                isinstance(n, ast.Global) and name in n.names for n in _own(node)):
+            loads += _name_loads(node, name)
         else:
             stack += ast.iter_child_nodes(node)
     return loads
@@ -431,6 +460,41 @@ class Scan(unittest.TestCase):
                     '        for path in ["/own"]:\n            pass\n'):
             with self.subTest(own=own):
                 self.assertEqual(_one(head + own + tail), [])
+
+    def test_a_global_under_a_shadowing_function_reads_the_module_name(self):
+        # #2423: ``outer`` rebinds ``path``, but ``inner`` (or one nested in it) declares it
+        # global and reads the module's ``path`` with fetch: unpaged. Without the ``global``,
+        # ``inner`` reads ``outer``'s own and the module's stays paged.
+        head = 'from diaktoros import gh\npath = "/unsafe?per_page=100"\ndef outer():\n'
+        tail = '    return inner()\ngh._read_pages(None, path, "x", 3)\nouter()\n'
+        for inner in ('    path = "/own"\n    def inner():\n        global path\n'
+                      '        return gh.fetch(None, path)\n',
+                      '    path = "/own"\n    def inner():\n        global path\n'
+                      '        def deeper():\n            return gh.fetch(None, path)\n'
+                      '        return deeper()\n',
+                      '    path = "/own"\n    class C:\n        def inner(self):\n'
+                      '            global path\n            return gh.fetch(None, path)\n'):
+            with self.subTest(inner=inner):
+                self.assertEqual(_one(head + inner + tail),
+                                 ["diaktoros/new.py::<module>::/unsafe?per_page=100"])
+        own = '    path = "/own"\n    def inner():\n        return gh.fetch(None, path)\n'
+        self.assertEqual(_one(head + own + tail), [])
+
+    def test_a_comprehension_binding_the_name_reads_its_own(self):
+        # #2424: ``[gh.fetch(loop, path) for path in ...]`` reads the comprehension's ``path``,
+        # not the enclosing one, nested or in the same scope; its first ``iter`` still reads
+        # the enclosing name, and one that does not bind ``path`` stays reported.
+        bad = ["diaktoros/new.py::f::/safe?per_page=100"]
+        head = 'from diaktoros import gh\ndef f(loop):\n    path = "/safe?per_page=100"\n'
+        tail = '    gh._read_pages(loop, path, "x", 3)\n'
+        for comp, found in (('[gh.fetch(loop, path) for path in ["/other"]]', []),
+                            ('{gh.fetch(loop, path) for x, path in [("a", "/o")]}', []),
+                            ('[gh.fetch(loop, x) for x in [gh.fetch(loop, path)]]', bad),
+                            ('[x for path in [gh.fetch(loop, path)]]', bad),
+                            ('[gh.fetch(loop, path) for x in ["/other"]]', bad)):
+            for form in (f'    def g():\n        return {comp}\n', f'    x = {comp}\n'):
+                with self.subTest(form=form):
+                    self.assertEqual(_one(head + form + tail), found)
 
     def test_a_rebinding_scope_still_reads_the_outer_name_where_it_is_defined(self):
         # #2387 review F1: defaults, decorators, annotations and a class body run in the
