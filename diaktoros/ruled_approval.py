@@ -89,9 +89,10 @@ def overruled(reviews: list, loop: dict, head: str, ruled_at: float,
     latest = gate.latest_effective_review_at_head(mine, loop, head)
     if latest is None:
         # A reviewer review at ``head`` that reads as no verdict (undatable, unfamiliar) is an
-        # unknown verdict, not none: nothing from an earlier head is overruled over it. A comment
-        # or a dismissal is no verdict, as the gate reads it.
-        if any(r.get("commit_id") == head and gh.review_state(r) not in ("COMMENTED", "DISMISSED")
+        # unknown verdict, not none: nothing from an earlier head is overruled over it. What the
+        # gate counts as no verdict at all (``gate.NOT_VERDICTS``: a comment, a dismissal, a
+        # pending review) is none here too.
+        if any(r.get("commit_id") == head and gh.review_state(r) not in gate.NOT_VERDICTS
                for r in mine):
             return None
         standing = [r for r in gate.blocking_reviews(mine) if r.get("commit_id") != head]

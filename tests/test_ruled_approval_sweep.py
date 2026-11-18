@@ -617,17 +617,23 @@ class HeadMoved(Base):
         self.approve.assert_not_called()
         self.dismiss.assert_not_called()
 
-    def test_a_dismissed_review_at_the_ruled_head_is_no_verdict(self):
-        # Review of #2544, round 5, F7: a dismissal at the head is no verdict, as the gate reads
-        # it (unlike an undatable verdict, above), so the seen old-head request is overruled.
-        dismissed = {**tra.review(6, "DISMISSED"), "submitted_at": "2025-12-31T00:00:00Z"}
-        self.reviews = [self.standing, dismissed]
-        self.ruled("ACCEPT")
-        self.saw(5)
-        self.sweep()
-        self.sweep()
-        self.approve.assert_called_once()
-        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
+    def test_a_non_verdict_at_the_ruled_head_is_no_verdict(self):
+        # Review of #2544, round 5, F7, and round 6, F8: a dismissal, a comment or a pending
+        # review at the head is no verdict, as the gate reads them (gate.NOT_VERDICTS; unlike an
+        # undatable verdict, above), so the seen old-head request is overruled.
+        for state, at in (("DISMISSED", "2025-12-31T00:00:00Z"),
+                          ("COMMENTED", "2025-12-31T00:00:00Z"), ("PENDING", None)):
+            with self.subTest(state=state):
+                self.approve.reset_mock()
+                self.dismiss.reset_mock()
+                self.reviews = [self.standing, {**tra.review(6, state), "submitted_at": at}]
+                self.ruled("ACCEPT")
+                self.saw(5)
+                self.sweep()
+                self.sweep()
+                self.approve.assert_called_once()
+                self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
+        self.assertEqual(ruled_approval.gate.NOT_VERDICTS, {"DISMISSED", "COMMENTED", "PENDING"})
 
     def kinds(self):
         """The merge check's real inputs for the PR as the reviews now stand."""
