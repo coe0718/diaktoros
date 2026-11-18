@@ -15,8 +15,9 @@ A turn is queued only when all of these hold:
   issue-fix turn was queued. One written during that turn wakes the next; several are one turn;
 * no open PR's body says it fixes the issue, the guard ``fix_hold.hand_off`` applies (#2021).
   A reply seen while the open PR listing cannot be read is kept in ``GUARD`` and retried every
-  sweep for up to ``WAIT_DAYS`` more, even once its comment is older than ``WAIT_DAYS``; status
-  says it waits on the listing, never on a reply (#2021 review).
+  sweep for up to ``WAIT_DAYS`` more, even once its comment is older than ``WAIT_DAYS`` and
+  through any read that fails meanwhile; status says it waits on the listing, never on a reply,
+  until a wake (the sweep's or the webhook's) reads it (#2021 review).
 
 The new turn reads the issue's comments (#511), so it sees the reply. It is a maintainer's
 hand-off, so ``auto_fix_daily`` does not count it.
@@ -58,7 +59,7 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
     before = before if isinstance(before, dict) else {}
     waiting = {}
     for row in rows:
-        number = row["number"]
+        number, key = row["number"], str(row["number"])
         if row["active"] or number in st.fix_ask_open():
             continue                    # a turn will write again, or the ask's own sweep owns it
         try:
@@ -66,18 +67,20 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
         except Exception as exc:        # retried on the next sweep
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")
-            if str(number) in guard:
-                kept[str(number)] = guard[str(number)]
-            continue
+            outcome = "failed"
         if outcome == "waiting":
-            waiting[str(number)] = row["comment_id"]
-        elif outcome == "unreadable" and str(number) in before:
-            waiting[str(number)] = before[str(number)]   # unknown is not "no wait" (#2019)
-        elif outcome == "unlisted" and now - _guard(st)[str(number)]["at"] < WAIT_DAYS * 86400:
-            kept[str(number)] = _guard(st)[str(number)]  # the reply is known: retried, not lost
-        elif outcome == "unlisted":
+            waiting[key] = row["comment_id"]
+        elif outcome == "unreadable" and key in before:
+            waiting[key] = before[key]  # unknown is not "no wait" (#2019)
+        entry = _guard(st).get(key)
+        if entry is None or outcome not in ("unlisted", "unreadable", "failed"):
+            continue
+        # A known reply outlives any read that fails, never only the listing's (#2549 review).
+        if now - entry["at"] < WAIT_DAYS * 86400:
+            kept[key] = entry
+        else:
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, but the open PR listing "
-                         f"stayed unreadable for {WAIT_DAYS} days; fix not queued")
+                         f"or the issue stayed unreadable for {WAIT_DAYS} days; fix not queued")
     st.kv_set(st.dir / WAITING, waiting)
     st.kv_set(st.dir / GUARD, kept)
 
@@ -91,7 +94,17 @@ def _guard(st) -> dict:
 
 def wake(loop: dict, st, row: dict) -> str:
     """``queued``, ``waiting`` (no reply yet), ``ineligible``, ``unreadable``, or ``unlisted``
-    (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue."""
+    (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue. Any
+    outcome read in full settles a guarded reply here, so the webhook's wake clears it too and
+    status never says the listing is awaited once it was read (#2549 review)."""
+    outcome = _wake(loop, st, row)
+    guard = _guard(st)
+    if outcome not in ("unreadable", "unlisted") and guard.pop(str(row["number"]), None):
+        st.kv_set(st.dir / GUARD, guard)
+    return outcome
+
+
+def _wake(loop: dict, st, row: dict) -> str:
     from . import run_supervisor
     from .run_supervisor import issue_inputs
     number = row["number"]

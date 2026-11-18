@@ -49,14 +49,35 @@ class ListingOutage(replies.Replies):
     def at(self, days):
         return mock.patch.object(fix_reply, "time", SimpleNamespace(time=lambda: time.time() + days * 86400))
 
-    def test_a_reply_seen_during_an_outage_is_queued_after_its_comments_window(self):
+    def cutoff(self, seconds):
+        """The clock ``seconds`` after the ledger drops the fixer's comment (its WAIT_DAYS)."""
+        at = replies.TURN + 60 + fix_reply.WAIT_DAYS * 86400 + seconds  # comment_turn's created
+        return mock.patch.object(fix_reply, "time", SimpleNamespace(time=lambda: at))
+
+    def outage_across_the_cutoff(self, *failing):
+        """Vex on #2549 (F1, F3): the listing is down a minute before the comment's cutoff, then
+        each of ``failing`` fails a sweep after it; the reply still queues once reads recover."""
         self.reply(201, "jeremy")
-        with mock.patch.object(gh, "open_prs_read", self.offline):
+        with self.cutoff(-60), mock.patch.object(gh, "open_prs_read", self.offline):
             self.sweep()
-        with self.at(fix_reply.WAIT_DAYS):              # the comment is now past its window
+        for seconds, patch in enumerate(failing, 1):
+            with self.cutoff(seconds * 60), patch:
+                self.sweep()
+                self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        with self.cutoff(len(failing) * 60 + 60):
             self.sweep()
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
         self.assertEqual(fix_reply.status_lines(self.st), [])
+
+    def test_a_reply_seen_just_before_its_comments_cutoff_is_queued_just_after(self):
+        self.outage_across_the_cutoff()
+
+    def test_a_failed_issue_or_comments_read_after_the_cutoff_keeps_the_reply(self):
+        self.live = {**self.live, "updated_at": replies.iso(replies.TURN + 700)}
+        self.outage_across_the_cutoff(
+            mock.patch.object(issue_inputs, "issue_fix_issue",
+                              mock.Mock(side_effect=run_supervisor.RetryableError("502"))),
+            mock.patch.object(gh, "issue_comments_read", lambda loop, n: (None, "502")))
 
     def test_status_says_the_listing_not_a_reply_is_awaited(self):
         self.reply(201, "jeremy")
@@ -74,6 +95,19 @@ class ListingOutage(replies.Replies):
                 lines = self.sweep()
         self.assertTrue(any("stayed unreadable" in x for x in lines or []), lines)
         self.assertEqual((self.enqueued, fix_reply.status_lines(self.st)), ([], []))
+
+
+class WebhookSettlesTheGuard(replies.Delivery):
+    def test_a_delivery_that_reads_the_listing_clears_what_status_says(self):
+        # Vex on #2549 (F4): the webhook's wake queued the fix, status still named the listing.
+        self.reply(201, "jeremy")
+        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "offline")):
+            self.assertNotEqual(self.deliver(self.comment())[0], "accepted")
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        decision, reason = self.deliver(self.comment())
+        self.assertEqual(decision, "accepted", reason)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
+        self.assertEqual(fix_reply.status_lines(self.st), [])
 
 
 class UnreadableKeepsTheWait(replies.Replies):
@@ -99,7 +133,7 @@ class UnreadableKeepsTheWait(replies.Replies):
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
     suite = unittest.TestSuite()
-    for cls in (OpenPrGuard, ListingOutage, UnreadableKeepsTheWait):
+    for cls in (OpenPrGuard, ListingOutage, WebhookSettlesTheGuard, UnreadableKeepsTheWait):
         for name in sorted(vars(cls)):
             if name.startswith("test_"):
                 suite.addTest(cls(name))
