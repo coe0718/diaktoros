@@ -178,14 +178,7 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
                 return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
     ruling = views.ruling_row(db, loop["repo"], number) or {}
     if not rows and not ruled:
-        # #2402: at a head with no verdict yet, an ACCEPT that overruled the reviewer's standing
-        # request from an earlier head still owes its approval; a merge now would strand that
-        # request again. With nothing it can overrule (no record, not seen), nothing waits.
-        if (ruling.get("head"), ruling.get("verdict")) != (head, "ACCEPT") or overruled(
-                reviews, loop, head, ruling.get("created") or 0,
-                views.ruling_saw(db, str(ruling.get("run_id") or ""))) is None:
-            return ""
-        return "the adjudicator's ACCEPT has not been acted on yet"
+        return _owed_at_a_moved_head(loop, db, ruling, reviews, head)
     newest = ruling.get("run_id")
     if not newest:
         return "the adjudicator's ruling can't be read"
@@ -205,6 +198,23 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         step, state = ("approve", approve) if approve == "pending" else ("dismiss", dismiss)
         return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
     return ""
+
+
+def _owed_at_a_moved_head(loop: dict, db, ruling: dict, reviews: list, head: str) -> str:
+    """``unsettled`` at a head with no verdict and no record yet (#2402): an ACCEPT here that
+    overruled the reviewer's standing request from an earlier head still owes its approval, and a
+    merge now would strand that request again. With nothing it can overrule (no record, not
+    seen), nothing waits; nor while a required check is red or cancelled here, since the approval
+    waits for green and the merge may be what turns it green (#2544 review, F6). The merged head
+    then goes for a ruling again, and that ACCEPT dismisses the request it sees."""
+    if (ruling.get("head"), ruling.get("verdict")) != (head, "ACCEPT") or overruled(
+            reviews, loop, head, ruling.get("created") or 0,
+            views.ruling_saw(db, str(ruling.get("run_id") or ""))) is None:
+        return ""
+    gating = ci.gating(ci.read(loop, head), config.required_checks(loop))
+    if gating is not None and (gating.failed or gating.cancelled):
+        return ""
+    return "the adjudicator's ACCEPT has not been acted on yet"
 
 
 POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off

@@ -115,7 +115,7 @@ class Base(unittest.TestCase):
                 mock.patch.object(safe_push, "_isolated", side_effect=self.isolated), \
                 mock.patch.object(gh, "reviews", side_effect=lambda *a, **kw: self.reviews and list(self.reviews)), \
                 mock.patch.object(watch_conflicts, "base_tip", return_value=self.tip), \
-                mock.patch.object(ci, "read", return_value=GREEN), \
+                mock.patch.object(ci, "read", return_value=getattr(self, "ci_state", GREEN)), \
                 mock.patch.object(ready, "assess_kinds", return_value=kinds), \
                 mock.patch.object(observer, "notify",
                                   side_effect=lambda *a, **kw: self.notices.append((a, kw))):
@@ -622,11 +622,32 @@ class Ruled(Base):
     def test_at_a_moved_head_the_merge_waits_for_the_approval_the_accept_owes(self):
         # A behind merge now would strand the request again: update_behind waits.
         self.moved_head(frozenset({11}))
-        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews,
-                                                  ruled=False),
-                         "the adjudicator's ACCEPT has not been acted on yet")
+        with mock.patch.object(ci, "read", return_value=GREEN):
+            self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews,
+                                                      ruled=False),
+                             "the adjudicator's ACCEPT has not been acted on yet")
         self.assertEqual(self.update(), "")
         self.assertEqual(self.remote_head(), self.head)
+
+    def test_at_a_moved_head_red_ci_lets_the_merge_go_and_the_next_ruling_clears_it(self):
+        # Review of #2544, F6: the owed approval waits for green CI, and the merge may be what
+        # turns it green, so a wait on red could never end. Running CI still waits.
+        self.moved_head(frozenset({11}))
+        for state, waits in ((ci.CIState(pending=["tests"]), True),
+                             (ci.CIState(failed=["tests"]), False),
+                             (ci.CIState(cancelled=["tests"]), False)):
+            with self.subTest(ci=state), mock.patch.object(ci, "read", return_value=state):
+                self.assertEqual(bool(ruled_approval.unsettled(self.loop, 7, self.head,
+                                                               self.reviews, ruled=False)), waits)
+        self.ci_state = ci.CIState(failed=["tests"])
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
+        # Not stranded: the merged head has no verdict, so it goes for a ruling again, and an
+        # ACCEPT there that saw the old request overrules it.
+        found = ruled_approval.overruled(self.reviews, self.loop, new, self.ruled_at,
+                                         frozenset({11}))
+        self.assertEqual(found["id"], 11)
 
     def test_at_a_moved_head_with_nothing_it_can_overrule_the_wait_ends(self):
         # No launch record, or a request the ruling never saw: the sweep will act on nothing, so
