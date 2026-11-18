@@ -477,6 +477,136 @@ class Split(unittest.TestCase):
         self.assertEqual(_shadowed_submodules(straight), [])
         self.assertEqual(_local_submodule_shadows(straight, "x.py"), [])
 
+    def test_a_read_in_the_else_of_a_try_that_imports_it_is_not_a_shadow(self):
+        # #2522: a `try`'s `else` runs only after its body finished, so the body's own import has
+        # bound the name there. An import nested deeper in the body may not have run.
+        head = "from diaktoros.run_supervisor import views\ndef f(c):\n    try:\n"
+        tail = "    except ImportError:\n        return None\n    else:\n        return views\n"
+        safe = head + "        from diaktoros.run_supervisor import views\n" + tail
+        self.assertEqual(_shadowed_submodules(safe), [])
+        self.assertEqual(_local_submodule_shadows(safe, "x.py"), [])
+        namespace = {}
+        exec(compile(safe, "<f>", "exec"), namespace)
+        self.assertEqual(namespace["f"](True).__name__, "diaktoros.run_supervisor.views")
+        nested = head + "        if c:\n            from diaktoros.run_supervisor import views\n" + tail
+        self.assertEqual(_shadowed_submodules(nested), [(len(nested.splitlines()), "views")])
+        self.assertEqual(_local_submodule_shadows(nested, "x.py"), [("f", "views")])
+        # #2536 review F6: a ``del`` in the body unbinds it again, so the else's read raises.
+        deleted = (head + "        from diaktoros.run_supervisor import views\n"
+                   "        del views\n" + tail)
+        self.assertEqual(_shadowed_submodules(deleted), [(len(deleted.splitlines()), "views")])
+        self.assertEqual(_local_submodule_shadows(deleted, "x.py"), [("f", "views")])
+        namespace = {}
+        exec(compile(deleted, "<f>", "exec"), namespace)
+        with self.assertRaises(UnboundLocalError):
+            namespace["f"](True)
+
+    def test_a_del_in_the_else_of_a_try_that_imports_it_unbinds_later_reads(self):
+        # #2536 review round 5 F6: the else is bound by the body's import only until a ``del`` in
+        # the else itself; a read from that statement on raises. A read before it is still bound.
+        head = ("from diaktoros.run_supervisor import views\ndef f():\n    try:\n"
+                "        from diaktoros.run_supervisor import views\n"
+                "    except ImportError:\n        return None\n    else:\n")
+        deleted = head + "        del views\n        return views\n"
+        self.assertEqual(_shadowed_submodules(deleted), [(len(deleted.splitlines()), "views")])
+        self.assertEqual(_local_submodule_shadows(deleted, "x.py"), [("f", "views")])
+        namespace = {}
+        exec(compile(deleted, "<f>", "exec"), namespace)
+        with self.assertRaises(UnboundLocalError):
+            namespace["f"]()
+        before = head + "        name = views.__name__\n        del views\n        return name\n"
+        self.assertEqual(_shadowed_submodules(before), [])
+        self.assertEqual(_local_submodule_shadows(before, "x.py"), [])
+        namespace = {}
+        exec(compile(before, "<f>", "exec"), namespace)
+        self.assertEqual(namespace["f"](), "diaktoros.run_supervisor.views")
+
+    def test_an_except_as_of_the_name_unbinds_a_try_else(self):
+        # #2536 review round 6 F6: Python deletes an ``except ... as`` target when the handler
+        # ends, so one named like the import, in the try body or in the else, leaves the else's
+        # later read unbound. A handler bound to another name keeps the import.
+        imp = "from diaktoros.run_supervisor import views\n"
+        def source(body, orelse):
+            return (imp + "def f():\n    try:\n        " + imp + body
+                    + "    except ImportError:\n        return None\n    else:\n" + orelse)
+        catch = "{0}try:\n{0}    raise ValueError()\n{0}except ValueError as {1}:\n{0}    pass\n"
+        cases = {"body": source(catch.format(" " * 8, "views"), "        return views\n"),
+                 "else": source("", catch.format(" " * 8, "views") + "        return views\n")}
+        for where, unbound in cases.items():
+            with self.subTest(where=where):
+                self.assertIn((len(unbound.splitlines()), "views"), _shadowed_submodules(unbound))
+                self.assertEqual(_local_submodule_shadows(unbound, "x.py"), [("f", "views")])
+                namespace = {}
+                exec(compile(unbound, "<f>", "exec"), namespace)
+                with self.assertRaises(UnboundLocalError):
+                    namespace["f"]()
+        other = source(catch.format(" " * 8, "err"), catch.format(" " * 8, "err")
+                       + "        return views\n")
+        self.assertEqual(_shadowed_submodules(other), [])
+        self.assertEqual(_local_submodule_shadows(other, "x.py"), [])
+        namespace = {}
+        exec(compile(other, "<f>", "exec"), namespace)
+        self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
+
+    def test_an_unbinding_in_a_nested_scope_counts_only_under_nonlocal(self):
+        # #2536 review round 7 F7: a nested function's ``except ... as`` or ``del`` unbinds its own
+        # (or a global) name, not the enclosing import, unless it declares the name nonlocal.
+        imp = "from diaktoros.run_supervisor import views\n"
+        def source(decl, unbind):
+            return (imp + "def f():\n    try:\n        " + imp + "        def inner():\n"
+                    + f"            {decl} views\n" + unbind + "        inner()\n"
+                    + "    except ImportError:\n        return None\n    else:\n        return views\n")
+        catch = ("            try:\n                raise ValueError()\n"
+                 "            except ValueError as views:\n                pass\n")
+        for unbind in (catch, "            views = 1\n            del views\n"):
+            with self.subTest(unbind=unbind.split()[0], decl="global"):
+                safe = source("global", unbind)
+                self.assertNotIn((len(safe.splitlines()), "views"), _shadowed_submodules(safe))
+                self.assertEqual(_local_submodule_shadows(safe, "x.py"), [])
+                namespace = {}
+                exec(compile(safe, "<f>", "exec"), namespace)
+                self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
+            with self.subTest(unbind=unbind.split()[0], decl="nonlocal"):
+                unbound = source("nonlocal", unbind)
+                self.assertIn((len(unbound.splitlines()), "views"), _shadowed_submodules(unbound))
+                self.assertEqual(_local_submodule_shadows(unbound, "x.py"), [("f", "views")])
+                namespace = {}
+                exec(compile(unbound, "<f>", "exec"), namespace)
+                with self.assertRaises(NameError):
+                    namespace["f"]()
+
+    def test_a_nonlocal_unbinding_reaches_through_any_depth_of_nested_scope(self):
+        # #2536 review round 8 F8: a deeper function's ``nonlocal`` reaches the enclosing import
+        # through an intermediate function that does not bind the name itself, and a method's
+        # through its class. A middle function that binds it takes the nonlocal for its own.
+        imp = "from diaktoros.run_supervisor import views\n"
+        def source(nested, call):
+            return (imp + "def f():\n    try:\n        " + imp + nested + call
+                    + "    except ImportError:\n        return None\n    else:\n        return views\n")
+        inner = ("            def inner():\n                nonlocal views\n"
+                 "                del views\n            inner()\n")
+        cases = {
+            "chain": (source("        def middle():\n" + inner, "        middle()\n"), True),
+            "class": (source("        class C:\n            def m(self):\n"
+                             "                nonlocal views\n                del views\n",
+                             "        C().m()\n"), True),
+            "middle binds": (source("        def middle():\n            views = 1\n" + inner,
+                                    "        middle()\n"), False)}
+        for case, (code, unbound) in cases.items():
+            with self.subTest(case=case):
+                last = (len(code.splitlines()), "views")
+                namespace = {}
+                exec(compile(code, "<f>", "exec"), namespace)
+                if unbound:
+                    self.assertIn(last, _shadowed_submodules(code))
+                    self.assertEqual(_local_submodule_shadows(code, "x.py"), [("f", "views")])
+                    with self.assertRaises(NameError):
+                        namespace["f"]()
+                else:   # middle's own ``views = 1`` is still a shadow; f's else read is not
+                    self.assertNotIn(last, _shadowed_submodules(code))
+                    self.assertEqual(_local_submodule_shadows(code, "x.py"), [("middle", "views")])
+                    self.assertEqual(namespace["f"]().__name__, "diaktoros.run_supervisor.views")
+
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
         # (etc.); a real function of that name is still a function and is checked.
