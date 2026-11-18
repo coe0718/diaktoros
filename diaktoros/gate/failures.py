@@ -1123,15 +1123,19 @@ def _record_overrun(_signum, _frame):
 def _route_fields(gate: str, payload) -> dict:
     """The entry's ``route``: the loop's route for ``gate`` (for the re-deliver hint), empty when
     it cannot be told. A loop on its App's webhook got the event through the App's route (#1239),
-    not the seat's, and its entry also says ``ingress: app-webhook``: the hint decides from that,
-    never from the route's name (#2295: a repo-hooks seat route may be named ``dk-app-*``)."""
+    not the seat's. The entry also says the loop's ``ingress`` (``app-webhook`` or
+    ``repo-hooks``): the hint decides from that, never from the route's name (#2295: a repo-hooks
+    seat route may be named ``dk-app-*``). Only an entry with no loop to read has none."""
     try:
         from .. import config
         from ..route_intent import routes_of
         loop = _loop_for(payload)
         if loop and config.app_ingress(loop):
             return {"route": config.app_route(loop), "ingress": "app-webhook"}
-        return {"route": routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""}
+        if not loop:
+            return {"route": ""}
+        return {"route": routes_of(loop).get(gate.removeprefix("gate_"), ""),
+                "ingress": "repo-hooks"}
     except Exception:  # noqa: BLE001 - the hint then names the route generically
         return {"route": ""}
 
@@ -1382,9 +1386,11 @@ def redeliver_hint(entry: dict) -> str:
     what = " ".join(x for x in (str(entry.get("action") or ""),
                                 f"#{entry['pr']}" if entry.get("pr") else "") if x)
     from ..config import APP_ROUTE_PREFIX
-    if entry.get("ingress") == "app-webhook":
+    ingress = entry.get("ingress")
+    if ingress == "app-webhook" or ingress is None and route.startswith(APP_ROUTE_PREFIX):
         # #1239: an App's webhook has no repo hook; its log is in the App's own settings. The
-        # loop's ingress decides, not a route that merely starts with the prefix (#2295).
+        # loop's ingress decides, not a route that merely starts with the prefix (#2295); an
+        # entry recorded before entries carried it falls back to the route's name.
         return (f"re-deliver it from GitHub: the {route.removeprefix(APP_ROUTE_PREFIX)} App's "
                 f"settings → Advanced → Recent Deliveries → the {what or 'failed'} delivery → "
                 "Redeliver")
