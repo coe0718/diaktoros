@@ -167,8 +167,9 @@ class Carries(Base):
         self.assertFalse(self.st.review_cap_granted(7, new, 4))
         self.assertTrue(self.st.review_cap_granted(7, self.head, 4))
         # F5: with that approval left out of the same pre-push reviews, the same grant carries.
-        base_merge.carry_grant(self.loop, self.st, 7, self.head, new,
-                               [r for r in before if r["state"] != "APPROVED"])
+        with mock.patch.object(gh, "reviews",
+                               return_value=[r for r in before if r["state"] != "APPROVED"]):
+            base_merge.carry_grant(self.loop, self.st, 7, self.head, new)
         self.assertTrue(self.st.review_cap_granted(7, new, 4))
 
     def test_ready_counts_the_carried_approval_at_the_new_head_and_still_needs_ci(self):

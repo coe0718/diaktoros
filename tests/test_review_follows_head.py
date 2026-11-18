@@ -385,6 +385,41 @@ class ReviewOnlyUpdateWaits(fg.Base):
         self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
         self.assertTrue(self.st.review_cap_granted(7, fg.HEAD, rounds))
 
+    def test_a_verdict_landing_while_the_merge_is_pushed_spends_the_grant(self):
+        # Review of #2543, F7: the reviewer finishes at HEAD after the merge began but before the
+        # push: an approval (which GitHub then shows at the merged head, or not yet) or a change
+        # request at HEAD. The reviews are read after the push, so each is seen, and the spent
+        # grant stays where it was. Control: the same merge with no verdict carries it.
+        rounds, new = int(self.loop["cap"]), "e" * 40
+        facts = {"number": 7, "head": fg.HEAD, "branch": "fix-7", "fork": False, "merged": [],
+                 "conflicted": [], "workflows": False, "error": "", "clean": True}
+
+        def merge(landed):
+            def update(_loop, number, head, _facts):
+                self.reviews = list(landed)
+                return new, ""
+            self.reviews = []
+            with mock.patch.object(base_merge, "in_flight", return_value=""), \
+                    mock.patch.object(base_merge.gh, "reviews",
+                                      side_effect=lambda *_a, **_k: list(self.reviews)), \
+                    mock.patch.object(review_only_conflict, "assess", return_value=facts), \
+                    mock.patch.object(review_only_conflict, "update", side_effect=update), \
+                    mock.patch.object(watch_conflicts.observer, "notify"):
+                watch_conflicts._review_only_next(
+                    self.loop, self.st, 7, fg.HEAD, "tuck", "b" * 40,
+                    {7: {**fg.LIVE, "mergeable_state": "behind"}})
+        for label, landed in (
+                ("approval, moved", [{**fg.verdict(20, "APPROVED"), "commit_id": new}]),
+                ("approval, not yet moved", [fg.verdict(20, "APPROVED")]),
+                ("change request", [fg.verdict(20, "CHANGES_REQUESTED")])):
+            with self.subTest(label):
+                self.st.review_cap_grant(7, fg.HEAD, rounds)
+                merge(landed)
+                self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+                self.assertTrue(self.st.review_cap_granted(7, fg.HEAD, rounds))
+        merge([])
+        self.assertFalse(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+
     def test_a_newer_grant_made_during_the_carry_is_never_overwritten(self):
         # Review of #2543, F2: a maintainer grants a newer head between the carry's read and its
         # write. The carry swaps only the grant it read, under the lock, so the newer one stands.
@@ -396,8 +431,9 @@ class ReviewOnlyUpdateWaits(fg.Base):
             entry = real(number)
             self.st.review_cap_grant(7, newer, rounds + 1)
             return entry
-        with mock.patch.object(self.st, "review_cap_entry", side_effect=entry_then_a_grant):
-            base_merge.carry_grant(self.loop, self.st, 7, fg.HEAD, new, [])
+        with mock.patch.object(self.st, "review_cap_entry", side_effect=entry_then_a_grant), \
+                mock.patch.object(base_merge.gh, "reviews", return_value=[]):
+            base_merge.carry_grant(self.loop, self.st, 7, fg.HEAD, new)
         self.assertTrue(self.st.review_cap_granted(7, newer, rounds + 1))
         self.assertFalse(self.st.review_cap_granted(7, new, rounds))
 
