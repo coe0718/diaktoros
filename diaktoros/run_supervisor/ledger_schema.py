@@ -239,6 +239,10 @@ MIGRATIONS = (
     # Each model request of the turn (#1790), as JSON: what it kept of the previous request's
     # conversation and what the provider's cache served (``request_trace``). NULL: not traced.
     ("requests", "ALTER TABLE runs ADD COLUMN requests TEXT", ()),
+    # The ids of the reviewer's reviews a ruling's prompt carried (#2402), as a JSON list, written
+    # at the adjudicator turn's launch: an ACCEPT dismisses an earlier head's change request only
+    # when its ruling saw it. NULL: not recorded (other seats, or a ruling from before).
+    ("saw_reviews", "ALTER TABLE runs ADD COLUMN saw_reviews TEXT", ()),
 )
 
 
