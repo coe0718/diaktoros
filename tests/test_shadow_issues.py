@@ -441,7 +441,7 @@ class FilePending(unittest.TestCase):
         # #1641: no answer is an unknown outcome; another error, a rate-limit 403, or labels
         # left off a successful answer are reported as they are, never as a permission gap.
         cases = {"no answer": (lambda _n: (None, "timed out"), "unknown"),
-                 "a 5xx": (lambda _n: (None, "HTTP 502: Bad Gateway"), "(HTTP 502"),
+                 "a 5xx": (lambda _n: (None, "HTTP 502: Bad Gateway"), "server error (HTTP 502"),
                  "a rate limit": (lambda _n: (None, "HTTP 403: API rate limit exceeded"),
                                   "rate limit"),
                  "left off": (lambda _n: ([{"name": "bug"}], ""), "left them off")}
@@ -452,6 +452,16 @@ class FilePending(unittest.TestCase):
                 self.assertEqual(self.state(run), "unlabelled")
                 self.assertIn(said, self.error(run))
                 self.assertNotIn("needs permission", self.error(run))
+
+    def test_a_5xx_on_the_label_write_leaves_whether_they_landed_unknown(self):
+        # #2140: a 5xx can come after GitHub applied the write, so the gap never says the
+        # labels definitely did not land; it says the outcome is unknown, as a timeout does.
+        run = self.recorded("A finding")
+        self.file(labelled=lambda _n: (None, "HTTP 502: Bad Gateway"))
+        self.assertEqual(self.state(run), "unlabelled")
+        self.assertIn("got a server error (HTTP 502: Bad Gateway): whether GitHub applied them "
+                      "is unknown; check the issue's labels", self.error(run))
+        self.assertNotIn("did not apply", self.error(run))
 
     def audited(self, labelled):
         """The operations the real broker audit records for one filing (#1622 review, F1)."""
