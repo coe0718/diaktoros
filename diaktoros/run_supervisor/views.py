@@ -9,6 +9,7 @@ use ``views.<name>``.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 import sqlite3
@@ -330,6 +331,23 @@ def ruling_row(db: str | Path, repo: str, pr: int) -> dict | None:
             con.close()
     except sqlite3.Error:
         return None
+
+
+def ruling_saw(db: str | Path, run_id: str) -> frozenset[int] | None:
+    """The ids of the reviewer reviews ruling ``run_id``'s prompt showed (#2402), read-only, or
+    None when not recorded or unreadable: then the ruling saw nothing it can be shown to have."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT saw_reviews FROM runs WHERE id=?", (run_id,)).fetchone()
+        finally:
+            con.close()
+        ids = json.loads(row[0]) if row and isinstance(row[0], str) else None
+    except (sqlite3.Error, ValueError):
+        return None
+    return frozenset(i for i in ids if type(i) is int) if isinstance(ids, list) else None
 
 
 def ruled_approvals(db: str | Path, repo: str, pr: int, head: str) -> tuple[list[dict], str]:
