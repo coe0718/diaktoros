@@ -42,7 +42,7 @@ def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, tit
         raise broker._denied("GitHub issue write did not return a successful response", why)
     # GitHub confirmed the issue: an audit failure is said, never raised, so its number is kept
     # (#2511, as #1640 did for the reader's filings).
-    _audit_confirmed(loop, repo, number, head, "file_issue", login, role="reviewer")
+    _audit_confirmed(loop, repo, number, head, "file_issue", login, reviewer=True)
     return result["number"]
 
 
@@ -173,11 +173,13 @@ def _label_gap(missing: list[str], why: str, status: int | None, unanswered: boo
 
 
 def _audit_confirmed(loop: dict, repo: str, number: int, head: str, operation: str,
-                     login: str, role: str = "reader") -> None:
-    """The ``role``'s audit line after GitHub confirmed a filed issue: a failure to write it is
-    said on stderr, never raised, so the filed issue's number is never lost to it."""
+                     login: str, reviewer: bool = False) -> None:
+    """The reader's (or with ``reviewer``, the reviewer's) audit line after GitHub confirmed a
+    filed issue: a failure to write it is said on stderr, never raised, so the filed issue's
+    number is never lost to it. The role stays a literal at the ``_audit`` call (#2293)."""
     try:
-        broker._audit(loop, repo, number, head, "", role, operation, login)
+        broker._audit(loop, repo, number, head, "", "reviewer" if reviewer else "reader",
+                      operation, login)
     except Exception as exc:  # noqa: BLE001 - the issue exists: its outcome stands
         print(f"diaktoros broker: audit record {operation} not written for #{number}: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
