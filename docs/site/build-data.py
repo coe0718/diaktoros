@@ -134,8 +134,10 @@ def main():
         # retained count with no earlier date stays undated: stamping
         # it today would claim an age nobody knows. commit_activity()
         # asks the still-computing endpoint again first, so the date is
-        # held back only when every attempt this run came back empty
-        # (#1773).
+        # held back only when every attempt this run came back empty,
+        # the last attempt raised (an empty HTTP 202 body fails to parse
+        # as JSON in api(), so it raises rather than reading empty), or
+        # the weeks it returned could not be summed (#1773, #2438).
         if activity_ok:
             data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         data.pop("error", None)

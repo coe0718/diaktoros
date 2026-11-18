@@ -84,10 +84,11 @@ def cap_stderr(db: Path) -> bool:
     ``_spawn`` hands a worker the log's descriptor and the host only checks its size at its next
     spawn, so without this a chatty worker grows it without bound, and after a rotation it would
     keep growing the ``.1`` it still holds (its size, read from the descriptor, is past the cap,
-    so nothing more is written to it). Which file the worker holds is told by ``LOG_ENV``, the
-    identity ``_spawn`` read from the descriptor it handed over, not by the log's path: another
+    so nothing more is written to it). Which file the worker holds is told by ``LOG_ENV`` (or,
+    when that is unset, its pre-rename spelling ``REVIEW_LOOP_WORKER_LOG``, #2400), the identity
+    ``_spawn`` read from the descriptor it handed over, not by the log's path: another
     spawn may rotate the log between that hand-over and this call, and the ``.1`` the worker then
-    holds is capped all the same (#2302 review). Without ``LOG_ENV`` (a stderr not set up by
+    holds is capped all the same (#2302 review). Without either (a stderr not set up by
     ``_spawn``) the log's current inode is compared. Any other stderr is left alone.
     Not covered: bytes written to descriptor 2 natively (a fatal interpreter error as the
     process dies) or by a child that inherits it (the worker's children capture or discard
@@ -114,8 +115,8 @@ def identity(fd: int) -> str:
 
 
 def _is_the_log(held: os.stat_result, db: Path) -> bool:
-    """Is ``held`` (a stderr's stat) the worker log ``_spawn`` handed over, as ``LOG_ENV`` names
-    it, or failing that the log at its path now?"""
+    """Is ``held`` (a stderr's stat) the worker log ``_spawn`` handed over, as ``LOG_ENV`` (or its
+    pre-rename spelling, #2400) names it, or failing that the log at its path now?"""
     marked = envnames.get("WORKER_LOG")
     if marked:
         return marked == f"{held.st_dev}:{held.st_ino}"
