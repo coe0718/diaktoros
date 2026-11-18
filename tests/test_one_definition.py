@@ -94,6 +94,16 @@ class OneDefinition(unittest.TestCase):
                                                     " @x.getter\n def x(self): return 2\n")),
                          ["C.x"])
 
+    def test_an_accessor_under_another_decorator_is_a_repeat(self):
+        # #2536 review F5: ``@staticmethod`` over ``@x.setter`` binds ``x`` to a staticmethod, so
+        # the property is gone; only a lone accessor decorator extends it.
+        prop = "class C:\n @property\n def x(self): return 1\n"
+        for outer in ("staticmethod", "classmethod", "functools.cache"):
+            with self.subTest(outer=outer):
+                self.assertEqual(repeated(f"{prop} @{outer}\n @x.setter\n def x(self, v): pass\n"),
+                                 ["C.x"])
+        self.assertEqual(repeated(f"{prop} @x.setter\n def x(self, v): pass\n"), [])
+
     def test_a_base_proof_tests_the_base_scan(self):
         # #2536 review F1: the scan lives off the test paths, so the host's base-failure proof
         # (change_proof.apply_tests) runs the head's tests above against the base's scan. It fails

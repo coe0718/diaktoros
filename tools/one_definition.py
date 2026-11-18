@@ -5,8 +5,9 @@ file; git merges both and Python keeps only the later ``def``, so one PR's rule 
 gone (``explain._queue_blockers`` lost #2075's parked-PR rule that way). ``repeated`` names
 each module or class scope that binds one function or class name twice.
 
-A ``def`` decorated with its own name's ``.setter`` or ``.deleter`` builds on the earlier
-binding (a property and its setter), so it is not a second definition (#2142); anything else is,
+A ``def`` decorated only with its own name's ``.setter`` or ``.deleter`` builds on the earlier
+binding (a property and its setter), so it is not a second definition (#2142; a second
+decorator stacked on it rebinds the name, #2536 review F5); anything else is,
 in body order: a plain ``def``/``class`` (``@x.getter`` included, which replaces the property's
 getter) after any earlier one of that name, and a setter or deleter after one of its own kind
 (#2536 review F2, F4).
@@ -28,10 +29,14 @@ def _kind(node) -> str:
     """How ``node`` binds its name: ``"setter"`` or ``"deleter"`` for ``@x.setter def x`` and
     ``@x.deleter def x``, which extend the property ``x`` already names rather than replacing it
     (#2142); ``"def"`` for anything else, ``@x.getter`` included, since it replaces the getter
-    ``@property def x`` gave."""
-    return next((d.attr for d in getattr(node, "decorator_list", [])
-                 if isinstance(d, ast.Attribute) and d.attr in ACCESSORS
-                 and isinstance(d.value, ast.Name) and d.value.id == node.name), "def")
+    ``@property def x`` gave. Only a lone accessor decorator extends: another one stacked with it
+    (``@staticmethod`` over ``@x.setter``) rebinds ``x`` to whatever it returns, which replaces
+    the property (#2536 review F5)."""
+    match getattr(node, "decorator_list", []):
+        case [ast.Attribute(attr=attr, value=ast.Name(id=name))] if (
+                attr in ACCESSORS and name == node.name):
+            return attr
+    return "def"
 
 
 def _repeats(body) -> list[str]:
