@@ -19,13 +19,15 @@ passes only when that string itself reaches ``gh._read_pages``:
 
 A registry entry that matches no site fails too, so the registry cannot rot.
 
+The scan is ``tools/paged_reads.py`` (with ``tools/paged_read_names.py``); see there why it is
+not in this file. The registry is here: it is what this test asserts of the repository.
+
 The rest of the file covers the sites #2299 moved onto ``_read_pages``: the base's rules and the
 repository's rulesets (``protection``, ``doctor``) and the PR's commits for the CI-fix history.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import ast
 import sys
 import unittest
 from pathlib import Path
@@ -33,12 +35,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# The scan lives in tools/paged_reads.py and tools/paged_read_names.py, outside tests/, so the
+# host's base-failure proof runs the tests below against the base's scan, not this PR's (#1973,
+# #2536 review F1).
+sys.path.insert(0, str(ROOT / "tools"))
 
 from diaktoros import ci, ci_fix, doctor, gh, protection  # noqa: E402
-
-MARK = "per_page=100"
-SCANNED = ("diaktoros", "scripts")
-READER = "_read_pages"
+import paged_read_names  # noqa: E402
+import paged_reads  # noqa: E402
+from paged_reads import SCANNED, scan, sites  # noqa: E402
 
 # Keyed "path::function::path text" (an f-string's fields shown as ``{}``), so each entry covers
 # one string, not every read in its function; a second identical string in one function is
@@ -73,296 +78,6 @@ PAGED_BY_HAND = {
     "diaktoros/cli/lifecycle.py::_hook_find_command::repos/{}/hooks?per_page=100":
         "not a read: a printed `gh api --paginate` command, and gh reads every page",
 }
-
-DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-# Where a path builder's result may go besides ``_read_pages``: a log line or the record of a
-# failed read, directly or through the text built for one. Neither reads the listing. Text
-# built for anything else (``gh.fetch(loop, f"{hooks_path(loop)}&a=1")``) is a read (#2299
-# review F1, round 2).
-NOT_A_READ = {"record_failure", "log"}
-
-
-def _called_name(call: ast.Call) -> str | None:
-    func = call.func
-    return func.id if isinstance(func, ast.Name) else (
-        func.attr if isinstance(func, ast.Attribute) else None)
-
-
-def _own(scope: ast.AST):
-    """Every node of ``scope`` outside its nested functions and classes (they are scopes of
-    their own: an outer ``_read_pages`` call says nothing about an inner read)."""
-    stack = list(ast.iter_child_nodes(scope))
-    while stack:
-        node = stack.pop()
-        yield node
-        if not isinstance(node, DEFS):
-            stack.extend(ast.iter_child_nodes(node))
-
-
-def _scopes(tree: ast.Module):
-    """``(qualified name, node)`` for the module and every function and class in it."""
-    out = [("<module>", tree)]
-
-    def visit(node, prefix):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, DEFS):
-                out.append((prefix + child.name, child))
-                visit(child, prefix + child.name + ".")
-            else:
-                visit(child, prefix)
-    visit(tree, "")
-    return out
-
-
-def _path_arg(call: ast.Call) -> ast.AST | None:
-    """The ``path`` argument of a ``_read_pages(loop, path, ...)`` call."""
-    if len(call.args) > 1:
-        return call.args[1]
-    return next((k.value for k in call.keywords if k.arg == "path"), None)
-
-
-def _path_parts(node: ast.AST):
-    """``node`` and every node whose text becomes part of it as a path: the fields of an
-    f-string and the operands of ``+`` or ``%``. A call's arguments are not part of its result,
-    so ``_read_pages(loop, fetch(loop, "/x?per_page=100"), ...)`` does not page that string."""
-    yield node
-    if isinstance(node, ast.JoinedStr):
-        for value in node.values:
-            yield from _path_parts(value)
-    elif isinstance(node, ast.FormattedValue):
-        yield from _path_parts(node.value)
-    elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
-        yield from _path_parts(node.left)
-        yield from _path_parts(node.right)
-
-
-def _part_ids(node: ast.AST) -> set[int]:
-    return {id(part) for part in _path_parts(node)}
-
-
-def _reader_paths(nodes) -> list[ast.AST]:
-    return [arg for node in nodes if isinstance(node, ast.Call) and _called_name(node) == READER
-            for arg in [_path_arg(node)] if arg is not None]
-
-
-def _text(node: ast.AST) -> str:
-    if isinstance(node, ast.JoinedStr):
-        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
-    return node.value
-
-
-def _strings(scope: ast.AST) -> list[ast.AST]:
-    """Each string in ``scope`` holding ``MARK`` (an f-string as one), docstrings excluded."""
-    nodes = list(_own(scope))
-    skip = {id(n.value) for n in nodes
-            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
-    skip |= {id(v) for n in nodes if isinstance(n, ast.JoinedStr) for v in n.values}
-    found = [n for n in nodes if isinstance(n, ast.JoinedStr) and any(
-        isinstance(v, ast.Constant) and MARK in str(v.value) for v in n.values)]
-    found += [n for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)
-              and MARK in n.value and id(n) not in skip]
-    return sorted(found, key=lambda n: (n.lineno, n.col_offset))
-
-
-def _binds(scope: ast.AST, name: str) -> bool:
-    """Whether a nested function or class makes ``name`` its own (a parameter, an assignment
-    or a nested ``def``/``class`` of that name, not declared ``nonlocal``/``global``)."""
-    nodes = list(_own(scope))
-    if any(isinstance(n, (ast.Nonlocal, ast.Global)) and name in n.names for n in nodes):
-        return False
-    args = getattr(scope, "args", None)
-    if args is not None and name in {a.arg for a in [
-            *args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a}:
-        return True
-    return (any(n.id == name for n in _stores(scope))
-            or any(isinstance(n, DEFS) and n.name == name for n in nodes))
-
-
-COMPS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-
-
-def _stores(scope: ast.AST) -> list[ast.Name]:
-    """The names ``scope``'s body binds by a store or ``del``. A comprehension's ``for`` target
-    is the comprehension's own (#2387 review F3: ``[path for path in xs]`` does not rebind
-    ``path``), but a ``:=`` in it binds in ``scope``. A nested ``def``, ``lambda`` or ``class``
-    binds in its own scope, apart from the parts ``scope`` evaluates when defining it."""
-    found: list[ast.Name] = []
-    body = [scope.body] if isinstance(scope, ast.Lambda) else scope.body
-    stack = [(child, False) for child in body]
-    while stack:
-        node, in_comp = stack.pop()
-        if isinstance(node, ast.NamedExpr):
-            found.append(node.target)
-            stack.append((node.value, in_comp))
-            continue
-        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and not in_comp:
-            found.append(node)
-        if isinstance(node, (*DEFS, ast.Lambda)):
-            children = _evaluated_outside(node)
-        else:
-            children = ast.iter_child_nodes(node)
-        stack += [(child, in_comp or isinstance(node, COMPS)) for child in children]
-    return found
-
-
-def _evaluated_outside(node: ast.AST) -> list[ast.AST]:
-    """The parts of a ``def``, ``lambda`` or ``class`` that run in the enclosing scope when it
-    is defined: decorators, parameter defaults and annotations, a class's bases and keywords
-    (#2387 review F1: ``def g(path=gh.fetch(loop, path))`` reads the outer ``path``)."""
-    if isinstance(node, ast.ClassDef):
-        return [*node.decorator_list, *node.bases, *node.keywords]
-    args = node.args
-    parts = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
-    if isinstance(node, ast.Lambda):
-        return parts
-    params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
-    return [*node.decorator_list, *parts, *(p.annotation for p in params if p and p.annotation),
-            *([node.returns] if node.returns else [])]
-
-
-def _name_loads(scope: ast.AST, name: str, module: bool = False) -> list[ast.Name]:
-    """Every load of ``name`` that reads ``scope``'s binding: in ``scope``'s body and in the
-    nested functions and lambdas that capture it (#2363: a closure's ``fetch(loop, path)``
-    reads ``path`` too). A nested function or lambda that rebinds ``name`` reads its own in
-    its body, but its decorators and defaults still read ``scope``'s (#2387 F1). A nested
-    class body is walked as part of ``scope`` even when it assigns ``name``: at module level
-    a load before that assignment reads the module's name, and in a function it is a
-    ``NameError``, so counting it only ever reports a site, never clears one. The functions
-    in a class are nested scopes; a class's own binding does not reach its methods.
-
-    A function that rebinds ``name`` may still hold one that declares it ``global``, which
-    reads the module's binding (#2423, ``_global_loads``): so wherever ``scope``'s ``name``
-    is the module's (``module``: the module itself, a function declaring it ``global``, or one
-    capturing it from either), a rebinding function is searched for a deeper ``global``
-    (#2536 review F3: under a ``global`` function, a shadowing one hid the ``global`` below
-    it). A comprehension whose ``for`` target is ``name`` reads its own ``name`` everywhere
-    but its first ``iter`` (#2424, ``_comp_binds``)."""
-    module = module or isinstance(scope, ast.Module)
-    loads: list[ast.Name] = []
-    stack = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
-    while stack:
-        node = stack.pop()
-        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
-            loads.append(node)
-        elif isinstance(node, (*DEFS, ast.Lambda)):
-            stack += _evaluated_outside(node)
-            if isinstance(node, ast.ClassDef):
-                stack += node.body
-            elif not isinstance(scope, ast.ClassDef) and not _binds(node, name):
-                loads += _name_loads(node, name, module)
-            elif module:
-                loads += _global_loads(node, name)
-        elif isinstance(node, COMPS) and _comp_binds(node, name):
-            stack.append(node.generators[0].iter)
-        else:
-            stack += ast.iter_child_nodes(node)
-    return loads
-
-
-def _comp_binds(comp: ast.AST, name: str) -> bool:
-    """Whether a comprehension's ``for`` targets bind ``name``, making it the comprehension's
-    own (#2424)."""
-    return any(isinstance(n, ast.Name) and n.id == name
-               for gen in comp.generators for n in ast.walk(gen.target))
-
-
-def _global_loads(shadow: ast.AST, name: str) -> list[ast.Name]:
-    """The loads of the module's ``name`` inside ``shadow``, a nested scope that rebinds it: a
-    function anywhere in it that declares ``global name`` reads the module's binding, and so
-    do the functions nested in that one (#2423: ``def outer(): path = "/own"; def inner():
-    global path; return gh.fetch(None, path)`` read the module's path unpaged). ``nonlocal``
-    cannot reach past ``shadow``: the nearest enclosing function binding it is ``shadow`` or
-    one inside it. The search stops at such a function: ``_name_loads`` reads it whole, a
-    deeper shadow included (#2536 review F3), so no load is counted twice."""
-    loads: list[ast.Name] = []
-    stack = list(ast.iter_child_nodes(shadow))
-    while stack:
-        node = stack.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-                isinstance(n, ast.Global) and name in n.names for n in _own(node)):
-            loads += _name_loads(node, name, module=True)
-        else:
-            stack += ast.iter_child_nodes(node)
-    return loads
-
-
-def _into_reader_by_name(site: ast.AST, scope: ast.AST) -> bool:
-    """``path = "...per_page=100..."`` whose every later use, nested functions included, is
-    the path ``_read_pages`` reads (``path += ...`` may extend it): a name also handed to
-    another read is not paged."""
-    for node in _own(scope):
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name) and id(site) in _part_ids(node.value)):
-            loads = _name_loads(scope, node.targets[0].id)
-            paged = set().union(*(_part_ids(a) for a in _reader_paths(ast.walk(scope))))
-            return bool(loads) and all(id(n) in paged for n in loads)
-    return False
-
-
-def _use(call: ast.Call, parents: dict[int, ast.AST], reader_parts: set[int]) -> str:
-    """Where a call's result ends up: ``"read"`` when it is part of the path ``_read_pages``
-    reads, ``"shown"`` when the text it is part of is only an argument of a ``NOT_A_READ`` call,
-    ``"other"`` for anything else (an f-string handed to ``fetch`` is a read of one page)."""
-    if id(call) in reader_parts:
-        return "read"
-    node = call                    # climb to the whole text this call's result is part of
-    while id(node) in parents and id(node) in _part_ids(parents[id(node)]):
-        node = parents[id(node)]
-    consumer = parents.get(id(node))
-    if (isinstance(consumer, ast.Call) and _called_name(consumer) in NOT_A_READ
-            and node in consumer.args):
-        return "shown"
-    return "other"
-
-
-def _feeders(trees: dict[str, ast.Module]) -> set[str]:
-    """Path builders whose every call, anywhere scanned, is the path ``_read_pages`` reads (or
-    is only logged or recorded): ``hooks_path`` and ``reviews_path``."""
-    uses: dict[str, set[str]] = {}         # name -> {"read", "shown", "other"}
-    for tree in trees.values():
-        parents = {id(c): p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
-        reader_parts = set().union(*(_part_ids(a) for a in _reader_paths(ast.walk(tree))))
-        for call in ast.walk(tree):
-            if isinstance(call, ast.Call) and _called_name(call) is not None:
-                uses.setdefault(_called_name(call), set()).add(
-                    _use(call, parents, reader_parts))
-    return {name for name, kinds in uses.items() if "read" in kinds and "other" not in kinds}
-
-
-def sites(sources: dict[str, str]) -> dict[str, bool]:
-    """``{"rel::function::text": paged}`` for every ``per_page=100`` string in ``sources``
-    (``{rel: source}``). A string is paged only when that string itself reaches ``_read_pages``:
-    inside its path argument, through a name used for nothing else, or returned by a path
-    builder (``_feeders``) whose every call is such an argument."""
-    trees = {rel: ast.parse(source) for rel, source in sources.items()}
-    feeders = _feeders(trees)
-    found: dict[str, bool] = {}
-    for rel, tree in trees.items():
-        for qualname, scope in _scopes(tree):
-            nodes = list(_own(scope))
-            reader_args = set().union(*(_part_ids(a) for a in _reader_paths(nodes)))
-            returned = set().union(*(_part_ids(n.value) for n in nodes
-                                     if isinstance(n, ast.Return) and n.value is not None))
-            for site in _strings(scope):
-                key = base = f"{rel}::{qualname}::{_text(site)}"
-                count = 1
-                while key in found:
-                    count += 1
-                    key = f"{base}#{count}"
-                found[key] = (id(site) in reader_args
-                              or _into_reader_by_name(site, scope)
-                              or (id(site) in returned and isinstance(scope, ast.FunctionDef)
-                                  and scope.name in feeders))
-    return found
-
-
-def scan() -> dict[str, bool]:
-    sources = {}
-    for top in SCANNED:
-        for path in sorted((ROOT / top).rglob("*.py")):
-            if "__pycache__" not in path.parts:
-                sources[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
-    return sites(sources)
 
 
 def unpaged(found: dict[str, bool]) -> list[str]:
@@ -506,17 +221,16 @@ class Scan(unittest.TestCase):
         self.assertEqual(_one(source), bad)
         # Without ``deeper``'s ``global`` it reads ``shadow``'s own ``path``: still paged.
         self.assertEqual(_one(source.replace("                global path\n", "")), [])
-        # Review F1: the scan shares this file, so the change proof's base run has the fix too;
-        # dropping ``module`` (the scan before F3) loses the read.
-        real = _name_loads
-        with mock.patch(f"{__name__}._name_loads",
-                        lambda scope, name, module=False: real(scope, name)):
+        # Dropping ``module`` (the scan before F3) loses the read.
+        real = paged_read_names._name_loads
+        with mock.patch.object(paged_read_names, "_name_loads",
+                               lambda scope, name, module=False: real(scope, name)):
             self.assertEqual(_one(source), [])
 
     def test_the_global_and_comprehension_rules_are_each_needed(self):
-        # #2536 review F1: the scan shares this file with its tests, so the change proof's base
-        # run (the PR's tests on the base) has #2423's and #2424's rules too. Undone here, the
-        # scan misses #2423's global read and reports #2424's comprehension's own ``path``.
+        # #2536 review F1: undone, the scan misses #2423's global read and reports #2424's
+        # comprehension's own ``path``. (The base proof runs the base's scan from tools/ now;
+        # these pin what each rule does.)
         glob = ('from diaktoros import gh\npath = "/unsafe?per_page=100"\ndef outer():\n'
                 '    path = "/own"\n    def inner():\n        global path\n'
                 '        return gh.fetch(None, path)\n    return inner()\n'
@@ -526,9 +240,9 @@ class Scan(unittest.TestCase):
                 '    gh._read_pages(loop, path, "x", 3)\n')
         self.assertEqual(_one(glob), ["diaktoros/new.py::<module>::/unsafe?per_page=100"])
         self.assertEqual(_one(comp), [])
-        with mock.patch(f"{__name__}._global_loads", lambda node, name: []):
+        with mock.patch.object(paged_read_names, "_global_loads", lambda node, name: []):
             self.assertEqual(_one(glob), [])
-        with mock.patch(f"{__name__}._comp_binds", lambda node, name: False):
+        with mock.patch.object(paged_read_names, "_comp_binds", lambda node, name: False):
             self.assertEqual(_one(comp), ["diaktoros/new.py::f::/safe?per_page=100"])
 
     def test_a_comprehension_binding_the_name_reads_its_own(self):
@@ -626,6 +340,15 @@ class Scan(unittest.TestCase):
             with self.subTest(extra=extra):
                 added = source.replace(anchor, f"{anchor}    {extra}\n")
                 self.assertEqual(_one(added, rel), [key])
+
+    def test_a_base_proof_tests_the_base_scan(self):
+        # #2536 review F1: the scan lives off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs the head's tests above against the base's scan. It fails
+        # if either module goes back into a tests/ module, where the scan was.
+        import _base_proof
+        for module in (paged_reads, paged_read_names):
+            with self.subTest(module=module.__name__):
+                _base_proof.assert_taken_from_the_base(self, module.__file__)
 
 
 def full(n, **item):
