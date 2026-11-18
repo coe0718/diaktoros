@@ -14,6 +14,9 @@ A turn is queued only when all of these hold:
 * a comment by a maintainer, never by a seat's own login, was written after the issue's newest
   issue-fix turn was queued. One written during that turn wakes the next; several are one turn;
 * no open PR's body says it fixes the issue, the guard ``fix_hold.hand_off`` applies (#2021).
+  A reply seen while the open PR listing cannot be read is kept in ``GUARD`` and retried every
+  sweep for up to ``WAIT_DAYS`` more, even once its comment is older than ``WAIT_DAYS``; status
+  says it waits on the listing, never on a reply (#2021 review).
 
 The new turn reads the issue's comments (#511), so it sees the reply. It is a maintainer's
 hand-off, so ``auto_fix_daily`` does not count it.
@@ -33,16 +36,24 @@ from .util import epoch, log, silence
 
 WAIT_DAYS = 14          # a comment older than this no longer waits for a reply
 WAITING = "fix-replies.json"    # the issues waiting for a reply at the last sweep, for ``status``
+GUARD = "fix-reply-guard.json"  # replies seen whose open-PR guard could not be read: {n: {at}}
 
 
 def sweep(loop: dict, st, lines: list[str]) -> None:
     """Queue the fix of each issue a maintainer replied on; note the ones still waiting."""
+    now, guard = time.time(), _guard(st)
     try:
-        rows = list(gate.isolated_supervisor(loop).issue_fix_comment_waits(
-            loop["repo"], time.time() - WAIT_DAYS * 86400))
+        sup = gate.isolated_supervisor(loop)
+        rows = list(sup.issue_fix_comment_waits(loop["repo"], now - WAIT_DAYS * 86400))
+        if guard:                       # a guarded reply outlives its comment's window
+            seen = {row["number"] for row in rows}
+            oldest = min(entry["at"] for entry in guard.values()) - WAIT_DAYS * 86400
+            rows += [row for row in sup.issue_fix_comment_waits(loop["repo"], oldest)
+                     if str(row["number"]) in guard and row["number"] not in seen]
     except Exception as exc:            # no ledger yet, or unreadable: the PR holds still run
         log(f"maintainer replies to issue-fix comments not checked: {type(exc).__name__}: {exc}")
         return
+    kept = {}
     before = st.kv_get(st.dir / WAITING, {})
     before = before if isinstance(before, dict) else {}
     waiting = {}
@@ -55,16 +66,32 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
         except Exception as exc:        # retried on the next sweep
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")
+            if str(number) in guard:
+                kept[str(number)] = guard[str(number)]
             continue
         if outcome == "waiting":
             waiting[str(number)] = row["comment_id"]
         elif outcome == "unreadable" and str(number) in before:
             waiting[str(number)] = before[str(number)]   # unknown is not "no wait" (#2019)
+        elif outcome == "unlisted" and now - _guard(st)[str(number)]["at"] < WAIT_DAYS * 86400:
+            kept[str(number)] = _guard(st)[str(number)]  # the reply is known: retried, not lost
+        elif outcome == "unlisted":
+            lines.append(f"⚠️ issue #{number}: maintainer reply seen, but the open PR listing "
+                         f"stayed unreadable for {WAIT_DAYS} days; fix not queued")
     st.kv_set(st.dir / WAITING, waiting)
+    st.kv_set(st.dir / GUARD, kept)
+
+
+def _guard(st) -> dict:
+    """``GUARD``'s well-formed entries: ``{"<n>": {"at": first seen}}``."""
+    found = st.kv_get(st.dir / GUARD, {})
+    return {str(n): e for n, e in (found if isinstance(found, dict) else {}).items()
+            if isinstance(e, dict) and isinstance(e.get("at"), (int, float))}
 
 
 def wake(loop: dict, st, row: dict) -> str:
-    """``queued``, ``waiting`` (no reply yet), ``ineligible`` or ``unreadable`` for one issue."""
+    """``queued``, ``waiting`` (no reply yet), ``ineligible``, ``unreadable``, or ``unlisted``
+    (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue."""
     from . import run_supervisor
     from .run_supervisor import issue_inputs
     number = row["number"]
@@ -92,7 +119,10 @@ def wake(loop: dict, st, row: dict) -> str:
     prs, error = gh.open_prs_read(loop)
     if prs is None:
         log(f"issue #{number}: open PR listing unreadable, reply wake waits: {error}")
-        return "unreadable"
+        guard = _guard(st)
+        guard.setdefault(str(number), {"at": time.time()})
+        st.kv_set(st.dir / GUARD, guard)
+        return "unlisted"
     existing = fix_hold._closing(loop, prs, number)
     if existing is not None:
         log(f"issue #{number}: open PR #{existing} already fixes it; reply wakes no fix turn")
@@ -173,13 +203,21 @@ def newest_reply(loop: dict, comments: list, since: float) -> dict | None:
     return found
 
 
-def status_lines(st) -> list[str]:
-    """``status``'s and ``explain``'s lines for the issues waiting on a reply (the last sweep)."""
+def status_lines(st, only: int | None = None) -> list[str]:
+    """``status``'s and ``explain``'s lines for the issues waiting on a reply (the last sweep), or
+    on the open PR listing after a reply (``GUARD``); with ``only``, that issue's."""
     waiting = st.kv_get(st.dir / WAITING, {})
+    guard = _guard(st)                  # a known reply never also reads as awaited
+    found = [(n, line) for n in (waiting if isinstance(waiting, dict) else {}) if n not in guard]
+    found += [(n, guarded_line) for n in guard]
     # Filter, then sort: a key that is not a plain number is skipped, never a crash (#2020).
-    numbers = [int(n) for n in (waiting if isinstance(waiting, dict) else {})
-               if str(n).isascii() and str(n).isdigit()]
-    return [line(n) for n in sorted(numbers)]
+    return [say(int(n)) for n, say in sorted(found, key=lambda f: str(f[0]).zfill(20))
+            if str(n).isascii() and str(n).isdigit() and only in (None, int(n))]
+
+
+def guarded_line(number: int) -> str:
+    return (f"issue #{number} fix waits for the open PR listing: a maintainer replied, but GitHub's "
+            "list of open PRs could not be read, so whether a PR already fixes it is unknown")
 
 
 def line(number: int) -> str:

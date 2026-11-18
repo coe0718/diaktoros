@@ -6,7 +6,9 @@ GitHub read fails on one sweep keeps its "waits for a maintainer's reply" line.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import sys
+import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -39,6 +41,41 @@ class OpenPrGuard(replies.Replies):
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
 
 
+class ListingOutage(replies.Replies):
+    """Vex on #2549: a reply seen while the open PR listing is unreadable is kept, past its
+    comment's WAIT_DAYS window, and status names the listing, not a missing reply."""
+    offline = staticmethod(lambda loop: (None, "offline"))
+
+    def at(self, days):
+        return mock.patch.object(fix_reply, "time", SimpleNamespace(time=lambda: time.time() + days * 86400))
+
+    def test_a_reply_seen_during_an_outage_is_queued_after_its_comments_window(self):
+        self.reply(201, "jeremy")
+        with mock.patch.object(gh, "open_prs_read", self.offline):
+            self.sweep()
+        with self.at(fix_reply.WAIT_DAYS):              # the comment is now past its window
+            self.sweep()
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
+        self.assertEqual(fix_reply.status_lines(self.st), [])
+
+    def test_status_says_the_listing_not_a_reply_is_awaited(self):
+        self.reply(201, "jeremy")
+        with mock.patch.object(gh, "open_prs_read", self.offline):
+            self.sweep()
+            self.sweep()
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        self.assertEqual(fix_hold.explain_lines(self.st, 12), [fix_reply.guarded_line(12)])
+
+    def test_a_listing_down_for_another_window_ends_the_retry_and_says_so(self):
+        self.reply(201, "jeremy")
+        with mock.patch.object(gh, "open_prs_read", self.offline):
+            self.sweep()
+            with self.at(fix_reply.WAIT_DAYS + 1):
+                lines = self.sweep()
+        self.assertTrue(any("stayed unreadable" in x for x in lines or []), lines)
+        self.assertEqual((self.enqueued, fix_reply.status_lines(self.st)), ([], []))
+
+
 class UnreadableKeepsTheWait(replies.Replies):
     def test_an_unreadable_issue_or_comments_read_keeps_the_waiting_line(self):
         # #2019: ``sweep`` kept only ``waiting`` outcomes, so a failed read dropped the line.
@@ -62,7 +99,7 @@ class UnreadableKeepsTheWait(replies.Replies):
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
     suite = unittest.TestSuite()
-    for cls in (OpenPrGuard, UnreadableKeepsTheWait):
+    for cls in (OpenPrGuard, ListingOutage, UnreadableKeepsTheWait):
         for name in sorted(vars(cls)):
             if name.startswith("test_"):
                 suite.addTest(cls(name))
