@@ -51,7 +51,7 @@ ALLOWED = {
 # ``os.environ[`` (or ``environ[``) or ``os.getenv(``, then a prefixed literal or an
 # ``envnames.name("X")`` key. A subscript followed by ``=`` is a write. The receivers are the
 # ones ``_is_environ``/``_read_key`` accept: ``other.getenv(`` or ``self.environ[`` is not a read
-# (``_fallback_matches`` drops a match glued to a name or a dot before it).
+# (``_fallback_matches`` drops a match glued to a name or a dot before it, or a dot then spaces).
 _FALLBACK = re.compile(r"""(?:(?:os\s*\.\s*)?environ\s*(?:\.get\s*\(|(?P<sub>\[))"""
                        r"""|os\s*\.\s*getenv\s*\()\s*(?:key\s*=\s*)?"""
                        r"""(?:['"](?P<lit>(?:DIAKTOROS_|REVIEW_LOOP_)\w*)['"]"""
@@ -159,13 +159,17 @@ def _fallback_matches(source: str, start: int = 0, end=None,
     """``(offset, variable)`` for each covered read the pattern finds in ``source[start:end]``;
     writes are skipped, and so is a match glued to a name or a dot before it (``other.getenv``,
     ``xos.environ``) unless its offset is in ``free``: right after an interpolation, whose
-    placeholder says nothing about what really precedes the read."""
+    placeholder says nothing about what really precedes the read. A dot counts across spaces
+    too (#2420: ``self . environ.get`` is an attribute of ``self``, as the parse reads it); a
+    name does not (``return environ.get(...)`` is a read)."""
     found = []
     for m in _FALLBACK.finditer(source, start, len(source) if end is None else end):
         if m["sub"] and _WRITE.match(source, m.end()):
             continue
         before = source[m.start() - 1] if m.start() else ""
         if (before.isalnum() or before in "_.") and before and m.start() not in free:
+            continue
+        if before in " \t" and source[:m.start()].rstrip(" \t").endswith("."):
             continue
         found.append((m.start(), m["lit"] or "DIAKTOROS_" + m["short"]))
     return found
@@ -481,8 +485,8 @@ class EnvReadsViaEnvnames(unittest.TestCase):
         return scan(root)
 
     def test_a_read_uncommented_by_an_interpolation_fails_the_scan(self):
-        # #2376, through the scan the guard runs: every placeholder parse of this f-string
-        # leaves the read in a comment, but the generated script runs it.
+        # #2376 (and its duplicate #2371), through the scan the guard runs: every placeholder
+        # parse of this f-string leaves the read in a comment, but the generated script runs it.
         hits = self.scan_tree({"scripts/gen.py": 'import os\nprefix = "\\n"\n'
                                'S = f"#{prefix}os.getenv(\'DIAKTOROS_X\')\\n"\n'})
         self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
@@ -537,6 +541,23 @@ class EnvReadsViaEnvnames(unittest.TestCase):
                 self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})), [])
         hits = self.scan_tree({"scripts/gen.py": 'S = f"#{p}os.environ.get(\'DIAKTOROS_X\')\\n"\n'})
         self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
+
+    def test_another_objects_spaced_environ_passes_the_scan(self):
+        # #2420: spaces between the receiver's dot and ``environ`` (``self . environ``) hid the
+        # dot from the pattern, which then took the read for ``os.environ``; the parse does not.
+        for gen in ('prefix = "\\n"\nS = f"#{prefix}self . environ.get(\'DIAKTOROS_X\')\\n"\n',
+                    'S = f"#{prefix}cfg.\\tenviron[\'DIAKTOROS_X\']\\n"\n',
+                    'S = "self . environ.get(\'DIAKTOROS_X\') ((("\n',      # unparsable script
+                    'S = f"v = [self. environ.get(\'DIAKTOROS_X\'), {n}"\n'):  # unparsable
+            with self.subTest(gen=gen):
+                self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})), [])
+        # A name before the spaces is not a receiver, and ``os . environ`` is still a read.
+        for gen in ('S = f"#{p}os . environ.get(\'DIAKTOROS_X\')\\n"\n',
+                    'S = "return  environ.get(\'DIAKTOROS_X\') ((("\n',
+                    'S = "v = os . getenv(\'DIAKTOROS_X\') ((("\n'):
+            with self.subTest(gen=gen):
+                self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})),
+                                 [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
 
     def test_a_new_direct_read_fails_the_scan(self):
         hits = self.scan_tree({"scripts/new.py": 'import os\nos.environ.get("DIAKTOROS_X")\n'})
