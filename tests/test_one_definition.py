@@ -8,7 +8,8 @@ only a test of that one case caught it.
 A ``def`` decorated with its own name's ``.setter``, ``.getter`` or ``.deleter`` builds on the
 earlier binding instead of replacing it (a property and its setter), so it is not a second
 definition (#2142). A second accessor of one kind is: a second ``@x.setter`` replaces the first
-setter as silently as a second ``def`` (#2536 review F2).
+setter as silently as a second ``def`` (#2536 review F2), and ``@x.getter`` replaces the getter
+``@property def x`` already gave, so it counts as a second ``def``.
 """
 from __future__ import annotations
 
@@ -21,15 +22,16 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-ACCESSORS = {"setter", "getter", "deleter"}
+ACCESSORS = {"setter", "deleter"}      # a getter replaces the property's own: a "def"
 
 
 def _kind(node) -> str:
-    """How ``node`` binds its name: ``"setter"``, ``"getter"`` or ``"deleter"`` for ``@x.setter
-    def x`` and the like, which extend the property ``x`` already names rather than replacing it
-    (#2142); ``"def"`` for anything else. Each kind is counted apart, so a property and one of
-    each accessor is one definition, and a repeat of any one kind is a repeat (#2536 review
-    F2: a second ``@x.setter`` replaced the first setter and the scan let it pass)."""
+    """How ``node`` binds its name: ``"setter"`` or ``"deleter"`` for ``@x.setter def x`` and
+    ``@x.deleter def x``, which extend the property ``x`` already names rather than replacing it
+    (#2142); ``"def"`` for anything else, ``@x.getter`` included, since it replaces the getter
+    ``@property def x`` gave. Each kind is counted apart, so a property with a setter and a deleter
+    is one definition, and a repeat of any one kind is a repeat (#2536 review F2: a second
+    ``@x.setter`` replaced the first setter and the scan let it pass)."""
     return next((d.attr for d in getattr(node, "decorator_list", [])
                  if isinstance(d, ast.Attribute) and d.attr in ACCESSORS
                  and isinstance(d.value, ast.Name) and d.value.id == node.name), "def")
@@ -69,8 +71,6 @@ class OneDefinition(unittest.TestCase):
         prop = "class C:\n @property\n def x(self): pass\n @x.setter\n def x(self, v): pass\n"
         self.assertEqual(repeated(prop), [])
         self.assertEqual(repeated(prop + " @x.deleter\n def x(self): pass\n"), [])
-        self.assertEqual(repeated(prop + " @x.getter\n def x(self): pass\n"
-                                         " @x.deleter\n def x(self): pass\n"), [])
         # A second plain def, or another name's setter, still replaces it.
         self.assertEqual(repeated(prop + " def x(self): pass\n"), ["C.x"])
         self.assertEqual(repeated(prop + " @property\n def y(self): pass\n"
@@ -82,10 +82,10 @@ class OneDefinition(unittest.TestCase):
         prop = "class C:\n @property\n def x(self): return 1\n @x.setter\n def x(self, v): pass\n"
         self.assertEqual(repeated(prop + " @x.setter\n def x(self, v): print('replacement')\n"),
                          ["C.x"])
-        for kind in ("getter", "deleter"):
-            twice = f" @x.{kind}\n def x(self): pass\n" * 2
-            with self.subTest(kind=kind):
-                self.assertEqual(repeated(prop + twice), ["C.x"])
+        twice = " @x.deleter\n def x(self): pass\n" * 2
+        self.assertEqual(repeated(prop + twice), ["C.x"])
+        # ``@x.getter`` replaces the getter ``@property def x`` gave: a second getter.
+        self.assertEqual(repeated(prop + " @x.getter\n def x(self): return 2\n"), ["C.x"])
         # A second property under the name is a second plain def, reported once.
         self.assertEqual(repeated(prop + prop[9:]), ["C.x"])
 
@@ -96,6 +96,7 @@ class OneDefinition(unittest.TestCase):
         with mock.patch(f"{__name__}._kind", lambda node: "def"):    # the base: every def
             self.assertEqual(repeated(prop), ["C.x"])
         self.assertEqual(repeated(prop), [])
+
 
 if __name__ == "__main__":
     unittest.main()
