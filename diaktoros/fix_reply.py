@@ -12,7 +12,8 @@ A turn is queued only when all of these hold:
 * no issue-fix turn for the issue is queued or running;
 * the issue is open and still carries ``triage.fix_label`` (read through ``issue_fix_issue``);
 * a comment by a maintainer, never by a seat's own login, was written after the issue's newest
-  issue-fix turn was queued. One written during that turn wakes the next; several are one turn.
+  issue-fix turn was queued. One written during that turn wakes the next; several are one turn;
+* no open PR's body says it fixes the issue, the guard ``fix_hold.hand_off`` applies (#2021).
 
 The new turn reads the issue's comments (#511), so it sees the reply. It is a maintainer's
 hand-off, so ``auto_fix_daily`` does not count it.
@@ -82,6 +83,16 @@ def wake(loop: dict, st, row: dict) -> str:
     reply = newest_reply(loop, comments, row["began"])
     if reply is None:
         return "waiting"
+    # The guard hand_off and _release apply (#2021, #2022): never a second fix of an issue an
+    # open PR already says it fixes. No comment here: the row is read again at every sweep.
+    prs, error = gh.open_prs_read(loop)
+    if prs is None:
+        log(f"issue #{number}: open PR listing unreadable, reply wake waits: {error}")
+        return "unreadable"
+    existing = fix_hold._closing(loop, prs, number)
+    if existing is not None:
+        log(f"issue #{number}: open PR #{existing} already fixes it; reply wakes no fix turn")
+        return "ineligible"
     base, outcome = fix_hold.queue_fix(loop, number, f"issue-fix:reply{reply['id']}")
     login = str(reply["user"]["login"]).lower()
     log(f"issue #{number}: {login} replied to the fixer's comment; fix turn at {base[:7]}: "
