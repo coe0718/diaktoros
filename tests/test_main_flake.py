@@ -103,7 +103,29 @@ class Flake(unittest.TestCase):
         tried = {**self.memory()["rerun"], "at": 0}
         main_check._remember(self.st, self.st.dir / main_check.FILE, "rerun", tried)
         self.assertTrue(self.sweep(red()))
-        self.assertIn("tried, and it failed again", self.notices[0][1]["outcome"])
+        outcome = self.notices[0][1]["outcome"]                  # #2284: it never showed, not red
+        self.assertIn("tried, but it had not shown at this head after 2 hours", outcome)
+        self.assertNotIn("failed again", outcome)
+
+    def test_a_red_the_rerun_did_not_cause_is_not_called_a_failed_rerun(self):
+        """#2284: a check still pending when the rerun was decided that later fails at the same
+        head, or a red check with no check-run id, is not the rerun failing again."""
+        pending = ci.CIState(failed=[SHARDS[0]], pending=[SHARDS[1]], ids={SHARDS[0]: 101,
+                                                                          SHARDS[1]: 102})
+        later = ci.CIState(failed=[SHARDS[1]], pending=[SHARDS[0]], ids={SHARDS[0]: 301,
+                                                                        SHARDS[1]: 102})
+        no_id = ci.CIState(failed=list(SHARDS), ids={SHARDS[0]: 101})
+        for decided, read, said in ((pending, later, f'this red is from "{SHARDS[1]}", which it '
+                                     'did not rerun'),
+                                    (red(), no_id, "whether it failed again could not be read")):
+            with self.subTest(said=said):
+                self.setUp()
+                self.assertFalse(self.sweep(decided))
+                self.assertTrue(self.sweep(read))
+                outcome = self.notices[0][1]["outcome"]
+                self.assertNotIn("failed again.", outcome)
+                self.assertIn(said, outcome)
+                self.assertEqual(self.memory()["rerun"]["checks"], [SHARDS[0]])
 
     def test_a_timeout_is_a_flake_even_with_no_sibling_run(self):
         self.assertFalse(self.sweep(red(), log=TIMEOUT_LOG, sibling=None))
