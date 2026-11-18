@@ -20,6 +20,7 @@ import ast
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -365,6 +366,25 @@ def repo_sources():
     return {p.relative_to(ROOT).as_posix(): p.read_text() for p in files}
 
 
+def _entry_used(source, func):
+    """Whether an observer notify call in ``source`` is in the function ``func`` names, by its
+    qualified name as ``ALLOWED`` keys it (#2369)."""
+    tree = ast.parse(source)
+    owner, names = _functions(tree), _observer_names(tree)
+    return any(_is_observer_notify(n, names) and owner.get(n)[0] == func for n in ast.walk(tree))
+
+
+def with_second_failure_notice():
+    """The repo's sources with a second ``failure_notice`` in the allowed file, sending its
+    ``event`` parameter unchecked (#2369, #2373)."""
+    sources = repo_sources()
+    sources["diaktoros/run_supervisor/notices.py"] += (
+        "\n\nclass Other:\n    def failure_notice(self, loop, st, event):\n"
+        "        from diaktoros import observer\n"
+        "        observer.notify(loop, st, event, 1)\n")
+    return sources
+
+
 def edited(path, old, new):
     """The repo's sources with ``old`` replaced once by ``new`` in ``path``."""
     sources = repo_sources()
@@ -383,10 +403,7 @@ class ObserverEventLiterals(unittest.TestCase):
         # A stale entry would silently allow a non-literal event in a future function.
         sources = repo_sources()
         for path, func in ALLOWED:
-            tree = ast.parse(sources[path])
-            owner, names = _functions(tree), _observer_names(tree)
-            self.assertTrue(any(_is_observer_notify(n, names) and owner.get(n)[0] == func
-                                for n in ast.walk(tree)), f"stale ALLOWED entry {path}:{func}")
+            self.assertTrue(_entry_used(sources[path], func), f"stale ALLOWED entry {path}:{func}")
 
     def test_planted_unknown_event_fails(self):
         planted = "def f(loop, st):\n    observer.notify(loop, st, 'no-such-event', 1, '')\n"
@@ -499,12 +516,31 @@ class ScanBypasses(unittest.TestCase):
     def test_same_named_function_in_an_allowed_file_fails(self):
         # #2369, #2373: ALLOWED was keyed by the bare name and checked the first function of
         # that name, so a second ``failure_notice`` sending its ``event`` parameter passed.
-        sources = repo_sources()
-        sources["diaktoros/run_supervisor/notices.py"] += (
-            "\n\nclass Other:\n    def failure_notice(self, loop, st, event):\n"
-            "        from diaktoros import observer\n"
-            "        observer.notify(loop, st, event, 1)\n")
-        self.assertFlags(sources, "not a string literal (in Other.failure_notice)")
+        self.assertFlags(with_second_failure_notice(),
+                         "not a string literal (in Other.failure_notice)")
+
+    def test_the_owning_function_rule_is_needed(self):
+        # #2536 review F1: the scan shares this file, so the change proof's base run (the PR's
+        # tests on the base) has #2369's rule too. Undone here (``ALLOWED`` by bare name, the
+        # first function of that name checked), the second ``failure_notice`` passes, and a
+        # bare-name entry counts as used, so the allowlist test could not call it stale.
+        real = _functions
+
+        def by_bare_name(tree):
+            first = {}
+            for node in ast.walk(tree):
+                if isinstance(node, _FUNCS):
+                    first.setdefault(node.name, node)
+            return {node: (fn.name, first[fn.name]) if fn else (None, None)
+                    for node, (_, fn) in real(tree).items()}
+        bare = {(path, func.rsplit(".", 1)[-1]): v for (path, func), v in ALLOWED.items()}
+        notices = repo_sources()["diaktoros/run_supervisor/notices.py"]
+        self.assertFlags(with_second_failure_notice(), "(in Other.failure_notice)")
+        self.assertFalse(_entry_used(notices, "failure_notice"))
+        with mock.patch(f"{__name__}._functions", by_bare_name), \
+                mock.patch.dict(ALLOWED, bare, clear=True):
+            self.assertEqual(scan(with_second_failure_notice())[0], [])
+            self.assertTrue(_entry_used(notices, "failure_notice"))
 
     def test_observer_module_passed_on_fails(self):
         # Review 2 of #2356: ``obs = observer; obs.notify(...)`` and the like hide the call.

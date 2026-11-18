@@ -154,6 +154,13 @@ def _script_texts(node) -> list[str]:
     return []
 
 
+def _dot_across_spaces(source: str, offset: int) -> bool:
+    """Whether spaces, then a dot, come right before ``offset``: ``self . environ`` is an
+    attribute of ``self``, not ``os.environ`` (#2420)."""
+    return (source[offset - 1:offset] in (" ", "\t")
+            and source[:offset].rstrip(" \t").endswith("."))
+
+
 def _fallback_matches(source: str, start: int = 0, end=None,
                       free=frozenset()) -> list[tuple[int, str]]:
     """``(offset, variable)`` for each covered read the pattern finds in ``source[start:end]``;
@@ -169,7 +176,7 @@ def _fallback_matches(source: str, start: int = 0, end=None,
         before = source[m.start() - 1] if m.start() else ""
         if (before.isalnum() or before in "_.") and before and m.start() not in free:
             continue
-        if before in " \t" and source[:m.start()].rstrip(" \t").endswith("."):
+        if _dot_across_spaces(source, m.start()):
             continue
         found.append((m.start(), m["lit"] or "DIAKTOROS_" + m["short"]))
     return found
@@ -542,13 +549,16 @@ class EnvReadsViaEnvnames(unittest.TestCase):
         hits = self.scan_tree({"scripts/gen.py": 'S = f"#{p}os.environ.get(\'DIAKTOROS_X\')\\n"\n'})
         self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
 
+    # #2420: another object's ``environ`` behind a dot then spaces, as generated scripts.
+    SPACED = ('prefix = "\\n"\nS = f"#{prefix}self . environ.get(\'DIAKTOROS_X\')\\n"\n',
+              'S = f"#{prefix}cfg.\\tenviron[\'DIAKTOROS_X\']\\n"\n',
+              'S = "self . environ.get(\'DIAKTOROS_X\') ((("\n',      # unparsable script
+              'S = f"v = [self. environ.get(\'DIAKTOROS_X\'), {n}"\n')  # unparsable
+
     def test_another_objects_spaced_environ_passes_the_scan(self):
         # #2420: spaces between the receiver's dot and ``environ`` (``self . environ``) hid the
         # dot from the pattern, which then took the read for ``os.environ``; the parse does not.
-        for gen in ('prefix = "\\n"\nS = f"#{prefix}self . environ.get(\'DIAKTOROS_X\')\\n"\n',
-                    'S = f"#{prefix}cfg.\\tenviron[\'DIAKTOROS_X\']\\n"\n',
-                    'S = "self . environ.get(\'DIAKTOROS_X\') ((("\n',      # unparsable script
-                    'S = f"v = [self. environ.get(\'DIAKTOROS_X\'), {n}"\n'):  # unparsable
+        for gen in self.SPACED:
             with self.subTest(gen=gen):
                 self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})), [])
         # A name before the spaces is not a receiver, and ``os . environ`` is still a read.
@@ -558,6 +568,17 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             with self.subTest(gen=gen):
                 self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})),
                                  [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
+
+    def test_the_spaced_dot_rule_is_needed(self):
+        # #2536 review F1: the scan shares this file, so the change proof's base run (the PR's
+        # tests on the base) has #2420's rule too. Undone here, each ``SPACED`` script is a read.
+        for gen in self.SPACED:
+            with self.subTest(gen=gen):
+                files = {"scripts/gen.py": gen}
+                self.assertEqual(stray(self.scan_tree(files)), [])
+                with mock.patch(f"{__name__}._dot_across_spaces", lambda source, offset: False):
+                    self.assertEqual(stray(self.scan_tree(files)),
+                                     [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
 
     def test_a_new_direct_read_fails_the_scan(self):
         hits = self.scan_tree({"scripts/new.py": 'import os\nos.environ.get("DIAKTOROS_X")\n'})
