@@ -126,10 +126,53 @@ class UnreadableKeepsTheWait(replies.Replies):
                 self.assertEqual(fix_hold.explain_lines(self.st, 12), [fix_reply.line(12)])
 
 
+class LedgerReadFails(replies.Replies):
+    def test_a_ledger_read_failing_mid_sweep_never_stops_the_other_holds(self):
+        # Vex on #2549 (F8): a ledger read after the first raised out of ``fix_hold.sweep``.
+        self.reply(201, "jeremy")
+        with mock.patch.object(gh, "open_prs_read", offline):
+            self.sweep()                        # guarded: the next sweep reads the ledger twice
+        real = self.sup.issue_fix_comment_waits
+        for failing in (1, 2, 3):           # 3: the old head read it again after the wakes
+            calls = []
+
+            def flaky(*args):
+                calls.append(1)
+                if len(calls) == failing:
+                    raise RuntimeError("ledger unavailable")
+                return real(*args)
+            with self.subTest(failing=failing), mock.patch.object(gh, "open_prs_read", offline), \
+                    mock.patch.object(self.sup, "issue_fix_comment_waits", flaky):
+                self.sweep()                    # raises nothing
+                self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        self.assertEqual(self.enqueued, [])
+
+    def test_a_spent_window_never_drops_a_sighting_made_after_the_sweep_read_it(self):
+        # The 14-day cutoff drops only the sighting it found spent, not a fresh one made since.
+        self.reply(201, "jeremy")
+        with mock.patch.object(gh, "open_prs_read", offline):
+            self.sweep()
+        spent, fresh, real = fix_reply.kept.guard(self.st)["12"], {"at": time.time()}, fix_reply.kept.guard
+        reads = []
+
+        def resighted(st):              # a delivery re-sights it just after the sweep's wake read
+            reads.append(1)
+            found = real(st)
+            if len(reads) == 2:
+                st.kv_set(st.dir / fix_reply.GUARD, {"12": fresh})
+            return found
+        later = SimpleNamespace(time=lambda: spent["at"] + (fix_reply.WAIT_DAYS + 1) * 86400)
+        with mock.patch.object(gh, "open_prs_read", offline), \
+                mock.patch.object(fix_reply, "time", later), \
+                mock.patch.object(fix_reply.kept, "guard", resighted):
+            self.sweep()
+        self.assertEqual(fix_reply.kept.guard(self.st), {"12": fresh})
+
+
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
     suite = unittest.TestSuite()
-    for cls in (OpenPrGuard, ListingOutage, UnreadableKeepsTheWait):
+    for cls in (OpenPrGuard, ListingOutage, UnreadableKeepsTheWait, LedgerReadFails):
         for name in sorted(vars(cls)):
             if name.startswith("test_"):
                 suite.addTest(cls(name))

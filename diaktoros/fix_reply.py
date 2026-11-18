@@ -65,7 +65,7 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
             kept.commit(st, key, read_at, wait=None, seen=None)
             continue
         try:
-            outcome = wake(loop, st, row)
+            outcome = wake(loop, st, row, read_at)     # its row is from the ledger read (F10)
         except Exception as exc:        # retried on the next sweep; nothing it kept changes
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")
@@ -79,12 +79,13 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
                          f"or the issue stayed unreadable for {WAIT_DAYS} days; fix not queued")
 
 
-def wake(loop: dict, st, row: dict) -> str:
+def wake(loop: dict, st, row: dict, read_at: int | None = None) -> str:
     """``queued``, ``waiting`` (no reply yet), ``ineligible``, ``unreadable``, or ``unlisted``
     (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue,
-    committed from reads begun now, for the sweep and the webhook alike. What it could not read
+    committed from reads begun at ``read_at`` (the caller's ledger read that found ``row``; now
+    when not given), for the sweep and the webhook alike. What it could not read
     (``unreadable``, or an exception) changes nothing kept: a wait stays, none is made (#2019)."""
-    read_at, key = kept.stamp(), str(row["number"])
+    read_at, key = kept.stamp() if read_at is None else read_at, str(row["number"])
     outcome = _wake(loop, st, row)
     if outcome in ("queued", "ineligible"):     # no longer waits, on a reply or the listing
         kept.commit(st, key, read_at, wait=None, seen=None)
@@ -169,12 +170,13 @@ def on_comment(loop: dict, payload: dict) -> None:
             silence(f"issue #{number}: {login} approved the plan of run {run}; `hermes dk "
                     f"continue --loop {loop['id']} --run {run}` opens its PR", "accepted")
         silence(f"issue #{number}: {login} answered the fixer's ask; fix turn resumed", "accepted")
+    read_at = kept.stamp()                          # before the ledger read its row comes from
     rows = [row for row in gate.isolated_supervisor(loop).issue_fix_comment_waits(
         loop["repo"], time.time() - WAIT_DAYS * 86400) if row["number"] == number]
     if not rows or rows[0]["active"]:
         silence(f"issue #{number}: no fixer comment waits for a reply")
     try:
-        outcome = wake(loop, st, rows[0])
+        outcome = wake(loop, st, rows[0], read_at)
     except Exception as exc:                        # the sweep retries it
         silence(f"issue #{number}: reply seen, fix not queued: {type(exc).__name__}: {exc}")
     if outcome != "queued":
