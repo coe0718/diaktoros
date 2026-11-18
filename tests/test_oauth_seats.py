@@ -188,6 +188,23 @@ class ModeContracts(Tmp):
         self.assertNotIn("x-client-request-id", plain["headers"])
         self.assertNotIn("prompt_cache_key", plain["body"])
 
+    def test_a_cache_key_with_a_trailing_newline_is_replaced_not_sent_as_a_header(self):
+        """#2280: ``$`` matched before a final newline, so ``"pk-agent\\n"`` was kept, went into
+        ``x-client-request-id``, and putheader's ValueError dropped the agent's connection.
+        Now it is not a plain value: the turn's session replaces it and the request succeeds."""
+        cred = Credential("CODEX-ACCESS-TOKEN", "bearer", ())
+        with Upstream(lambda h, r: send_json(h)) as up, \
+                mock.patch.object(inference_proxy, "is_codex_backend", return_value=True), \
+                InferenceCapability(self.socket_dir(), up.url("/backend-api/codex/responses"),
+                                    model="gpt-seat", quota=5, api_mode="codex_responses",
+                                    credential=StaticCredential(cred)) as cap:
+            status, _ = post(cap, {"input": [], "prompt_cache_key": "pk-agent\n"})
+        self.assertEqual(status, 200)
+        (request,) = up.requests
+        session = request["headers"]["session_id"]
+        self.assertEqual(request["body"]["prompt_cache_key"], session)
+        self.assertEqual(request["headers"]["x-client-request-id"], session)
+
     def test_codex_backend_never_gets_an_output_cap_field(self):
         contract = CONTRACTS["codex_responses"]
         body = json.loads(inference_proxy.bounded_request(

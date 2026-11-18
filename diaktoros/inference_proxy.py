@@ -91,7 +91,9 @@ PATH = '/v1/chat/completions'          # the chat-completions local path (histor
 UPSTREAM_SUFFIX = '/chat/completions'  # the chat-completions upstream suffix (historical name)
 
 _TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$")
-_SAFE_VALUE = re.compile(r'^[A-Za-z0-9._:/=+-]{1,128}$')
+# ``\Z``, not ``$``: ``$`` also matches before a final newline, and a kept value goes into an
+# outbound header, where a newline is a ValueError that drops the agent's connection (#2280).
+_SAFE_VALUE = re.compile(r'^[A-Za-z0-9._:/=+-]{1,128}\Z')
 # Never taken from the sandbox, and never accepted as a host "extra" header either: the proxy
 # sets authentication itself, and the transport owns framing.
 _RESERVED = frozenset({'authorization', 'x-api-key', 'proxy-authorization', 'cookie', 'host',
