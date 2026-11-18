@@ -81,6 +81,20 @@ def carried(loop: dict, reviews: list, head: str) -> list:
     return [{**latest, "commit_id": head, "carried_from": old}]
 
 
+def carried_at(loop: dict, number: int, head: str, review) -> float | None:
+    """When the host's merge made ``head`` and carried ``review`` there (#2291): its record's
+    time, when ``review`` is the approval it recorded on this PR, whether as ``carried``'s copy or
+    as the review GitHub itself moved to the merged head (#2402). None otherwise: a new approval
+    at ``head`` is another review, with its own time."""
+    record = _records(loop).get(head) if head else None
+    if (not isinstance(record, dict) or not isinstance(review, dict)
+            or review.get("id") != record.get("review") or record.get("number") != number
+            or gate._review_pr(review, loop["repo"]) != number):
+        return None
+    at = record.get("at")
+    return float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+
+
 def ruled_at(loop: dict, reviews: list, ruling: dict, head: str, approval: dict) -> bool:
     """Whether the ACCEPT ``ruling`` backs the adjudicator's ``approval`` at ``head`` (#905): it
     was ruled at ``head``, or at a head this PR's clean base merges carried that approval from
