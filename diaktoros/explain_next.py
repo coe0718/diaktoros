@@ -103,10 +103,14 @@ def _next_approval(c) -> tuple[str, str] | None:
         if c.shadow_held.startswith("waiting on"):
             kind = "wait"
             action = f"{c.shadow_held} — head {c.short} is approved but held until it lands"
+        elif c.shadow_fix and c.shadow_turn[0] and not c.shadow_turn[1]:
+            kind, action = _shadow_fix_ended(c)        # ended, and no sweep re-arms it (#2262)
         elif c.shadow_fix:
             kind = "fixer-push"
-            action = (f"{c.shadow_held} — do not merge head {c.short}; the fixer's turn on the "
-                      "upheld findings answers it")
+            again = (f"the next armed watchdog sweep re-arms the {c.shadow_turn[0]} shadow-fix "
+                     "fixer turn, and " if c.shadow_turn[1] == "rearmed" else "")
+            action = (f"{c.shadow_held} — do not merge head {c.short}; {again}the fixer's turn on "
+                      "the upheld findings answers it")
         else:
             kind = "operator"
             action = (f"your decision: {c.shadow_held} — do not merge head {c.short} until you have "
@@ -122,6 +126,61 @@ def _next_approval(c) -> tuple[str, str] | None:
     else:
         return None
     return kind, action
+
+
+def shadow_fix_turn(c) -> tuple[str, str, str]:
+    """The fixer turn answering this head's upheld shadow review (#2262): ``(state, how, key)``,
+    its ledger state ("" with none, or an unreadable ledger), ``how`` it still answers the
+    findings: ``live`` (queued or running), ``rearmed`` (the sweep's ``queue_shadow_fix``
+    resubmits its turn key and ``submit`` re-arms it, by ``intake.redelivery_refusal``), or ""
+    when it ended and nothing restarts it, and its turn ``key`` (``shadow:<current ruling>``; an
+    older ruling's turn at the same head is not it). Read only when ``c.shadow_fix``."""
+    import sqlite3
+    from .run_supervisor import NOT_ENDED, REARMABLE, SHADOW_FIX_KEY, intake, views
+    ruled = gate.shadows.upheld_shadow_ruling(c.loop, c.number, c.head)
+    try:
+        con = views.read_only_connect(config.host_path("ledger")) if ruled is not None else None
+        if con is None:
+            return "", "", ""
+        con.row_factory = sqlite3.Row
+        try:
+            key = f"{SHADOW_FIX_KEY}{int(ruled)}"
+            row = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                              "seat='fixer' AND turn_key=?", (c.repo, c.number, c.head, key)).fetchone()
+            if row is None:
+                return "", "", ""
+            rearms = row["state"] in REARMABLE and intake.redelivery_refusal(
+                con, row, admitted=True, production=True, seat="fixer") is None
+            return row["state"], ("live" if row["state"] in NOT_ENDED else
+                                  "rearmed" if rearms else ""), key
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return "", "", ""
+
+
+def _shadow_fix_ended(c) -> tuple[str, str]:
+    """An upheld shadow review whose fixer turn ended with no push, which the sweep does not
+    re-arm (#2262): the fix is no longer coming by itself, so the step is a reconcile for a run
+    that may have written, retry's own plan when it re-arms this ruling's turn (an older ruling's
+    shadow turn at the same head is an obsolete work order, #2535 review F1), or a fix by hand."""
+    state, _how, key = c.shadow_turn
+    rearm, why, reconcile, rows = fixer_retry(c)
+    if state == "uncertain":
+        kind, step = "operator", _reconcile_first(c, "its worker may have written")
+    elif any(turn == key for turn, _ in rows):
+        kind, step = "fixer-retry", f"{rearm} re-arms it"
+    elif rows:
+        older = ", ".join(f"{turn or 'untagged'} ({was})" for turn, was in rows)
+        kind, step = "operator", (f"`retry` would re-arm only {older}, not this ruling's turn "
+                                  f"{key}, so do not run it for these findings")
+    elif reconcile:
+        kind, step = "operator", _reconcile_first(c, why)
+    else:
+        kind, step = "operator", f"`retry` has nothing to re-arm for it ({why or 'not offered'})"
+    return kind, (f"{c.shadow_held} — do not merge head {c.short}; the shadow-fix fixer turn "
+                  f"at this head is {c.shadow_turn[0]} with no fix pushed, and no watchdog sweep "
+                  f"re-arms it: {step}; or fix it by hand, push, and re-request review")
 
 
 def _next_person(c) -> tuple[str, str] | None:
@@ -277,6 +336,13 @@ def redelivery_effect(c, when: str = "") -> str:
         return f"re-arms the verdict turn ({c.gate_turn}){when}, not {shown_turn(c)}"
     if c.redeliver:
         return f"re-arms it{when}"
+    if c.cap_spent:
+        # The cap's verdict is no work order: the fixer gate breaches and never submits (#2439).
+        return "starts no fix: at the spent cap the fixer gate hands it to adjudication instead"
+    if c.gate_turn == "pending":
+        # ``submit`` answers ``pending`` and wakes a worker for it: nothing is refused (#2437).
+        return ("re-arms nothing: the verdict turn at this head is already pending, and submit "
+                "only wakes a worker for it" + (f" ({shown_turn(c)} is not it)" if c.fixer_key else ""))
     return ("is a duplicate the ledger refuses"
             + (f" (the verdict turn at this head is {c.gate_turn}, not {shown_turn(c)})"
                if c.fixer_key and c.gate_turn else ""))
@@ -586,6 +652,12 @@ def _next_run(c) -> tuple[str, str]:
                   + _reconcile_first(c, "a worker may have written")
                   + " (retry refuses a run that may have written); or fix it by hand, push, and "
                   "re-request review")
+    elif c.at_head and c.fixer_ended:
+        # Started, and ended with no push (failed, cancelled, succeeded): its run did start, and
+        # the ledger's own recovery is the step, as for a declined entry (#2077).
+        kind = "fixer-retry" if c.fixer_rearm[0] or c.redeliver else "operator"
+        action = (f"{shown_turn(c)} at head {c.short} is {c.fixer_turn} with no fix pushed — "
+                  f"{_ended_turn_recovery(c)}, push, and re-request review")
     elif c.at_head:
         kind = "fixer-retry"
         action = c.to_fixer + "after checking why its run did not start — no fixer is running to push a fix"
