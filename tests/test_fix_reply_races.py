@@ -198,20 +198,25 @@ class WebhookSettlesTheGuard(replies.Delivery):
         self.assertEqual(fix_reply.status_lines(self.st), [])
         self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
 
-    def test_a_stale_sweep_never_erases_a_newer_sighting_and_a_failed_write_loses_nothing(self):
-        # Vex on #2549 (F11, F13): a delivery sees the reply, listing down, after the sweep's
-        # ledger read; the sweep's comments read, from before the reply, then decides "no reply".
-        # Its stale decision must not erase the sighting, nor must a failed write later, or the
-        # reply is lost once its comment passes the cutoff.
+    def test_a_failed_publication_never_unversions_a_sighting_a_stale_sweep_could_erase(self):
+        # Vex on #2549 (F11, F13): while a sweep is paused after its ledger read, a delivery
+        # records the reply (listing down), then a second delivery's write fails. The sweep
+        # resumes from comments read before the reply. Nothing the failed write left may let that
+        # stale decision erase the sighting, or the reply is lost once its comment's cutoff passes.
         self.live = {**self.live, "updated_at": replies.iso(replies.TURN + 700)}
         real, comments, began = self.sup.issue_fix_comment_waits, gh.issue_comments_read, []
 
+        def disk_error(st, path, data):         # every process's state object: the webhook's too
+            raise OSError("transient disk error")
+
         def ledger(*args):
             rows = real(*args)
-            if not began:                       # the sweep's own read: the delivery lands now
+            if not began:                       # the sweep's own read: it pauses here
                 began.append(1)
                 self.reply(201, "jeremy")
-                self.deliver(self.comment())
+                self.deliver(self.comment())    # recorded, with its stamp
+                with mock.patch.object(type(self.st), "kv_set_strict", disk_error):
+                    self.deliver(self.comment())    # its publication fails
                 began.append(2)
             return rows
 
@@ -222,17 +227,11 @@ class WebhookSettlesTheGuard(replies.Delivery):
                 mock.patch.object(self.sup, "issue_fix_comment_waits", ledger):
             self.sweep()
         self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-
-        def disk_error(st, path, data):     # every process's state object
-            raise OSError("transient disk error")
-        with cutoff(60), mock.patch.object(gh, "open_prs_read", offline), \
-                mock.patch.object(type(self.st), "kv_set_strict", disk_error):
-            self.sweep()                        # past the comment's cutoff, and nothing written
-        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-        with cutoff(120):                       # disk and listing back
+        with cutoff(60):                        # past the comment's cutoff, listing back
             self.sweep()
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
         self.assertEqual(fix_reply.status_lines(self.st), [])
+
 
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
