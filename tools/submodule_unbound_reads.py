@@ -62,6 +62,15 @@ def _deletes(stmts: list, name: str) -> bool:
                for stmt in stmts for n in ast.walk(stmt))
 
 
+def _from_delete(stmts: list, name: str) -> list:
+    """These statements from the first one that may ``del`` ``name`` on, or none: in a bound block,
+    only a read at or after such a statement may find the name unbound (#2536 review round 5)."""
+    for i, stmt in enumerate(stmts):
+        if _deletes([stmt], name):
+            return stmts[i:]
+    return []
+
+
 def _reads(nodes, name: str) -> list[tuple[int, int]]:
     """(line, column) of each read of ``name`` in these nodes, nested scopes' bodies excluded."""
     return [(n.lineno, n.col_offset) for n in _scope_walk(list(nodes), module=False)
@@ -75,7 +84,8 @@ def _block_reads(stmts: list, name: str) -> list[tuple[int, int]]:
     binds the rest of that block only, since the block may not run (``if False: import ...``).
     The one exception is a ``try``'s ``else``: it runs only once the ``try`` body has finished, so
     an import at that body's top level has bound it (#2522), unless that body also ``del``s the
-    name (#2536 review F6)."""
+    name (#2536 review F6). A ``del`` in the ``else`` itself unbinds it from that statement on,
+    so the else is scanned from there (#2536 review round 5 F6)."""
     found = []
     for stmt in stmts:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -85,7 +95,7 @@ def _block_reads(stmts: list, name: str) -> list[tuple[int, int]]:
                           and not _deletes(stmt.body, name))
             for field, value in ast.iter_fields(stmt):
                 if bound_else and field == "orelse":
-                    continue
+                    value = _from_delete(value, name)
                 items = value if isinstance(value, list) else [value]
                 if items and isinstance(items[0], ast.stmt):
                     found += _block_reads(items, name)

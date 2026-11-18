@@ -501,6 +501,26 @@ class Split(unittest.TestCase):
         with self.assertRaises(UnboundLocalError):
             namespace["f"](True)
 
+    def test_a_del_in_the_else_of_a_try_that_imports_it_unbinds_later_reads(self):
+        # #2536 review round 5 F6: the else is bound by the body's import only until a ``del`` in
+        # the else itself; a read from that statement on raises. A read before it is still bound.
+        head = ("from diaktoros.run_supervisor import views\ndef f():\n    try:\n"
+                "        from diaktoros.run_supervisor import views\n"
+                "    except ImportError:\n        return None\n    else:\n")
+        deleted = head + "        del views\n        return views\n"
+        self.assertEqual(_shadowed_submodules(deleted), [(len(deleted.splitlines()), "views")])
+        self.assertEqual(_local_submodule_shadows(deleted, "x.py"), [("f", "views")])
+        namespace = {}
+        exec(compile(deleted, "<f>", "exec"), namespace)
+        with self.assertRaises(UnboundLocalError):
+            namespace["f"]()
+        before = head + "        name = views.__name__\n        del views\n        return name\n"
+        self.assertEqual(_shadowed_submodules(before), [])
+        self.assertEqual(_local_submodule_shadows(before, "x.py"), [])
+        namespace = {}
+        exec(compile(before, "<f>", "exec"), namespace)
+        self.assertEqual(namespace["f"](), "diaktoros.run_supervisor.views")
+
     def test_a_function_named_like_a_comprehension_scope_is_checked(self):
         # #2509 round 2 F3: before Python 3.12 symtable names a comprehension scope `listcomp`
         # (etc.); a real function of that name is still a function and is checked.
