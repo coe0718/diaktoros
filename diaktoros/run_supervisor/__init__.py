@@ -939,6 +939,18 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.Shado
         if changed != 1:
             raise ValueError("run ownership lost before the view was recorded")
 
+    def record_saw(self, run_id: str, owner: str, review_ids: list) -> None:
+        """The owning worker's record of the reviewer reviews a ruling's prompt showed (#2402),
+        before the seat starts: an ACCEPT dismisses an earlier head's change request only when
+        it is listed here. A write that lands nowhere raises, so no ruling launches without it."""
+        ids = sorted({i for i in review_ids if type(i) is int})
+        with self._connect() as con:
+            changed = con.execute("UPDATE runs SET saw_reviews=?, updated=? WHERE id=? AND owner=? "
+                                  "AND state IN ('launching','running')",
+                                  (json.dumps(ids), time.time(), run_id, owner)).rowcount
+        if changed != 1:
+            raise ValueError("run ownership lost before the ruling's view was recorded")
+
     def quarantine_push(self, run_id: str, repo: str, pr: int, head: str,
                         outcome: str, seat: str = 'fixer') -> None:
         """Persist an ambiguous post-write push before answering the sandbox.
