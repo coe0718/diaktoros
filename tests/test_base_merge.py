@@ -150,6 +150,13 @@ class Carries(Base):
         self.assertIn(f"carried from {self.head[:7]}", base_merge.said(self.loop, latest))
         self.assertEqual(gate.verdicts(self.reviews, self.loop), [])     # no round spent
 
+    def test_update_behind_carries_an_unspent_review_cap_grant(self):
+        # #2401, update_behind's side: the host's merge moves a head that holds a grant.
+        self.st.review_cap_grant(7, self.head, 4)
+        new = self.update()
+        self.assertTrue(self.st.review_cap_granted(7, new, 4))
+        self.assertFalse(self.st.review_cap_granted(7, self.head, 4))
+
     def test_ready_counts_the_carried_approval_at_the_new_head_and_still_needs_ci(self):
         new = self.update()
         pr = {**self.live, "head": {**self.live["head"], "sha": new}, "mergeable_state": "clean"}

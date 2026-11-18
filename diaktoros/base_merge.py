@@ -295,10 +295,27 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
     finally:
         hold.release()
     new = done["new_head"]
+    carry_grant(st, number, head, new)
     log(f"#{number} @ {head[:7]} merged {loop['base']} in: {new[:7]}"
         + (" (approval carried over)" if carry.get("done") else ""))
     _notify(loop, st, number, head, new, carry)
     return new
+
+
+def carry_grant(st, number: int, old: str, new: str) -> None:
+    """After the host's own base merge moves ``old`` to ``new`` (``update_behind`` here,
+    ``review_only_update`` in ``watch_conflicts``): a maintainer's unspent review-cap grant at
+    ``old`` holds at ``new`` (#2401). Best effort: a lost carry leaves the cap to be granted again,
+    as before."""
+    try:
+        grant = st.review_cap_entry(number).get("grant")
+        # Same rounds: a grant a verdict at ``old`` already used matches nothing at ``new``.
+        if (new and isinstance(grant, dict) and grant.get("head") == old
+                and isinstance(grant.get("rounds"), int)
+                and st.review_cap_grant(number, new, grant["rounds"])):
+            log(f"#{number} @ {new[:7]} the review-cap grant at {old[:7]} carries over")
+    except Exception as exc:
+        log(f"#{number} @ {new[:7]} review-cap grant not carried: {type(exc).__name__}")
 
 
 def _notify(loop: dict, st, number: int, head: str, new: str, carry: dict) -> None:

@@ -315,6 +315,29 @@ class ReviewOnlyUpdateWaits(fg.Base):
                                               {7: {**fg.LIVE, "mergeable_state": "behind"}})
         self.assertEqual(self.pushed, [])
 
+    def test_the_hosts_merge_carries_an_unspent_grant_to_the_new_head(self):
+        # #2401: a maintainer granted one more round at HEAD, and the host's merge moved the head
+        # before a verdict landed there. The round they granted holds at the merged head.
+        rounds, new = int(self.loop["cap"]), "e" * 40
+        self.st.review_cap_grant(7, fg.HEAD, rounds)
+        self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+        self.assertIsNone(self.next_step(""))
+        self.assertEqual(self.pushed, [(7, fg.HEAD)])
+        self.assertFalse(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+        # A grant a verdict at HEAD already used (one more round spent) holds nowhere.
+        self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds + 1, "tuck"))
+
+    def test_a_grant_at_another_head_or_an_author_push_carries_nothing(self):
+        rounds, new, other = int(self.loop["cap"]), "e" * 40, "f" * 40
+        # The author's own push to ``other``: nothing ran a host merge, so the cap stands there.
+        self.st.review_cap_grant(7, fg.HEAD, rounds)
+        self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, other, rounds, "tuck"))
+        # A grant held at some other head is not the merged head's to carry.
+        self.st.review_cap_grant(7, other, rounds)
+        self.assertIsNone(self.next_step(""))
+        self.assertTrue(gate.review_cap_hit(self.loop, self.st, 7, new, rounds, "tuck"))
+        self.assertTrue(self.st.review_cap_granted(7, other, rounds))
+
     def test_a_real_conflict_still_gets_its_notice_but_no_push_while_busy(self):
         message = self.next_step("a reviewer turn is running", state="dirty")
         self.assertEqual(self.pushed, [])

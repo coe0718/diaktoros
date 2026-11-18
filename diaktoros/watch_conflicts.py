@@ -137,6 +137,7 @@ def _review_only_next(loop: dict, st: state_mod.LoopState, number: int, head: st
                     *key, facts, tried,
                     retry=isinstance(tried, review_only_conflict.Retry))
         if pushed:
+            base_merge.carry_grant(st, number, head, pushed)
             log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
             observer.notify(loop, st, "updated", number, pushed, identity="updated",
                             outcome=f"merged {loop['base']} into #{number} at "
