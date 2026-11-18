@@ -617,6 +617,18 @@ class HeadMoved(Base):
         self.approve.assert_not_called()
         self.dismiss.assert_not_called()
 
+    def test_a_dismissed_review_at_the_ruled_head_is_no_verdict(self):
+        # Review of #2544, round 5, F7: a dismissal at the head is no verdict, as the gate reads
+        # it (unlike an undatable verdict, above), so the seen old-head request is overruled.
+        dismissed = {**tra.review(6, "DISMISSED"), "submitted_at": "2025-12-31T00:00:00Z"}
+        self.reviews = [self.standing, dismissed]
+        self.ruled("ACCEPT")
+        self.saw(5)
+        self.sweep()
+        self.sweep()
+        self.approve.assert_called_once()
+        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
+
     def kinds(self):
         """The merge check's real inputs for the PR as the reviews now stand."""
         pr = {**fg.LIVE, "user": {"login": "fixer"}}

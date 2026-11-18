@@ -89,8 +89,10 @@ def overruled(reviews: list, loop: dict, head: str, ruled_at: float,
     latest = gate.latest_effective_review_at_head(mine, loop, head)
     if latest is None:
         # A reviewer review at ``head`` that reads as no verdict (undatable, unfamiliar) is an
-        # unknown verdict, not none: nothing from an earlier head is overruled over it.
-        if any(r.get("commit_id") == head and gh.review_state(r) != "COMMENTED" for r in mine):
+        # unknown verdict, not none: nothing from an earlier head is overruled over it. A comment
+        # or a dismissal is no verdict, as the gate reads it.
+        if any(r.get("commit_id") == head and gh.review_state(r) not in ("COMMENTED", "DISMISSED")
+               for r in mine):
             return None
         standing = [r for r in gate.blocking_reviews(mine) if r.get("commit_id") != head]
         latest = standing[0] if len(standing) == 1 and saw and standing[0].get("id") in saw else None
@@ -186,9 +188,12 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         return ""                              # superseded: its pending steps are never acted on
     mine = next((row for row in rows if row.get("ruling") == newest), None)
     if mine is None:
-        if overruled(reviews, loop, head, ruling.get("created") or 0,
-                     views.ruling_saw(db, newest)) is None:
+        found = overruled(reviews, loop, head, ruling.get("created") or 0,
+                          views.ruling_saw(db, newest))
+        if found is None:
             return ""                          # no change request to dismiss: nothing to act on
+        if found.get("commit_id") != head:     # an earlier head's request: its wait is bounded
+            return _owed_at_a_moved_head(loop, db, ruling, reviews, head)
         return "the adjudicator's ACCEPT has not been acted on yet"
     # Only what ``_act`` still takes: the approval, then the dismissal, while the dismissal is
     # pending and the approval was not denied (a denied approval leaves its dismissal pending for
@@ -201,9 +206,10 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
 
 
 def _owed_at_a_moved_head(loop: dict, db, ruling: dict, reviews: list, head: str) -> str:
-    """``unsettled`` at a head with no verdict and no record yet (#2402): an ACCEPT here that
-    overruled the reviewer's standing request from an earlier head still owes its approval, and a
-    merge now would strand that request again. With nothing it can overrule (no record, not
+    """``unsettled`` when the newest ruling has no record yet (#2402), whatever older rulings'
+    records at this head say (#2544 review, round 5, F6): an ACCEPT here that overruled the
+    reviewer's standing request from an earlier head still owes its approval, and a merge now
+    would strand that request again. With nothing it can overrule (no record, not
     seen), nothing waits; nor while a required check is red or cancelled here, since the approval
     waits for green and the merge may be what turns it green (#2544 review, F6); nor past
     ``CI_WAIT_MAX_S`` since the ruling, so a required check that never reports or never finishes

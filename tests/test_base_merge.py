@@ -677,6 +677,29 @@ class Ruled(Base):
         self.assertEqual(new, self.remote_head())
         self.assertNotEqual(new, self.head)
 
+    def test_at_a_moved_head_an_older_rulings_record_changes_nothing_about_the_wait(self):
+        # Review of #2544, round 5, F6: an earlier ruling at this head left a settled (denied)
+        # record; the newest ACCEPT has none yet. Its wait is the same bounded one: it holds on
+        # fresh green CI, and red CI or the bound ends it.
+        from diaktoros import run_supervisor
+        self.moved_head(frozenset({11}))
+        self.rows = [{"ruling": "r1", "approve": "denied", "dismiss": "pending"}]
+        self.ruling = {**self.ruling, "run_id": "r2"}
+        for label, state, age, waits in (
+                ("green, fresh", GREEN, 60, True),
+                ("red", ci.CIState(failed=["tests"]), 60, False),
+                ("pending, past the bound", ci.CIState(pending=["tests"]),
+                 run_supervisor.CI_WAIT_MAX_S + 1, False)):
+            with self.subTest(label), mock.patch.object(ci, "read", return_value=state):
+                self.ruling["created"] = time.time() - age
+                self.assertEqual(bool(ruled_approval.unsettled(self.loop, 7, self.head,
+                                                               self.reviews, ruled=False)), waits)
+        self.ci_state = ci.CIState(failed=["tests"])
+        self.ruling["created"] = time.time() - 60
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
+
     def test_at_a_moved_head_with_nothing_it_can_overrule_the_wait_ends(self):
         # No launch record, or a request the ruling never saw: the sweep will act on nothing, so
         # nothing may wait for it.
