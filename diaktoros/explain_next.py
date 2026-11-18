@@ -328,6 +328,13 @@ def redelivery_effect(c, when: str = "") -> str:
         return f"re-arms the verdict turn ({c.gate_turn}){when}, not {shown_turn(c)}"
     if c.redeliver:
         return f"re-arms it{when}"
+    if c.cap_spent:
+        # The cap's verdict is no work order: the fixer gate breaches and never submits (#2439).
+        return "starts no fix: at the spent cap the fixer gate hands it to adjudication instead"
+    if c.gate_turn == "pending":
+        # ``submit`` answers ``pending`` and wakes a worker for it: nothing is refused (#2437).
+        return ("re-arms nothing: the verdict turn at this head is already pending, and submit "
+                "only wakes a worker for it" + (f" ({shown_turn(c)} is not it)" if c.fixer_key else ""))
     return ("is a duplicate the ledger refuses"
             + (f" (the verdict turn at this head is {c.gate_turn}, not {shown_turn(c)})"
                if c.fixer_key and c.gate_turn else ""))

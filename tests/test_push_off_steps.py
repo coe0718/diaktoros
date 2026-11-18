@@ -316,6 +316,56 @@ class AfterEnabling(Steps):
         with mock.patch.object(sup, "_spawn"):
             self.assertEqual(sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer"), "enqueued")
 
+    def test_a_pending_verdict_turn_is_no_refused_redelivery(self):
+        # #2437: a pending verdict turn beside a newer failed shadow-fix turn. The step said a
+        # redelivered verdict "is a duplicate the ledger refuses"; the real ``submit`` answers
+        # ``pending`` and wakes a worker for it.
+        sup = self.two_rows("pending", f"{run_supervisor.SHADOW_FIX_KEY}1", "failed")
+        self.set_push(False)
+        report = self.report()
+        ended = [b for b in report["blockers"] if "is failed with no fix pushed" in b]
+        self.assertEqual(len(ended), 1, report["blockers"])
+        for text in (report["next"]["action"], ended[0]):
+            self.assertNotIn("duplicate the ledger refuses", text)
+        self.assertIn("a redelivered verdict re-arms nothing: the verdict turn at this head is "
+                      "already pending, and submit only wakes a worker for it (the shadow-fix "
+                      "fixer turn is not it)", report["next"]["action"])
+        self.set_push(True)
+        with mock.patch.object(sup, "_spawn") as spawn:
+            self.assertEqual(sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer"), "pending")
+        spawn.assert_called_once()
+
+    def test_at_the_spent_cap_a_redelivery_starts_no_fix_rather_than_being_refused(self):
+        # #2439: at the spent cap a failed verdict turn read "a redelivered verdict is a duplicate
+        # the ledger refuses". The ledger would re-arm it, but the fixer gate never submits the
+        # cap's verdict: it hands it to adjudication (#1494).
+        gate_fixer = fg.gate_fixer
+        self.ledgered("failed")
+        self.set_push(False)
+        report = self.report(verdicts=3)
+        ended = [b for b in report["blockers"] if "is failed with no fix pushed" in b]
+        self.assertEqual(len(ended), 1, report["blockers"])
+        for text in (report["next"]["action"], ended[0]):
+            self.assertNotIn("duplicate the ledger refuses", text)
+        self.assertIn("a redelivered verdict starts no fix: at the spent cap the fixer gate "
+                      "hands it to adjudication instead", report["next"]["action"])
+        self.set_push(True)                                    # the gate, as the step says
+        payload = {"action": "submitted", "repository": {"full_name": fg.REPO},
+                   "pull_request": fg.LIVE, "review": fg.verdict(3) | {"state": "changes_requested"}}
+        with mock.patch.object(gate_fixer.sys, "stdin", fg.io.StringIO(fg.json.dumps(payload))), \
+             contextlib.redirect_stdout(fg.io.StringIO()), contextlib.redirect_stderr(fg.io.StringIO()), \
+             mock.patch.object(gate_fixer.gh, "pr", return_value=fg.LIVE), \
+             mock.patch.object(gate_fixer.gate, "fetch_reviews",
+                               return_value=[fg.verdict(rid) for rid in (1, 2, 3)]), \
+             mock.patch.object(gate_fixer.gate, "drain_seat"), \
+             mock.patch.object(gate_fixer.gate, "breach", return_value="new") as breach, \
+             mock.patch.object(gate, "enqueue_isolated") as enqueue, \
+             mock.patch.object(gate_fixer.observer, "notify"):
+            with self.assertRaises(SystemExit):
+                gate_fixer.main()
+        enqueue.assert_not_called()
+        breach.assert_called_once()
+
     def shadow_beside_failed_verdict(self):
         """#2410 review: a failed verdict turn and a newer uncertain shadow-fix turn, and the
         rows the real retry plan re-arms there (the verdict turn only)."""
