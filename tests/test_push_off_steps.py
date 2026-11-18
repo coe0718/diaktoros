@@ -609,6 +609,17 @@ class AfterEnabling(Steps):
         blockers = self.report(queued=declined, inflight_fix=True)["blockers"]
         self.assertFalse([b for b in blockers if "no capacity" in b], blockers)
 
+    def test_a_declined_entry_under_a_live_fix_names_the_fix_already_out(self):
+        # #2078: with pushes on (no push-off step first) and no ledger row, a live fix mark makes
+        # the fix live: the fixer turn already out answers the verdict, not a re-delivery.
+        self.set_push(True)
+        declined = gate.declined_reason("fixer", "duplicate failed")
+        step = self.report(queued=declined, inflight_fix=True)["next"]
+        self.assertEqual(step["kind"], "fixer-push", step)
+        self.assertIn("the fixer turn already out answers the verdict", step["action"])
+        self.assertIn("the gate declined the fixer turn for head aaaaaaa", step["action"])
+        self.assertNotIn("re-deliver", step["action"])
+
     def test_a_reviewer_queue_entry_is_no_fixer_work_order(self):
         # Shadow review on #1510: the last queue entry read is any seat's, so a declined or
         # waiting reviewer entry was named a declined fixer turn, or a hold the drain starts.
