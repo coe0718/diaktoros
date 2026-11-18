@@ -1063,8 +1063,9 @@ any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; presen
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. Desktop then
 requests validated offline health for that loop and discloses “GitHub not probed from this
 caller”. A transport failure also falls back, labeled “GitHub probe unavailable”
-(not evidence of a GitHub outage); an HTTP 503 falls back labeled “Probed health read failed
-(HTTP 503)”, which names no origin: the route maps any unexpected error in the probed read
+(not evidence of a GitHub outage), and so does an HTTP error whose body is not JSON, such as a
+proxy's HTML 503, since the page reads a status only from a JSON error body (#2470); an HTTP 503
+with a JSON body falls back labeled “Probed health read failed (HTTP 503)”, which names no origin: the route maps any unexpected error in the probed read
 (local or network) to 503, and a proxy can return one too. Offline results show local checks only; unprobed checks are
 not passing. If both reads fail, the panel shows unavailable or retains last-good data with a
 bounded failure disclosure. Refresh GitHub explicitly retries the probe first. The stable
