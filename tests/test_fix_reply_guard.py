@@ -5,6 +5,7 @@ fixes, the guard ``fix_hold.hand_off`` and ``fix_hold._release`` apply. #2019: a
 GitHub read fails on one sweep keeps its "waits for a maintainer's reply" line.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import json
 import sys
 import time
 import unittest
@@ -124,6 +125,22 @@ class UnreadableKeepsTheWait(replies.Replies):
                 self.sweep()
                 self.assertIn(fix_reply.line(12), fix_hold.status_lines(self.loop, self.st))
                 self.assertEqual(fix_hold.explain_lines(self.st, 12), [fix_reply.line(12)])
+
+    def test_an_upgrade_never_brings_back_a_settled_wait(self):
+        # Vex on #2549 (F12): a wait in the file before STATE outlived its settled record's
+        # pruning, and status said again that a reply would queue a turn.
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        self.sweep()
+        (self.st.dir / fix_reply.WAITING).write_text(json.dumps(fix_reply.kept.waiting(self.st)))
+        (self.st.dir / fix_reply.STATE).unlink()           # as left by the version before STATE
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.line(12)])
+        self.reply(201, "jeremy")
+        self.sweep()                                        # queued: settled
+        later = SimpleNamespace(time_ns=lambda: time.time_ns() + 61 * 86400 * 10**9)
+        with mock.patch.object(fix_reply.kept, "time", later):
+            fix_reply.kept.commit(self.st, "13", fix_reply.kept.stamp(), wait=None)
+        self.assertEqual(fix_reply.status_lines(self.st), [])
+        self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
 
 
 class LedgerReadFails(replies.Replies):

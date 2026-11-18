@@ -3,7 +3,8 @@
 ``STATE`` holds one record per issue, ``{"<n>": {"stamp", "wait", "seen"}}``: ``wait`` the fixer
 comment it waits on a maintainer's reply to, for ``status``; ``seen`` a reply seen while the open
 PR listing could not be read, ``{"at"}`` when first seen (its retry window runs from it); and
-``stamp`` when the reads behind the record's last decision began.
+``stamp`` when the reads behind the record's last decision began. ``WAITING``, the file before
+``STATE``, is folded into it by the first commit, and removed once that write has landed.
 
 The sweep and a webhook's wake (``fix_reply.on_comment``) both decide about an issue from GitHub
 reads that take a while, in different processes, so one can finish its reads after the other
@@ -50,7 +51,8 @@ def guard(st) -> dict:
 
 
 def waiting(st) -> dict:
-    """``{"<n>": comment id}``: the records' waits, and the older file's for issues with none."""
+    """``{"<n>": comment id}``: the records' waits, and ``WAITING``'s for issues with none (until
+    the first commit folds it in)."""
     records = _records(st)
     found = {n: v for n, v in _read(st, WAITING).items() if n not in records}
     return {**found, **{n: r["wait"] for n, r in records.items() if r.get("wait") is not None}}
@@ -63,8 +65,9 @@ def commit(st, key: str, read_at: int, *, wait=KEEP, seen=KEEP, expect_at=None) 
     committed first, ``expect_at`` is given and the sighting is not that one, or the write
     fails."""
     with st.locked():
-        records = _records(st)
-        old = records.get(key) or {"wait": _read(st, WAITING).get(key)}
+        legacy = _read(st, WAITING)
+        records = {**{str(n): {"wait": v} for n, v in legacy.items()}, **_records(st)}
+        old = records.get(key) or {}
         if int(old.get("stamp") or 0) > read_at:
             return False
         if expect_at is not None and not (_entry(old.get("seen")) and old["seen"]["at"] == expect_at):
@@ -74,11 +77,16 @@ def commit(st, key: str, read_at: int, *, wait=KEEP, seen=KEEP, expect_at=None) 
                else seen}
         records[key] = {k: v for k, v in new.items() if v is not None}
         cutoff = stamp() - _STAMP_DAYS * 86400 * 10**9
-        records = {n: r for n, r in records.items()
-                   if set(r) - {"stamp"} or int(r.get("stamp") or 0) > cutoff}
+        records = {n: r for n, r in records.items() if n in legacy    # its tombstone (F12)
+                   or set(r) - {"stamp"} or int(r.get("stamp") or 0) > cutoff}
         try:
             st.kv_set_strict(st.dir / STATE, records)
         except Exception as exc:        # the record and its stamp stay as they were
             log(f"state write failed ({STATE}): {exc}")
             return False
+        if legacy:                      # now in STATE; a failed removal is retried next commit
+            try:
+                (st.dir / WAITING).unlink()
+            except OSError as exc:
+                log(f"state cleanup failed ({WAITING}): {exc}")
         return True

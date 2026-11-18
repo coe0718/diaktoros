@@ -198,30 +198,41 @@ class WebhookSettlesTheGuard(replies.Delivery):
         self.assertEqual(fix_reply.status_lines(self.st), [])
         self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
 
-    def test_a_delivery_whose_write_fails_leaves_the_record_whole_and_the_sweep_recovers(self):
-        # Vex on #2549 (F11): only the stamp failed to land, so a stale sweep erased the guard
-        # it ordered. The record and its stamp are one write now: it lands whole or not at all.
+    def test_a_stale_sweep_never_erases_a_newer_sighting_and_a_failed_write_loses_nothing(self):
+        # Vex on #2549 (F11, F13): a delivery sees the reply, listing down, after the sweep's
+        # ledger read; the sweep's comments read, from before the reply, then decides "no reply".
+        # Its stale decision must not erase the sighting, nor must a failed write later, or the
+        # reply is lost once its comment passes the cutoff.
         self.live = {**self.live, "updated_at": replies.iso(replies.TURN + 700)}
-        self.reply(201, "jeremy")
-        with cutoff(-120), mock.patch.object(gh, "open_prs_read", offline):
-            self.sweep()                        # guarded
-        state = self.st.dir / fix_reply.STATE
-        before, strict = state.read_text(), type(self.st).kv_set_strict
+        real, comments, began = self.sup.issue_fix_comment_waits, gh.issue_comments_read, []
 
-        def disk_error(st, path, data):     # every process's state object: the webhook's too
-            raise OSError("transient disk error")
+        def ledger(*args):
+            rows = real(*args)
+            if not began:                       # the sweep's own read: the delivery lands now
+                began.append(1)
+                self.reply(201, "jeremy")
+                self.deliver(self.comment())
+                began.append(2)
+            return rows
+
+        def stale(*args):                       # the sweep's read, from before the reply
+            return ([], "") if len(began) > 1 else comments(*args)
         with cutoff(-60), mock.patch.object(gh, "open_prs_read", offline), \
-                mock.patch.object(type(self.st), "kv_set_strict", disk_error):
-            self.assertFalse(fix_reply.kept.commit(self.st, "12", fix_reply.kept.stamp(), seen=None))
-            self.deliver(self.comment())
-        self.assertEqual(state.read_text(), before)
-        self.assertIs(type(self.st).kv_set_strict, strict)
+                mock.patch.object(gh, "issue_comments_read", stale), \
+                mock.patch.object(self.sup, "issue_fix_comment_waits", ledger):
+            self.sweep()
         self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-        with cutoff(60):                        # disk and listing back, past the comment's cutoff
+
+        def disk_error(st, path, data):     # every process's state object
+            raise OSError("transient disk error")
+        with cutoff(60), mock.patch.object(gh, "open_prs_read", offline), \
+                mock.patch.object(type(self.st), "kv_set_strict", disk_error):
+            self.sweep()                        # past the comment's cutoff, and nothing written
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        with cutoff(120):                       # disk and listing back
             self.sweep()
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
         self.assertEqual(fix_reply.status_lines(self.st), [])
-
 
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in their own modules."""
