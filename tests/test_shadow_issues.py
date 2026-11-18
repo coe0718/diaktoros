@@ -200,8 +200,9 @@ class FilePending(unittest.TestCase):
         GitHub does for a token with push access; with ``labelled`` it drops them (#1589), and
         the labels endpoint answers with ``labelled(names)``: the issue's labels, or a refusal.
         ``audit``: what stands in for the broker's audit writer (default: a no-op mock).
-        ``stale``: the issue POST records that status and the labels write records none, as a
-        write that never reaches ``gh.request`` would leave it (#2139)."""
+        ``stale``: the issue POST records that status (or, for ``"unsent"``, an unsent request)
+        and the labels write records none, as a write that never reaches ``gh.request`` would
+        leave it (#2139)."""
         posts = []
 
         def write(loop, path, method, body, login):
@@ -212,7 +213,9 @@ class FilePending(unittest.TestCase):
                 if stale is None:
                     gh._LAST.status = gh.status_of(why) or (200 if data is not None else None)
                 return data, why
-            if stale is not None:
+            if stale == "unsent":
+                gh._LAST.unsent = True
+            elif stale is not None:
                 gh._LAST.status = stale
             kept = body["labels"] if labelled is None else []
             return {"number": 100 + len(posts), "labels": [{"name": x} for x in kept]}, ""
@@ -462,7 +465,9 @@ class FilePending(unittest.TestCase):
         # #2139: _shadow_labels clears gh._LAST before the labels write. A write that returns
         # without going through gh.request leaves the issue POST's status behind; without the
         # reset it was read as the labels write's answer (a 403: a permission gap).
-        for stale, title in ((201, "Created answer"), (403, "Forbidden leftover")):
+        # A leftover ``unsent`` would say a write that left no answer definitely did not land.
+        for stale, title in ((201, "Created answer"), (403, "Forbidden leftover"),
+                             ("unsent", "Unsent leftover")):
             with self.subTest(stale=stale):
                 run = self.recorded(title)
                 self.file(labelled=lambda _n: (None, "refused locally"), stale=stale)
