@@ -40,7 +40,9 @@ def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, tit
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):
         raise broker._denied("GitHub issue write did not return a successful response", why)
-    broker._audit(loop, repo, number, head, "", "reviewer", "file_issue", login)
+    # GitHub confirmed the issue: an audit failure is said, never raised, so its number is kept
+    # (#2511, as #1640 did for the reader's filings).
+    _audit_confirmed(loop, repo, number, head, "file_issue", login, role="reviewer")
     return result["number"]
 
 
@@ -167,11 +169,11 @@ def _label_gap(missing: list[str], why: str, status: int | None, unanswered: boo
 
 
 def _audit_confirmed(loop: dict, repo: str, number: int, head: str, operation: str,
-                     login: str) -> None:
-    """The reader's audit line after GitHub confirmed the shadow issue: a failure to write it is
+                     login: str, role: str = "reader") -> None:
+    """The ``role``'s audit line after GitHub confirmed a filed issue: a failure to write it is
     said on stderr, never raised, so the filed issue's number is never lost to it."""
     try:
-        broker._audit(loop, repo, number, head, "", "reader", operation, login)
+        broker._audit(loop, repo, number, head, "", role, operation, login)
     except Exception as exc:  # noqa: BLE001 - the issue exists: its outcome stands
         print(f"diaktoros broker: audit record {operation} not written for #{number}: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
