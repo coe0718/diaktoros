@@ -130,6 +130,63 @@ class Stale(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertIn("never reported", got[0][1]["outcome"])
 
+    def carried(self, approved_age: float, merged_age: float, moved: bool = False,
+                number: int = 7) -> list:
+        """An approval at H1 the host's base merge carried to H2 (#1785): the reviewer approved
+        ``approved_age`` ago, the merge made H2 ``merged_age`` ago. ``moved``: as GitHub reports
+        it after a clean merge, the approval itself at H2 (#2402). ``number``: the PR the merge
+        record names."""
+        from diaktoros import base_merge
+        base_merge._record(self.st, H2, {"number": number, "from": H1, "review": 1,
+                                         "base": "c" * 40, "at": NOW - merged_age})
+        approval = review("APPROVED", H2 if moved else H1, NOW - approved_age)
+        approval["pull_request_url"] = "https://api.github.com/repos/acme/widgets/pulls/7"
+        return [approval]
+
+    def test_an_approval_github_moved_to_the_merged_head_waits_from_the_merge_too(self):
+        # Review of #2540, F1: after a clean base merge GitHub reports the approval itself at the
+        # new head, so ``carried`` finds nothing at the old one. The merge record still dates it.
+        empty = ci.CIState(passed=["lint"])
+        moved = self.carried(approved_age=7200, merged_age=60, moved=True)
+        self.assertEqual(self.sweep(empty, moved, head=H2), [])
+        got = self.sweep(empty, self.carried(approved_age=7200, merged_age=3600, moved=True),
+                         head=H2)
+        self.assertEqual(len(got), 1)
+        self.assertIn("never reported", got[0][1]["outcome"])
+
+    def test_a_new_approval_at_the_merged_head_keeps_its_own_time(self):
+        # A genuine approval at H2, submitted after the merge, is another review: it never takes
+        # the carried one's merge time, however old the merge is.
+        self.carried(approved_age=7200, merged_age=3600, moved=True)
+        fresh = {**review("APPROVED", H2, NOW - 60), "id": 2,
+                 "pull_request_url": "https://api.github.com/repos/acme/widgets/pulls/7"}
+        self.assertEqual(self.sweep(ci.CIState(passed=["lint"]), [fresh], head=H2), [])
+
+    def test_a_merge_record_for_another_pr_dates_nothing_here(self):
+        stale = self.carried(approved_age=7200, merged_age=60, moved=True, number=8)
+        got = self.sweep(ci.CIState(passed=["lint"]), stale, head=H2)
+        self.assertEqual(len(got), 1)
+
+    def test_a_carried_approval_waits_from_the_merge_not_the_old_approval(self):
+        # #2291: a head the host just made has no CI yet. The old approval is hours old, but the
+        # missing check's wait starts when the merge carried it to this head.
+        empty = ci.CIState(passed=["lint"])
+        self.assertEqual(self.sweep(empty, self.carried(approved_age=7200, merged_age=60), head=H2),
+                         [])
+        self.assertFalse(stale_approval.is_stale(self.st.watch(), 7, H2))
+        # Past the wait from the merge, the missing check does make it stale.
+        got = self.sweep(empty, self.carried(approved_age=7200, merged_age=3600), head=H2)
+        self.assertEqual(len(got), 1)
+        self.assertIn("never reported", got[0][1]["outcome"])
+        self.assertTrue(stale_approval.is_stale(self.st.watch(), 7, H2))
+
+    def test_a_carried_approval_still_goes_stale_at_once_on_red(self):
+        # Only the missing-check wait moves: a red check at the carried head is stale at once.
+        got = self.sweep(ci.CIState(failed=["tests"]), self.carried(approved_age=7200, merged_age=60),
+                         head=H2)
+        self.assertEqual(len(got), 1)
+        self.assertIn("is red", got[0][1]["outcome"])
+
     def test_green_or_running_or_unreadable_is_not_flagged(self):
         for state in (ci.CIState(passed=["tests"]), ci.CIState(pending=["tests"]), None):
             self.assertEqual(self.sweep(state, self.approved()), [])
