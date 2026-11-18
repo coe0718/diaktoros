@@ -29,13 +29,14 @@ NO_LEDGER = "no run ledger"         # an empty window; every other gap is an unr
 def prs_since(db: Path, repo: str, since: float) -> tuple[list[int], str]:
     """``(PR numbers with a turn since `since`, oldest first; a gap or "")``. Read-only. The issue
     seats' rows are keyed by issue number, so they are left out, as ``views.closed_history``
-    leaves them out (#2179)."""
+    leaves them out (#2179). Only an absent ledger is ``NO_LEDGER``: a directory or other
+    non-file at its path is unreadable, never an empty window (#2181)."""
     try:
         con = views.read_only_connect(db)
     except sqlite3.Error as exc:
         return [], f"the run ledger is unreadable ({type(exc).__name__})"
-    if con is None:
-        return [], NO_LEDGER
+    if con is None:     # nothing at the path is an empty window; a directory there is not
+        return [], (f"the run ledger is not a file ({db})" if os.path.lexists(db) else NO_LEDGER)
     try:
         seats = ",".join("?" * len(ISSUE_SEATS))
         rows = con.execute("SELECT pr, MIN(created) AS first FROM runs WHERE repo=? AND "

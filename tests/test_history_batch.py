@@ -120,12 +120,12 @@ class Batch(fg.Base):
         self.assertEqual([p for p in self.reads if p.endswith(("/9", "/10"))], [])
 
     def test_an_unreadable_ledger_is_not_an_empty_window(self):
-        """#2181: nothing is known of the window, so no "nothing in it" line, and exit 2."""
-        self.db.write_bytes(b"not a database" * 100)
-        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
-        self.assertEqual(rc, 2, out)
-        self.assertIn("the run ledger could not be read, so the window is unknown", out)
-        self.assertNotIn("no merged PR", out)
+        """#2181: a corrupt ledger, or a directory at its path, is an unknown window: exit 2."""
+        for make in (lambda: self.db.write_bytes(b"not a database" * 100), self.db.mkdir):
+            self.db.unlink(missing_ok=True)
+            make()
+            rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
+            self.assertEqual((rc, "window is unknown" in out, "no merged PR" in out), (2, True, False))
 
     def test_a_bad_flag_set_exits_2(self):
         for argv in ((), ("--pr", "7", "--since", "7d", "--out", "x"), ("--since", "7d"),
