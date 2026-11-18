@@ -7,7 +7,8 @@ only a test of that one case caught it.
 
 A ``def`` decorated with its own name's ``.setter``, ``.getter`` or ``.deleter`` builds on the
 earlier binding instead of replacing it (a property and its setter), so it is not a second
-definition (#2142).
+definition (#2142). A second accessor of one kind is: a second ``@x.setter`` replaces the first
+setter as silently as a second ``def`` (#2536 review F2).
 """
 from __future__ import annotations
 
@@ -16,30 +17,35 @@ import ast
 import collections
 import pathlib
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 ACCESSORS = {"setter", "getter", "deleter"}
 
 
-def _extends(node) -> bool:
-    """``@x.setter def x`` (or ``.getter``/``.deleter``): it extends the property ``x`` already
-    names rather than replacing it (#2142)."""
-    return any(isinstance(d, ast.Attribute) and d.attr in ACCESSORS
-               and isinstance(d.value, ast.Name) and d.value.id == node.name
-               for d in getattr(node, "decorator_list", []))
+def _kind(node) -> str:
+    """How ``node`` binds its name: ``"setter"``, ``"getter"`` or ``"deleter"`` for ``@x.setter
+    def x`` and the like, which extend the property ``x`` already names rather than replacing it
+    (#2142); ``"def"`` for anything else. Each kind is counted apart, so a property and one of
+    each accessor is one definition, and a repeat of any one kind is a repeat (#2536 review
+    F2: a second ``@x.setter`` replaced the first setter and the scan let it pass)."""
+    return next((d.attr for d in getattr(node, "decorator_list", [])
+                 if isinstance(d, ast.Attribute) and d.attr in ACCESSORS
+                 and isinstance(d.value, ast.Name) and d.value.id == node.name), "def")
 
 
 def repeated(source: str) -> list[str]:
-    """Each name a module body or a class body binds with more than one def/class."""
+    """Each name a module body or a class body binds with more than one def/class of one kind
+    (``_kind``)."""
     tree = ast.parse(source)
     scopes = [("", tree.body)] + [(f"{n.name}.", n.body) for n in ast.walk(tree)
                                   if isinstance(n, ast.ClassDef)]
     found = []
     for prefix, body in scopes:
-        counts = collections.Counter(n.name for n in body
-                                     if isinstance(n, DEFS) and not _extends(n))
-        found += [f"{prefix}{name}" for name, k in counts.items() if k > 1]
+        counts = collections.Counter((n.name, _kind(n)) for n in body if isinstance(n, DEFS))
+        found += [f"{prefix}{name}" for name in dict.fromkeys(
+            name for (name, _), k in counts.items() if k > 1)]
     return found
 
 
@@ -63,11 +69,33 @@ class OneDefinition(unittest.TestCase):
         prop = "class C:\n @property\n def x(self): pass\n @x.setter\n def x(self, v): pass\n"
         self.assertEqual(repeated(prop), [])
         self.assertEqual(repeated(prop + " @x.deleter\n def x(self): pass\n"), [])
+        self.assertEqual(repeated(prop + " @x.getter\n def x(self): pass\n"
+                                         " @x.deleter\n def x(self): pass\n"), [])
         # A second plain def, or another name's setter, still replaces it.
         self.assertEqual(repeated(prop + " def x(self): pass\n"), ["C.x"])
         self.assertEqual(repeated(prop + " @property\n def y(self): pass\n"
                                          " @y.setter\n def x(self, v): pass\n"), ["C.x"])
 
+    def test_a_second_accessor_of_one_kind_is_a_repeat(self):
+        # #2536 review F2: the second ``@x.setter`` replaces the first setter, so only one of
+        # the two runs; every self-named accessor used to be left out of the count.
+        prop = "class C:\n @property\n def x(self): return 1\n @x.setter\n def x(self, v): pass\n"
+        self.assertEqual(repeated(prop + " @x.setter\n def x(self, v): print('replacement')\n"),
+                         ["C.x"])
+        for kind in ("getter", "deleter"):
+            twice = f" @x.{kind}\n def x(self): pass\n" * 2
+            with self.subTest(kind=kind):
+                self.assertEqual(repeated(prop + twice), ["C.x"])
+        # A second property under the name is a second plain def, reported once.
+        self.assertEqual(repeated(prop + prop[9:]), ["C.x"])
+
+    def test_the_scan_would_report_a_property_without_the_accessor_rule(self):
+        # #2536 review F1: the scan and this test share a file, so the change proof's base run
+        # (the PR's tests on the base) has the rule too; undoing it here shows it is needed.
+        prop = "class C:\n @property\n def x(self): pass\n @x.setter\n def x(self, v): pass\n"
+        with mock.patch(f"{__name__}._kind", lambda node: "def"):    # the base: every def
+            self.assertEqual(repeated(prop), ["C.x"])
+        self.assertEqual(repeated(prop), [])
 
 if __name__ == "__main__":
     unittest.main()
