@@ -159,8 +159,12 @@ def _queue_place(c) -> None:
         if not isinstance(entry, dict):
             continue
         if c.head and entry.get("head") != c.head:
+            # The drain leaves an unverified POST as is before its stale-head drop (#2281).
+            fate = ("an unverified route POST, which the drain leaves as is at any head — "
+                    "reconcile it, then remove the entry by hand" if drain.is_route_uncertain(entry)
+                    else "the watchdog drops it, not retargets it")
             c.stale_queues.append(f"{seat} queue targets head {str(entry.get('head') or '?')[:7]}, "
-                                  f"not current head {c.head[:7]} — the watchdog drops it, not retargets it")
+                                  f"not current head {c.head[:7]} — {fate}")
             queue_bits.append(c.stale_queues[-1])
             continue
         order = sorted(items, key=lambda name: _mark_time(items.get(name), 0.0))
@@ -584,6 +588,8 @@ def _local_state(c) -> None:
     # #1004 part 3 (#1353): an upheld shadow review the fixer answers waits on no person; the
     # shadow hold says the fixer answers it, and the next event is the fixer's.
     c.shadow_fix = gate.shadows.shadow_fix_owed(c.loop, c.marker, c.head)
+    # #2262: that fixer turn may have ended with no push, and the sweep re-arms only some.
+    c.shadow_turn = explain_next.shadow_fix_turn(c) if c.shadow_fix else ("", "", "")
     if c.shadow_fix:
         c.parked, c.ruled = False, None
 
@@ -716,6 +722,9 @@ def _gate_blockers(c) -> None:
         c.blockers.append(f"the author {c.author} is not one of {c.served}")
     if c.shadow_held:
         c.blockers.append(f"shadow review: {c.shadow_held}")
+    if c.shadow_fix and c.shadow_turn[0] and not c.shadow_turn[1]:      # #2262
+        c.blockers.append(f"shadow fix: the shadow-fix fixer turn at head {c.short} is "
+                          f"{c.shadow_turn[0]} with no fix pushed, and no watchdog sweep re-arms it")
     if c.ruled:
         c.blockers.append(f"ruled: the adjudicator ruled {c.ruled} at head {c.short}; the "
                           "decision is yours")
@@ -780,12 +789,16 @@ def _run_blockers(c) -> None:
         c.blockers.append(f"non-verdict review at head {c.short} ({'/'.join(c.head_states)}) "
                           "does not suppress a fresh reviewer request")
     # At the cap the fixer gate starts no fix by design (gate_fixer: not a work order, #1494). A
-    # fixer turn in the ledger, uncertain included, was started: not "did not start one" (#1505).
-    if (c.at_head and not c.fix_live and "fixer" not in c.ledgered and not c.queued_seat
-            and not c.push_off and not c.review_only and not c.ruling and not c.disputed
-            and not c.cap_spent):
-        c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run out "
-                          f"— the fixer gate did not start one for that delivery")
+    # fixer turn in the ledger, uncertain included, was started: not "did not start one" (#1505);
+    # one that ended with no push (failed, cancelled, succeeded) is named as such (#2077).
+    if (c.at_head and not c.fix_live and not c.queued_seat and not c.push_off
+            and not c.review_only and not c.ruling and not c.disputed and not c.cap_spent):
+        if not c.fixer_turn:
+            c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run "
+                              f"out — the fixer gate did not start one for that delivery")
+        elif c.fixer_turn not in LIVE_TURN:
+            c.blockers.append(f"{explain_next.shown_turn(c)} at head {c.short} is "
+                              f"{c.fixer_turn} with no fix pushed — nothing restarts it by itself")
     if (c.request_pending and not c.held and not c.inflight_review and not c.at_head
             and not c.approved and not c.ruling and "reviewer" not in c.ledgered):
         c.blockers.append(f"a review request for {c.loop['reviewer_seat']} is pending at head "
