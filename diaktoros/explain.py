@@ -159,8 +159,12 @@ def _queue_place(c) -> None:
         if not isinstance(entry, dict):
             continue
         if c.head and entry.get("head") != c.head:
+            # The drain leaves an unverified POST as is before its stale-head drop (#2281).
+            fate = ("an unverified route POST, which the drain leaves as is at any head — "
+                    "reconcile it, then remove the entry by hand" if drain.is_route_uncertain(entry)
+                    else "the watchdog drops it, not retargets it")
             c.stale_queues.append(f"{seat} queue targets head {str(entry.get('head') or '?')[:7]}, "
-                                  f"not current head {c.head[:7]} — the watchdog drops it, not retargets it")
+                                  f"not current head {c.head[:7]} — {fate}")
             queue_bits.append(c.stale_queues[-1])
             continue
         order = sorted(items, key=lambda name: _mark_time(items.get(name), 0.0))

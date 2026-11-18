@@ -534,6 +534,30 @@ class AfterEnabling(Steps):
         fire.assert_not_called()
         self.assertEqual(self.st.queue_items("fixer")[f"{fg.REPO}#7"]["reason"], reason)
 
+    def test_a_stale_head_entry_is_dropped_unless_its_post_is_unverified(self):
+        # #2281: a queue entry for an older head read "the watchdog drops it", but the drain
+        # checks an unverified route POST before the stale-head drop and leaves that one as is.
+        from diaktoros import drain as drain_mod
+        self.set_push(True)
+        key, old = f"{fg.REPO}#7", "0" * 40
+        for reason, dropped in ((drain_mod.ROUTE_UNCERTAIN, False), ("waiting for a slot", True)):
+            with self.subTest(reason=reason):
+                self.st.queue_add("fixer", key, old, "url", reason)
+                blockers = explain.explain(self.loop, self.st, 7, {
+                    "pr": fg.LIVE, "reviews": [fg.verdict()], "armed": True,
+                    "read_at": time.time()})["blockers"]
+                stale = [b for b in blockers if b.startswith("fixer queue targets head 0000000")]
+                self.assertEqual(len(stale), 1, blockers)
+                self.assertEqual("the watchdog drops it" in stale[0], dropped, stale[0])
+                started, fire = self.drain()                   # what the blocker says
+                self.assertEqual(started, 0)
+                fire.assert_not_called()
+                self.assertEqual(key in self.st.queue_items("fixer"), not dropped)
+                if not dropped:
+                    self.assertIn("unverified route POST", stale[0])
+                    self.assertIn("leaves as is at any head", stale[0])
+                    self.st.queue_pop("fixer", key)
+
     def ledgered(self, state, error="", seat="fixer"):
         """A ``seat`` turn (the fixer's by default) at this head in ``state``, and the queue entry
         the gate declined it with."""
