@@ -60,8 +60,7 @@ def _records(loop: dict) -> dict:
 
 def carried(loop: dict, reviews: list, head: str) -> list:
     """The approval the host's base merge carried to ``head``, as a copy at ``head`` marked
-    ``carried_from`` and ``carried_at`` (when the merge made ``head``, from its record: the approval
-    reached ``head`` then, #2291); ``[]`` when there is none. ``gate`` counts it with the head's own reviews.
+    ``carried_from``; ``[]`` when there is none. ``gate`` counts it with the head's own reviews.
     The approval must still be the old head's latest effective verdict, the recorded review (the
     reviewer's, or the adjudicator's on its ACCEPT), on the recorded PR: the carried one is never
     more than the old head's own."""
@@ -79,7 +78,21 @@ def carried(loop: dict, reviews: list, head: str) -> list:
             or latest.get("id") != record.get("review")
             or gate._review_pr(latest, loop["repo"]) != record.get("number")):
         return []
-    return [{**latest, "commit_id": head, "carried_from": old, "carried_at": record.get("at")}]
+    return [{**latest, "commit_id": head, "carried_from": old}]
+
+
+def carried_at(loop: dict, number: int, head: str, review) -> float | None:
+    """When the host's merge made ``head`` and carried ``review`` there (#2291): its record's
+    time, when ``review`` is the approval it recorded on this PR, whether as ``carried``'s copy or
+    as the review GitHub itself moved to the merged head (#2402). None otherwise: a new approval
+    at ``head`` is another review, with its own time."""
+    record = _records(loop).get(head) if head else None
+    if (not isinstance(record, dict) or not isinstance(review, dict)
+            or review.get("id") != record.get("review") or record.get("number") != number
+            or gate._review_pr(review, loop["repo"]) != number):
+        return None
+    at = record.get("at")
+    return float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
 
 
 def ruled_at(loop: dict, reviews: list, ruling: dict, head: str, approval: dict) -> bool:
