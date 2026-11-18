@@ -75,7 +75,9 @@ def timeouts(log: str) -> bool:
 
 def _failed_job(loop: dict, view: ci.CIState, name: str, head: str, runs: dict):
     """``(run id, conclusion, log)`` of a failed check that is an Actions job of this repository at
-    ``head``; None when it is not one, or anything is unreadable."""
+    ``head``; None when it is not one, or anything is unreadable. A log over ``LOG_LIMIT`` is
+    unreadable too: ``gh.read_text`` keeps only its tail, and a failure cut off above the tail
+    must not let the rest pass for a flake (#2285). One byte past the limit is read to tell."""
     job_id = view.ids.get(name)
     if type(job_id) is not int:
         return None
@@ -83,8 +85,10 @@ def _failed_job(loop: dict, view: ci.CIState, name: str, head: str, runs: dict):
     if job is None:
         return None
     log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
-                       login=loop.get("read_token"), limit=ci_tests.LOG_LIMIT)
-    return (job["run_id"], job.get("conclusion"), log) if log else None
+                       login=loop.get("read_token"), limit=ci_tests.LOG_LIMIT + 1)
+    if not log or len(log.encode()) > ci_tests.LOG_LIMIT:
+        return None                               # no log, or only its tail (#2285)
+    return job["run_id"], job.get("conclusion"), log
 
 
 def flake(loop: dict, view: ci.CIState, head: str) -> dict | None:

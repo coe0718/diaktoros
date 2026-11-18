@@ -145,6 +145,18 @@ class Flake(unittest.TestCase):
         with mock.patch.object(main_flake, "_failed_job", return_value=None):
             self.assertIsNone(main_flake.flake(LOOP, red(), HEAD))
 
+    def test_a_log_over_the_limit_is_no_flake(self):
+        """#2285: a real failure above the kept tail of an oversized log is not left out, so a
+        tail of only timeouts is no flake; a log under the limit is still judged."""
+        whole = FAILED_LOG + ("x" * 99 + "\n") * (ci_tests.LOG_LIMIT // 100) + TIMEOUT_LOG
+        tail = lambda _loop, _path, login=None, limit=0: whole[-limit:]  # noqa: E731  as gh keeps
+        job = {"run_id": 77, "conclusion": "failure"}
+        with mock.patch.object(ci_tests, "_job_at_head", return_value=job), \
+                mock.patch.object(gh, "read_text", side_effect=tail):
+            self.assertIsNone(main_flake.flake(LOOP, red(), HEAD))
+            whole = TIMEOUT_LOG
+            self.assertEqual(main_flake.flake(LOOP, red(), HEAD)["why"], "timed out")
+
     def test_off_never_reruns(self):
         self.assertTrue(self.sweep(red(), loop={**LOOP, "main_flake_rerun": False}))
         self.assertEqual(self.posts, [])
