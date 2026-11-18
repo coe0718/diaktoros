@@ -67,6 +67,31 @@ def closing_numbers(loop: dict, number: int, body: str | None = None) -> list[in
     return found[:MAX_ISSUES]
 
 
+def cited_own_work(loop: dict, number: int, pr_body: object, head_ref: object,
+                   review_body: object) -> list[int]:
+    """#754: the PR's own numbers that a blocking finding names, in order of first mention.
+
+    The PR's own numbers are the PR itself, the issues its body closes (``closing_numbers`` on
+    the body given, so nothing is read again) and the issue of a ``diaktoros/issue-N`` branch
+    (``config.ISSUE_FIX_BRANCH_RE``). Nothing else: no declared dependency, no ledger, no read.
+    The finding text is the blocking findings in the review's own body (its ``F<n>`` lines
+    that are new or still open, as ``findings.parse`` reads them), so a mention in the
+    Requirements section or a summary does not count. A number counts only as a literal
+    same-repo ``#N`` (``_REFERENCE``, as ``referenced_numbers`` reads it): ``#123`` is not in
+    ``#1234``, and ``other/repo#123`` is another repository's. Literal on purpose: no model
+    judges whether the finding asks for that work."""
+    from . import config, findings
+    own = {number, *(closing_numbers(loop, number, pr_body if isinstance(pr_body, str) else "")
+                     or [])}
+    branch = re.fullmatch(config.ISSUE_FIX_BRANCH_RE, head_ref if isinstance(head_ref, str) else "")
+    if branch:
+        own.add(int(branch.group(1)))
+    blocking = [rest for _, kind, rest in findings.parse(review_body if isinstance(review_body, str)
+                                                         else "")
+                if kind in ("new", "open")]
+    return [value for value in referenced_numbers(blocking, ()) if value in own]
+
+
 def maintainers_among(loop: dict, comments: list, newest: int | None = COMMENTS_MAX
                       ) -> list[tuple[str, str, str]]:
     """``[(login, created_at, body)]`` of the maintainers' comments among ``comments`` (oldest

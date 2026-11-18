@@ -74,6 +74,8 @@ _BELOW_CAP_HOLD = {
     "dispute": ("the fixer's dispute holds this head below the cap: the fixer gate starts no fix "
                 "turn, and the reviewer gate reviews it again only if a maintainer re-requests "
                 "the disputed review"),
+    gate.CYCLE_ESCALATION: ("nothing else fires for this PR (a blocking finding asks for the PR's "
+                            "own work, #754: that escalation stops both gates below the cap)"),
 }
 
 

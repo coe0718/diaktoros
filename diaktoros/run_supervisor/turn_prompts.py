@@ -310,6 +310,11 @@ def adjudication_situation(marker: dict) -> str:
     if by == 'dispute':
         return ("the fixer answered the latest verdict as not a defect and pushed nothing — the "
                 "sides disagree, which is why this is a ruling and not another round")
+    if by == 'cycle':
+        return ("a blocking finding in the latest verdict names this PR itself or an issue it "
+                "closes (see **Why it stopped**): the review asks for the work this PR exists to "
+                "deliver, so a fix round could not answer it. Rule on whether that finding "
+                "blocks this PR")
     return ("the operator asked for a ruling at this head instead of waiting for another "
             "round")
 
