@@ -367,7 +367,7 @@ class LoopState:
             return
         lines = self.log.read_text(errors="replace").splitlines(keepends=True)
         lines = lines[-LOG_KEEP:]
-        size = sum(len(l.encode()) for l in lines)
+        size = sum(len(line.encode()) for line in lines)
         while len(lines) > 1 and size > LOG_PRUNE_BYTES:
             size -= len(lines.pop(0).encode())
         _atomic_publish(self.log, "".join(lines))

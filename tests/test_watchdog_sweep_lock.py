@@ -8,7 +8,6 @@ import pathlib
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest import mock
 
@@ -73,7 +72,7 @@ class SweepLock(unittest.TestCase):
             t.join(10)
 
         self.run_with(probe, body)
-        alerts = [l for l in results["first"] + results["second"] if "cannot read GitHub" in l]
+        alerts = [alert for alert in results["first"] + results["second"] if "cannot read GitHub" in alert]
         self.assertEqual(len(alerts), 1, results)
         self.assertEqual(results["second"], [])
 

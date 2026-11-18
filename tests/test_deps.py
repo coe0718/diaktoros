@@ -728,7 +728,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_the_worker_records_every_phase_the_turn_reports(self):
         from types import SimpleNamespace
-        from diaktoros import config, gh, run_supervisor, seat_model, trusted_turn
+        from diaktoros import config, gh, seat_model, trusted_turn
         from diaktoros.run_supervisor import Supervisor, views
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
                          hermes_home=self.root)

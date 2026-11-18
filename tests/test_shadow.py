@@ -480,7 +480,8 @@ class ProductionTurn(unittest.TestCase):
         # in the queueing second (stamped T, queued at T + 0.4) may be the real verdict: hidden.
         # One from the second before is shown; an unreadable stamp fails closed.
         t = 1_700_000_000
-        stamp = lambda s: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s))
+        def stamp(s):
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s))
         earlier = {"id": 1, "state": "COMMENTED", "submitted_at": stamp(t - 1),
                    "commit_id": "b" * 40, "user": {"login": "reviewer"}, "body": "old round"}
         same = {"id": 2, "state": "APPROVED", "submitted_at": stamp(t),

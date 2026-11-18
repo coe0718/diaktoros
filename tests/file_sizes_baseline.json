@@ -63,7 +63,7 @@
     "diaktoros/safe_push.py::_git_cas": 149,
     "diaktoros/safe_push.py::open_branch": 86,
     "diaktoros/safe_push.py::push": 82,
-    "diaktoros/safe_push.py::update_branch": 86,
+    "diaktoros/safe_push.py::update_branch": 85,
     "diaktoros/seat_model.py::describe_seat_wire": 140,
     "diaktoros/seat_model.py::extras_for": 84,
     "diaktoros/seat_model.py::resolve_profile": 93,

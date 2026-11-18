@@ -8,7 +8,6 @@ import io
 import pathlib
 import sys
 import tempfile
-import time
 import types
 import unittest
 from contextlib import redirect_stdout

@@ -15,7 +15,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import ci, explain, gh, stale_approval, state as state_mod  # noqa: E402
+from diaktoros import ci, explain, stale_approval, state as state_mod  # noqa: E402
 from diaktoros.gate import failures as gate_failures  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402

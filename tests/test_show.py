@@ -3,7 +3,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import unittest
 
-from diaktoros import cli, config, observer, show
+from diaktoros import config, observer, show
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from test_token_file_settings import TokenFileSettingsTests as _Base, SENTINEL

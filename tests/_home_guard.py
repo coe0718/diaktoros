@@ -32,7 +32,6 @@ import os
 import pathlib
 import shutil
 import tempfile
-import unittest
 
 GUARD_ENV = "DIAKTOROS_TEST_HOME_GUARD"
 # Inherited settings that could point a test at real state; the fixtures set their own. Both

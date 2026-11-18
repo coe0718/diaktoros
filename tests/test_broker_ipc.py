@@ -15,9 +15,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import gh
-from diaktoros.broker import ipc as broker_ipc
-from scripts import broker_client
+from diaktoros import gh  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
+from scripts import broker_client  # noqa: E402
 
 HEAD = "a" * 40
 REPO = "acme/widgets"
@@ -204,8 +204,9 @@ class BrokerIPCTests(unittest.TestCase):
                   "fixer": False}
         server = self.start()
         files = [{"filename": "src/a.py", "patch": "@@ -1,1 +1,5 @@\n+x"}]
-        block = lambda text: {"operation": "review", "verdict": "REQUEST_CHANGES",
-                              "body": text + "\nNot verified: nothing\n"}
+        def block(text):
+            return {"operation": "review", "verdict": "REQUEST_CHANGES",
+                    "body": text + "\nNot verified: nothing\n"}
         with mock.patch.object(finding_answers, "_read_answers", return_value=[answer]), \
                 mock.patch.object(gh, "pr_files_read", return_value=(files, "")), \
                 mock.patch.object(ci, "read", return_value=ci.CIState()):
@@ -231,8 +232,9 @@ class BrokerIPCTests(unittest.TestCase):
         listed = [{"filename": f"f{i}.py", "patch": "@@ -1 +1 @@\n+x"} for i in range(gh.PR_FILES_LISTING_LIMIT)]
         tail = [("added", "f3000.py")]
         tail_patch = mock.patch.object(pr_facts, "unlisted_changes", return_value=tail)
-        block = lambda text: {"operation": "review", "verdict": "REQUEST_CHANGES",
-                              "body": text + "\nNot verified: nothing"}
+        def block(text):
+            return {"operation": "review", "verdict": "REQUEST_CHANGES",
+                    "body": text + "\nNot verified: nothing"}
         with mock.patch.object(gh, "pr_files_read", return_value=(listed, "")), \
                 mock.patch.object(ci, "read", return_value=ci.CIState()), tail_patch as named:
             server = self.start()
@@ -322,8 +324,9 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertFalse(any(call[0].endswith("/requested_reviewers") for call in self.calls))
 
     def test_client_waits_for_slow_writes_and_reports_unknown_outcome(self):
-        from diaktoros import broker_client as sandbox_client, safe_push
-        import contextlib, io
+        from diaktoros import broker_client as sandbox_client
+        import contextlib
+        import io
         # A real push spends up to 90s in each of fetch and push before GitHub calls.
         for timeout in (broker_client.WRITE_TIMEOUT, sandbox_client.WRITE_TIMEOUT,
                         broker_ipc.WRITE_TIMEOUT):

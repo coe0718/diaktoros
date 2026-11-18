@@ -19,8 +19,8 @@ a lock-named file holding data is archived) and in-progress temp files (``util.a
 name shape *and* held open by their writer), so ``restore`` never writes them back. A listed file
 that is gone by the time it is read (a temp renamed into place, an ``artifacts/<n>/`` file
 cleaned up) is left out as well, not a failed backup. The manifest's ``skipped`` names every temp
-and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print them
-(``cli.lifecycle._report_left_out``).
+and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print their count
+and the first five names (``cli.lifecycle._left_out``, #2417, #2459).
 
 Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
 archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (``DEFAULT_KEEP``;
@@ -332,13 +332,13 @@ def _listed_files(loops: list[dict]) -> tuple[list[tuple[pathlib.Path, pathlib.P
 
 def _manifest(loops: list[dict], skipped: list[str], half_moved: dict | None) -> dict:
     """``create``'s manifest before any member is added; ``migrating`` is ``half_moved``."""
-    return {"version": VERSION, "created": time.time(), "loops": [l["id"] for l in loops],
+    return {"version": VERSION, "created": time.time(), "loops": [loop["id"] for loop in loops],
             "files": [], "skipped": skipped,
-            "state_dirs": sorted({str(config.state_dir(l)) for l in loops}),
+            "state_dirs": sorted({str(config.state_dir(loop)) for loop in loops}),
             "routes": {name: entry for name, entry in routes.all_routes().items()
                        if isinstance(entry, dict) and route_intent.owned(entry)},
             "cron": watchdog_job(),
-            "tokens": {l["id"]: token_paths(l) for l in loops}, "migrating": half_moved}
+            "tokens": {loop["id"]: token_paths(loop) for loop in loops}, "migrating": half_moved}
 
 
 def _path_key(path: str | os.PathLike) -> str:

@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 
-from . import (broker, broker_client, config, contained, deps, gh,
+from . import (broker_client, config, contained, deps,
                hostdirs, inference_proxy, prompts, repro_proof, safe_push,
                trusted_fetch, util)
 from .broker import filing as broker_filing

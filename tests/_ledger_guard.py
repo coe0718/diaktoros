@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from diaktoros import config, run_supervisor  # noqa: E402
+from diaktoros import run_supervisor  # noqa: E402
 from diaktoros.config import host_guards  # noqa: E402
 
 REAL_HERMES = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"

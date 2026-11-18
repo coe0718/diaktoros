@@ -530,7 +530,6 @@ class Worker(Base):
             seen.update(kw, role=scope.role)
             return turn(kw) if turn else 0
         pr = {"number": 7, "head": {"sha": HEAD, "ref": "fix-7"}} if pr is None else pr
-        from diaktoros import run_supervisor
         with mock.patch.object(config, "by_repo", return_value=loop or self.loop), \
              mock.patch.object(gh, "api", return_value=pr) as api, \
              mock.patch.object(gh, "reviews", return_value=[]), \
@@ -929,7 +928,8 @@ class ProviderExtras(Base):
 
     def test_the_table_names_the_anthropic_extra_and_its_import(self):
         self.assertEqual(seat_model.HERMES_EXTRAS["anthropic"]["module"], "anthropic")
-        need = lambda *a, **k: seat_model.extras_for(*a, **k)[0]
+        def need(*a, **k):
+            return seat_model.extras_for(*a, **k)[0]
         self.assertEqual(need("anthropic", "anthropic_messages", ""), ["anthropic"])
         self.assertEqual(need("claude-code", "", ""), ["anthropic"])
         self.assertEqual(need("minimax-oauth", "anthropic_messages", ""), ["anthropic"])
@@ -941,7 +941,8 @@ class ProviderExtras(Base):
 
     def test_a_model_that_picks_the_messages_wire_needs_it(self):
         # OpenCode's per-model wire table (hermes_cli/models.py _OPENCODE_API_MODE_PREFIXES)
-        need = lambda p, m: seat_model.extras_for(p, "chat_completions", "", model=m)
+        def need(p, m):
+            return seat_model.extras_for(p, "chat_completions", "", model=m)
         self.assertEqual(need("opencode-zen", "claude-sonnet-4-6"), (["anthropic"], []))
         self.assertEqual(need("opencode", "opencode-zen/qwen3-coder"), (["anthropic"], []))
         self.assertEqual(need("opencode-go", "minimax-m2.7"), (["anthropic"], []))
@@ -951,8 +952,9 @@ class ProviderExtras(Base):
     def test_a_provider_that_can_switch_wire_is_possible(self):
         # hermes_cli/providers.py nous_api_mode: Messages only with nous.anthropic_wire native;
         # agent/nous_wire.py promotes only on auto. Unset/chat never reaches it: no extra at all.
-        nous = lambda **facts: seat_model.extras_for("nous", "chat_completions", "",
-                                                     model="anthropic/claude-x", facts=facts)
+        def nous(**facts):
+            return seat_model.extras_for("nous", "chat_completions", "",
+                                         model="anthropic/claude-x", facts=facts)
         self.assertEqual(nous(), ([], []))
         self.assertEqual(nous(nous_anthropic_wire="chat"), ([], []))
         self.assertEqual(nous(nous_anthropic_wire="auto"), ([], ["anthropic"]))
@@ -967,7 +969,8 @@ class ProviderExtras(Base):
     def test_an_explicit_api_mode_beats_a_provider_or_host_match(self):
         # runtime_provider: a configured model.api_mode beats URL detection and the overlay's
         # transport (_configured_or_fallback_api_mode, _custom_runtime) ...
-        need = lambda *a, **k: seat_model.extras_for(*a, **k)
+        def need(*a, **k):
+            return seat_model.extras_for(*a, **k)
         self.assertEqual(need("custom:acme", "chat_completions", "https://api.anthropic.com",
                               configured="chat_completions"), ([], []))
         self.assertEqual(need("custom:acme", "chat_completions", "https://gw.test/anthropic",
@@ -1011,11 +1014,11 @@ class ProviderExtras(Base):
                       "anthropic/claude-x", check.detail)
         self.assertIn("hermes pm install --extra anthropic", check.detail)
         self.assertEqual(self.extras(self.full)["extras:reviewer"].status, doctor.VERIFIED)
-        for config in ({}, {"nous": {"anthropic_wire": "chat"}}):       # never the Messages wire
+        for extra in ({}, {"nous": {"anthropic_wire": "chat"}}):       # never the Messages wire
             write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
-                          extra=config)
+                          extra=extra)
             check = self.extras(self.bare)["extras:reviewer"]
-            self.assertEqual(check.status, doctor.VERIFIED, config)
+            self.assertEqual(check.status, doctor.VERIFIED, extra)
             self.assertIn("needs no optional", check.detail)
 
     def test_a_malformed_url_is_unknown_and_never_escapes_the_preflight(self):
@@ -1207,7 +1210,8 @@ class ProviderExtras(Base):
         self.assertEqual(seat_model._canonical_mode("anthropic-messages"), "anthropic_messages")
         self.assertEqual(seat_model._canonical_mode("bedrock"), "bedrock_converse")
         self.assertEqual(len(seat_model.API_MODE_ALIASES), 13)
-        need = lambda *a, **k: seat_model.extras_for(*a, **k)[0]
+        def need(*a, **k):
+            return seat_model.extras_for(*a, **k)[0]
         self.assertEqual(need("custom", "chat_completions", "https://gw.test/anthropic?x=1"),
                          ["anthropic"])
         self.assertEqual(need("custom", "chat_completions", "https://gw.test/anthropic#f"),

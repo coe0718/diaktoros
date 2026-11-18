@@ -1028,7 +1028,6 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
                "role": "update_behind" if behind else "review_only_update", "login": login, "paths": [],
                "operation": "update_branch"}
     new_head = None
-    attempt_started = False
     error = None
     with _isolated({**loop, "repo": repo}, login, identity, remote) as (git, url):
         bare = str(git.bare)
@@ -1047,7 +1046,6 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
         if before_push is not None:
             before_push(new_head, tip, tree_identity(git, head, tip, merged))
         _authorize_update(loop, repo, number, head, branch, reader, behind)
-        attempt_started = True
         _audit(loop, {**receipt, "new_head": new_head, "phase": "attempt"})
         try:
             git.run("--git-dir", bare, "push", "--porcelain",

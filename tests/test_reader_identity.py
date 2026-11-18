@@ -445,8 +445,8 @@ class ReaderIdentityTests(_Loop):
         cli.register_cli(ctx, settings={})
         parser = argparse.ArgumentParser(prog="hermes dk")
         ctx.setup(parser)
-        sub = next(a for a in parser._actions
-                   if isinstance(a, argparse._SubParsersAction)).choices["explain"]
+        self.assertIn("explain", next(a for a in parser._actions
+                                      if isinstance(a, argparse._SubParsersAction)).choices)
         parser_cases = [
             ["explain"],                       # --pr is required
             ["explain", "--pr", "abc"],        # not an integer

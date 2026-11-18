@@ -10,7 +10,6 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import hashlib
 import io
-import json
 import subprocess
 import sys
 import tarfile
@@ -20,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_conflict_turn as tct  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import config, contained, generated, safe_push, show, trusted_turn  # noqa: E402
+from diaktoros import config, contained, generated, safe_push, trusted_turn  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 

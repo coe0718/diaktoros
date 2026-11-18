@@ -119,7 +119,7 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
     retargeted PR's fresh record does not inherit answers to verdicts it no longer counts, and a
     human's comment is never presented as the fixer's side.
     """
-    from .. import attribution, broker, fixer_answers, gate, gh
+    from .. import attribution, fixer_answers, gate, gh
     items = []
     answered = set()
     for review in reviews if isinstance(reviews, list) else []:

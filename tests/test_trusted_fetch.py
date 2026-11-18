@@ -215,7 +215,6 @@ class TrustedFetchTests(unittest.TestCase):
         # Run the tarball fetch through REAL loopback HTTP (two http.servers), so the
         # HTTPError(302) path a real GitHub 302 takes actually executes. Metadata calls
         # (/user, /pulls, /git/commits, /git/trees) stay on the mocked _request seam.
-        import urllib.request
         from unittest import mock
         from _tarball_redirect_fixture import ApiServer
 

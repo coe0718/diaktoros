@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, gh, gate, isolation
+from diaktoros import broker, gh, gate, isolation  # noqa: E402
 
 # Seconds each cargo step of the namespace probe may take: room for a cold build on a slow hosted
 # runner. A step past it is a skip that names the step, never a red main (#1778).

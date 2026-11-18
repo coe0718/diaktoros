@@ -20,7 +20,7 @@ from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
-from diaktoros import (broker, cli, config, deps, gh, isolation, route_intent,  # noqa: E402
+from diaktoros import (broker, config, deps, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
 from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.config import host_guards  # noqa: E402

@@ -14,7 +14,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import routes
+from diaktoros import routes  # noqa: E402
 
 
 def add(path: str, name: str, start) -> None:

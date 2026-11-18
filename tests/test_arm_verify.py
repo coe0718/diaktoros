@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -619,7 +620,7 @@ class ScheduleFailureTests(unittest.TestCase):
 
     def test_failed_cron_create_is_not_ok_and_fallback_is_quoted(self):
         self.fake_hermes(1)
-        with patch.object(cli.shutil, "which", return_value=str(self.hermes)):
+        with patch.object(shutil, "which", return_value=str(self.hermes)):
             lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertFalse(ok)
         self.assertIn("store is locked", lines[0])
@@ -657,7 +658,7 @@ class ScheduleFailureTests(unittest.TestCase):
             "--schedule", "15m"])
         out = io.StringIO()
         with patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(self.root / "configs")}), \
-                patch.object(cli.shutil, "which", return_value=str(self.hermes)), \
+                patch.object(shutil, "which", return_value=str(self.hermes)), \
                 redirect_stdout(out):
             rc = args.func(args)
         self.assertEqual(rc, 1, out.getvalue())
@@ -666,7 +667,7 @@ class ScheduleFailureTests(unittest.TestCase):
 
     def test_successful_cron_create_is_ok(self):
         self.fake_hermes(0)
-        with patch.object(cli.shutil, "which", return_value=str(self.hermes)):
+        with patch.object(shutil, "which", return_value=str(self.hermes)):
             lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertTrue(ok, lines)
 

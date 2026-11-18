@@ -319,7 +319,7 @@ class GateFailureTest(unittest.TestCase):
         before = gate_failures.open_for(loop, 7)             # explain, before any sweep ran
         self.assertEqual(len(before), 1)
         self.assertIn("unreadable", explain.gate_failure_line(before[0]))
-        first, second = watchdog(), watchdog()
+        first, _ = watchdog(), watchdog()
         (copy,) = self.corrupt_copies()
         alerts = [line for line in first.splitlines() if str(copy) in line]
         self.assertEqual(len(alerts), 1, first)
@@ -703,7 +703,6 @@ class GateFailureTest(unittest.TestCase):
                 self.assertEqual(entry["kind"], "timeout")
 
     def test_a_junk_profile_config_never_raises_out_of_the_fit_or_doctor(self):
-        from diaktoros import doctor
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 12}}})
         junk = t.HOME / "profiles" / "reviewer-profile"
         self.raw_config(junk, b"\xff\xfe\x00\x81junk\x00")
@@ -803,7 +802,7 @@ class GateFailureTest(unittest.TestCase):
     def test_naming_the_ledgers_never_escapes_the_failure_path(self):
         from unittest import mock
         with mock.patch.object(gate_failures, "_loop_for", side_effect=RuntimeError("bad loop")):
-            self.assertEqual([l.path for l in gate_failures._ledgers_for({})],
+            self.assertEqual([ledger.path for ledger in gate_failures._ledgers_for({})],
                              [gate_failures.fallback_ledger().path])
         with mock.patch.object(gate_failures, "_loop_for", side_effect=RuntimeError("bad loop")), \
              mock.patch.object(gate_failures, "fallback_ledger", side_effect=OSError("no home")):
@@ -867,7 +866,6 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         # One sweep that ran out of time is not yet an outage (slow reads spend it too): like
         # any failure short of a 401/403 it is said after READ_FAILURE_SWEEPS in a row.
-        from scripts import watchdog as wd
         self.assertNotIn("watchdog stopped", proc.stdout)
         for _ in range(watch_health.READ_FAILURE_SWEEPS - 1):
             proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")],

@@ -5,7 +5,6 @@ an in-memory endpoint; child tests below use only disposable plugin fixtures.
 """
 import _home_guard  # noqa: F401  first import: isolated HOME/HERMES_HOME
 import json
-import os
 from pathlib import Path
 import tempfile
 import threading

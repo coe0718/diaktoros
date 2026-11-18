@@ -12,7 +12,6 @@ import io
 import json
 import os
 from pathlib import Path
-import socket
 import sqlite3
 import sys
 import tempfile
@@ -25,7 +24,7 @@ from diaktoros import fixer_answers, review_kick  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
-from diaktoros import broker, broker_client, config, gh, run_supervisor, safe_push  # noqa: E402
+from diaktoros import broker_client, config, gh, run_supervisor, safe_push  # noqa: E402
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 

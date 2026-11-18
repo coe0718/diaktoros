@@ -34,7 +34,7 @@ from . import workers   # Supervisor's worker lifecycle and recovery: workers.Wo
 from . import views
 from . import waits   # one worker-log line per wait, read back by `history` (#2080)
 from . import ledger_schema   # the ledger's tables and migrations, as ledger_schema.<name>
-from .turns import _ClaimRead, _Launch, _Turn   # the state classes, still reachable as run_supervisor._Turn
+from .turns import _ClaimRead, _Launch, _Turn  # noqa: F401 - the state classes, re-exported (#758)
 
 SILENT = "[SILENT]"
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated

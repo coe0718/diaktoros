@@ -57,7 +57,6 @@ class SweepClock(fg.Base):
         state_mod._atomic_write(self.st.locks, data)
 
     def test_a_claim_taken_while_the_sweep_ran_is_not_reported_dead(self):
-        from scripts import watchdog
         clock = Clock()
         clock.offset = -300.0                         # the sweep starts five minutes back ...
 

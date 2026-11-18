@@ -17,7 +17,6 @@ real one there and the *available* path is exercised through a stand-in module p
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import importlib
 import json
 import os
 import pathlib

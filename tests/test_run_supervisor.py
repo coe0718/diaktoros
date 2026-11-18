@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -20,10 +19,10 @@ from unittest.mock import patch
 
 from diaktoros import (broker, config, gate, run_supervisor, seat_model,
                          trusted_turn)
+from diaktoros import route_intent
 from diaktoros.state import ledger
 from diaktoros.broker import ipc as broker_ipc
 from diaktoros.run_supervisor import ledger_schema, views
-from diaktoros.config import host_guards  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.hostdirs import HostStateGone
 import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
@@ -32,7 +31,7 @@ from diaktoros.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMiss
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for tests/worker_wait.py
 import worker_wait  # noqa: E402  the shared detached-worker reaper (#108, #110)
-from worker_wait import wait_for_workers
+from worker_wait import wait_for_workers  # noqa: E402
 
 # Longest a test waits for its detached workers after it ends.
 WORKER_EXIT_TIMEOUT = worker_wait.WORKER_EXIT_TIMEOUT
@@ -545,7 +544,7 @@ class Lifecycle(unittest.TestCase):
                 patch.object(config, "load_id",
                              side_effect=lambda name: {"id": name, "repo": f"acme/{name}"}), \
                 patch.object(cli_common, "_routes_of", return_value={}), \
-                patch.object(cli.route_intent, "forget"), \
+                patch.object(route_intent, "forget"), \
                 contextlib.redirect_stdout(io.StringIO()):
             # --keep-hooks: this test is about the ledger marker, not the repo's hooks (#57).
             cli.cmd_uninstall(Namespace(loop="a", keep_config=False, keep_hooks=True))

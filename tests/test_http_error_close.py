@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 import urllib.error
 
-from diaktoros import config, gh, routes, trusted_fetch
+from diaktoros import gh, routes, trusted_fetch
 from diaktoros.config import host_guards  # noqa: E402
 
 

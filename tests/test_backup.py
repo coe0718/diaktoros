@@ -35,6 +35,7 @@ from diaktoros.state import restore_checks  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
+from diaktoros.gate import shims as gate_shims  # noqa: E402
 
 SECRET = "s3cr3t-hmac-value-0123456789"
 JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval", "minutes": 5},
@@ -103,7 +104,7 @@ class Base(fg.Base):
         cli_common._install_routes(config.all_loops()[0])
         for profile in ("reviewer", "fixer"):          # the seats' Hermes profiles exist
             (home / "profiles" / profile).mkdir(parents=True, exist_ok=True)
-        cli.gate_shims.install(config.all_loops()[0], dry_run=False, report=False)
+        gate_shims.install(config.all_loops()[0], dry_run=False, report=False)
         self.jobs = [dict(JOB)]
         for patcher in (mock.patch.object(cli_common, "_cron_jobs", side_effect=lambda loop: (self.jobs, "")),
                         mock.patch.object(cli_common, "_hermes_bin", return_value="hermes")):
@@ -123,8 +124,8 @@ class Base(fg.Base):
             self.jobs.append({**JOB})
             return mock.Mock(returncode=0, stdout="", stderr="")
         with contextlib.redirect_stdout(out), \
-                mock.patch.object(cli.gate_shims, "install", return_value=[]), \
-                mock.patch.object(cli.subprocess, "run", self.cron_run or fake_cron), \
+                mock.patch.object(gate_shims, "install", return_value=[]), \
+                mock.patch.object(subprocess, "run", self.cron_run or fake_cron), \
                 mock.patch.object(migrate, "doctor_step", return_value=["doctor: every check verified"]):
             code = func(argparse.Namespace(**kw))
         return code, out.getvalue()
@@ -249,7 +250,7 @@ class Tampered(Base):
                              ("events", ["push"]), ("host", "https://attacker.example")):
             with self.subTest(field=field):
                 bad = self.tamper(lambda m: m["routes"]["one-review"].update({field: value}))
-                self.refused(bad, want=f"route one-review: ")
+                self.refused(bad, want="route one-review: ")
                 self.assertEqual(routes.all_routes()["one-review"], before)
 
     def test_a_tampered_secret_is_refused_against_the_live_route(self):
@@ -991,7 +992,7 @@ class Retention(Base):
         self.assertEqual(self.names(folder), self.stamped(3))
 
     def test_a_file_that_cannot_be_removed_does_not_fail_the_backup(self):
-        folder = self.old(*self.stamped(2))
+        self.old(*self.stamped(2))
         with mock.patch.object(Path, "unlink", side_effect=PermissionError("no")):
             made = backup.create(keep=1)
         self.assertTrue(made.is_file())
@@ -1123,8 +1124,8 @@ class Restore(Base):
             self.jobs.append({**JOB})
             return mock.Mock(returncode=0, stdout="", stderr="")
         with contextlib.redirect_stdout(buf), \
-                mock.patch.object(cli.gate_shims, "install", return_value=[]), \
-                mock.patch.object(cli.subprocess, "run", fake_cron):
+                mock.patch.object(gate_shims, "install", return_value=[]), \
+                mock.patch.object(subprocess, "run", fake_cron):
             code = cli.cmd_restore(argparse.Namespace(file=str(out), dry_run=False, force=False))
         after = readout()
         # every check, not a hand-picked subset: the restored install reads exactly as the
@@ -1350,7 +1351,7 @@ class MigrateBacksUpFirst(Base):
                 mock.patch.object(migrate, "repo_step", return_value=[]), \
                 mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
             code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
-        line = next((l for l in text.splitlines() if "left out" in l), "")
+        line = next((ln for ln in text.splitlines() if "left out" in ln), "")
         self.assertTrue(line.startswith("backup: left out (1 file(s)"), text)
         self.assertIn(str(temp), line)
         _, direct = self.run_cmd(cli.cmd_backup, out=str(self.root / "b.tar.gz"))

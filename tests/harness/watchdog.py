@@ -563,7 +563,6 @@ def group_watchdog() -> None:
     # (``now - last < cooldown`` is False there), not only strictly after. Nothing pinned that, so a
     # later ``<`` → ``<=`` flip would pass silently while the docstring still read "after each
     # cooldown passes". Pin the edge itself: silence just before it, an alert exactly on it.
-    from scripts import watchdog as _wd
     watch: dict = {}
     watch_mode.alert_due(watch, "edge", 100.0, 60.0)                     # first alert stamps the clock
     check("alert_due is silent just before the cooldown edge",

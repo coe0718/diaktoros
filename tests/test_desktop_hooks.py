@@ -321,7 +321,7 @@ class HooksTests(HooksFixture):
     def test_refused_or_ignored_patch_reports_observed_armed_not_success(self):
         for opts in ({'patch_error': 'HTTP 403 /private/PAT'}, {'ignore_patch': True}):
             with self.subTest(opts=opts):
-                fake = self.fake(**opts)
+                self.fake(**opts)
                 result = self.act(self.view())
                 self.assertFalse(result['ok'])
                 self.assertEqual(result['state'], 'armed')

@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-import sys
+import sys  # noqa: E402
 sys.path.insert(0, str(ROOT))
 from diaktoros import config, doctor  # noqa: E402
 from diaktoros.doctor import cron_checks  # noqa: E402

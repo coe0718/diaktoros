@@ -65,7 +65,7 @@ MAX_ANSWERS = 8 * 1024
 FILED_ISSUE_BODY_MAX = 6 * 1024    # broker_filing.FILED_ISSUE_BODY_MAX
 ISSUE_TITLE_MAX = 120              # broker.ISSUE_PR_TITLE_MAX
 MAX_REQUEST = 16 * 1024
-from diaktoros.wire import ANSWERS_MARKER, ANSWERS_MARKERS  # noqa: F401 - copied into the sandbox with this client
+from diaktoros.wire import ANSWERS_MARKER, ANSWERS_MARKERS  # noqa: E402,F401 - copied into the sandbox with this client
 _SHA = re.compile(r'[0-9a-f]{40}\Z')
 _SEGMENT = re.compile(r'[A-Za-z0-9_.-]{1,128}\Z')
 _CONTROL_FILES = {'.gitmodules', '.gitattributes'}
@@ -469,7 +469,9 @@ def main() -> None:
             if len(comment) > TRIAGE_COMMENT_MAX:
                 parser.error(f'triage refused before sending (your write is unspent): the '
                              f'comment is over {TRIAGE_COMMENT_MAX} characters')
-        operation = lambda: call('triage', labels=args.label, body=comment)
+
+        def operation():
+            return call('triage', labels=args.label, body=comment)
     elif args.operation == 'push':
         operation = _push(parser, args)
     elif args.operation == 'request_review':
@@ -487,7 +489,9 @@ def main() -> None:
         body = Path(args.body_file).read_text() if args.body_file else ''
         if len(body.encode()) > 12 * 1024:
             parser.error('body too large')
-        operation = lambda: call(args.operation, verdict=args.verdict, body=body)
+
+        def operation():
+            return call(args.operation, verdict=args.verdict, body=body)
     try:
         result = operation()
     except TimeoutError:

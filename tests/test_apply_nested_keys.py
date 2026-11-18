@@ -17,7 +17,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import config, routes  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
-from test_init_concurrency import Base, LOOP_FILE, LOOP_ID  # noqa: E402
+from test_init_concurrency import Base, LOOP_ID  # noqa: E402
 
 
 class ApplyNestedKeys(Base):

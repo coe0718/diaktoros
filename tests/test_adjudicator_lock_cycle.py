@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import state
+from diaktoros import state  # noqa: E402
 
 HEAD_A, HEAD_B = "a" * 40, "b" * 40
 
@@ -160,7 +160,8 @@ class AdjudicatorCycleTest(unittest.TestCase):
         self.assertEqual(self.requests[-1], "[SILENT]")
 
     def test_late_delivery_does_not_overwrite_newer_head(self):
-        entry = lambda head: {"pr": 7, "head": head, "rounds": 3, "reason": "cap"}
+        def entry(head):
+            return {"pr": 7, "head": head, "rounds": 3, "reason": "cap"}
         def send_a(marker):
             self.head_file.write_text(HEAD_B)
             self.assertEqual(self.st.breach_deliver(7, entry(HEAD_B),
@@ -210,8 +211,9 @@ class AdjudicatorCycleTest(unittest.TestCase):
         import time
         now = time.time()
         from diaktoros import state as state_mod
-        held = lambda off: state_mod._delivery_in_flight(
-            {"delivery_token": "t", "delivery_at": now + off}, now)
+        def held(off):
+            return state_mod._delivery_in_flight(
+                {"delivery_token": "t", "delivery_at": now + off}, now)
         self.assertTrue(held(state_mod.DELIVERY_SKEW_S - 1))
         self.assertFalse(held(state_mod.DELIVERY_SKEW_S + 1))
         self.assertFalse(held(86400))

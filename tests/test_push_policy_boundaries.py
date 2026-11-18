@@ -239,7 +239,7 @@ class PolicyBoundaryTests(unittest.TestCase):
     def test_policy_hold_reason_is_the_one_denial_wording(self):
         # A single source of truth: the reason the run ledger records, the broker's refusal
         # and the seat queue hold all name the same facts (#81).
-        from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_OFF, FIXER_PUSH_REVOKED
+        from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_OFF
         self.path.write_text(json.dumps(raw_loop('one')))
         self.assertEqual(broker_ipc.policy_hold_reason(config.load_id('one')),
                          FIXER_PUSH_OFF)

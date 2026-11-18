@@ -21,7 +21,7 @@ from diaktoros.config import settings_form  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import ci, ci_fix, cli, config, gate, gh, observer  # noqa: E402
+from diaktoros import ci, ci_fix, config, gate, gh, observer  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
@@ -199,7 +199,7 @@ class History(unittest.TestCase):
 
 class PromptHook(unittest.TestCase):
     def prompt(self, seat):
-        from diaktoros import issue_facts, run_supervisor
+        from diaktoros import issue_facts
         row = {"seat": seat, "repo": "acme/w", "pr": 7, "head": "a" * 40}
         loop = {**LOOP, "repo": "acme/w", "id": "w", "seats": {}, "reviewers": ["rev"],
                 "reviewer_seat": "rev"}
@@ -252,7 +252,7 @@ class StillRed(unittest.TestCase):
         self.assertEqual(self.note(None, [{"head": "o", "state": "x"}]), "")
 
     def test_the_reviewer_prompt_carries_it(self):
-        from diaktoros import issue_facts, run_supervisor
+        from diaktoros import issue_facts
         row = {"seat": "reviewer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
         loop = {**LOOP, "repo": "acme/w", "id": "w", "seats": {}, "reviewers": ["rev"],
                 "reviewer_seat": "rev"}

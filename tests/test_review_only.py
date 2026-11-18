@@ -14,6 +14,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import unittest
@@ -31,7 +32,6 @@ from diaktoros import (
     explain,
     gate,
     gh,
-    run_supervisor,
 )
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import operations as cli_operations  # noqa: E402
@@ -272,7 +272,7 @@ class Gates(fg.Base):
         args = mock.Mock(loop="one", pr=7, another_round=True)
         with mock.patch.object(gh, "pr", return_value=self.live), \
              mock.patch.object(gh, "reviews", return_value=reviews), \
-             mock.patch.object(cli.subprocess, "run") as run, \
+             mock.patch.object(subprocess, "run") as run, \
              contextlib.redirect_stdout(io.StringIO()) as out:
             code = cli.cmd_review(args)
         return code, out.getvalue(), run

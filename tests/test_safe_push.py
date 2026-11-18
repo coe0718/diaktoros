@@ -15,10 +15,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, config, gh, safe_push
-from diaktoros.state import ledger
-from diaktoros.broker import ipc as broker_ipc
-from diaktoros.run_supervisor import Supervisor
+from diaktoros import broker, config, gh, safe_push  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
 REPO = "acme/widgets"

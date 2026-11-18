@@ -238,7 +238,7 @@ def group_budget() -> None:
 
 def group_adjudicator() -> None:
     """Keep #21 breach guards; wake only an isolated turn, never the gateway route."""
-    from diaktoros import cli, config, gate, prompts, state as state_mod
+    from diaktoros import config, gate, prompts, state as state_mod
     from diaktoros.run_supervisor import Supervisor
 
     section("adjudicator — guarded marker, isolated turn, no legacy gateway dispatch")
