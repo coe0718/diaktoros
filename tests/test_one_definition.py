@@ -9,46 +9,25 @@ A ``def`` decorated with its own name's ``.setter``, ``.getter`` or ``.deleter``
 earlier binding instead of replacing it (a property and its setter), so it is not a second
 definition (#2142). A second accessor of one kind is: a second ``@x.setter`` replaces the first
 setter as silently as a second ``def`` (#2536 review F2), and ``@x.getter`` replaces the getter
-``@property def x`` already gave, so it counts as a second ``def``.
+``@property def x`` already gave, so it counts as a second ``def``. Each name is walked in body
+order: a plain ``def`` after a setter replaces it however the property was made (#2536 review F4).
+
+The scan is ``tools/one_definition.py``; see there why it is not in this file.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import ast
-import collections
 import pathlib
+import sys
 import unittest
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-ACCESSORS = {"setter", "deleter"}      # a getter replaces the property's own: a "def"
-
-
-def _kind(node) -> str:
-    """How ``node`` binds its name: ``"setter"`` or ``"deleter"`` for ``@x.setter def x`` and
-    ``@x.deleter def x``, which extend the property ``x`` already names rather than replacing it
-    (#2142); ``"def"`` for anything else, ``@x.getter`` included, since it replaces the getter
-    ``@property def x`` gave. Each kind is counted apart, so a property with a setter and a deleter
-    is one definition, and a repeat of any one kind is a repeat (#2536 review F2: a second
-    ``@x.setter`` replaced the first setter and the scan let it pass)."""
-    return next((d.attr for d in getattr(node, "decorator_list", [])
-                 if isinstance(d, ast.Attribute) and d.attr in ACCESSORS
-                 and isinstance(d.value, ast.Name) and d.value.id == node.name), "def")
-
-
-def repeated(source: str) -> list[str]:
-    """Each name a module body or a class body binds with more than one def/class of one kind
-    (``_kind``)."""
-    tree = ast.parse(source)
-    scopes = [("", tree.body)] + [(f"{n.name}.", n.body) for n in ast.walk(tree)
-                                  if isinstance(n, ast.ClassDef)]
-    found = []
-    for prefix, body in scopes:
-        counts = collections.Counter((n.name, _kind(n)) for n in body if isinstance(n, DEFS))
-        found += [f"{prefix}{name}" for name in dict.fromkeys(
-            name for (name, _), k in counts.items() if k > 1)]
-    return found
+# The scan lives in tools/one_definition.py, outside tests/, so the host's base-failure proof runs
+# the tests below against the base's scan, not this PR's (#1973, #2536 review F1).
+sys.path.insert(0, str(ROOT / "tools"))
+import one_definition  # noqa: E402
+from one_definition import repeated  # noqa: E402
 
 
 class OneDefinition(unittest.TestCase):
@@ -90,12 +69,37 @@ class OneDefinition(unittest.TestCase):
         self.assertEqual(repeated(prop + prop[9:]), ["C.x"])
 
     def test_the_scan_would_report_a_property_without_the_accessor_rule(self):
-        # #2536 review F1: the scan and this test share a file, so the change proof's base run
-        # (the PR's tests on the base) has the rule too; undoing it here shows it is needed.
+        # #2536 review F1: undoing the accessor rule shows it is needed (the base proof now runs
+        # the base's scan, from tools/, but this still pins what the rule does).
         prop = "class C:\n @property\n def x(self): pass\n @x.setter\n def x(self, v): pass\n"
-        with mock.patch(f"{__name__}._kind", lambda node: "def"):    # the base: every def
+        with mock.patch.object(one_definition, "_kind", lambda node: "def"):  # every def
             self.assertEqual(repeated(prop), ["C.x"])
         self.assertEqual(repeated(prop), [])
+
+    def test_a_plain_def_after_a_setter_is_a_repeat(self):
+        # #2536 review F4: kinds counted apart, ``x = property(get_x)`` left the setter the first
+        # ``def x``, so the plain ``def x`` after it was one "def" and replaced the setter unseen.
+        assigned = ("class C:\n    def get_x(self): return 1\n    x = property(get_x)\n"
+                    "    @x.setter\n    def x(self, value): print('setter')\n"
+                    "    def x(self): return 'replacement'\n")
+        self.assertEqual(repeated(assigned), ["C.x"])
+        decorated = ("class C:\n @property\n def x(self): return 1\n"
+                     " @x.setter\n def x(self, v): pass\n def x(self): return 2\n")
+        self.assertEqual(repeated(decorated), ["C.x"])
+        # A setter, then a deleter, then another name: no repeat; a second getter still is.
+        self.assertEqual(repeated(assigned.replace("    def x(self): return 'replacement'\n",
+                                                   "    @x.deleter\n    def x(self): pass\n")),
+                         [])
+        self.assertEqual(repeated(decorated.replace(" def x(self): return 2\n",
+                                                    " @x.getter\n def x(self): return 2\n")),
+                         ["C.x"])
+
+    def test_a_base_proof_tests_the_base_scan(self):
+        # #2536 review F1: the scan lives off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs the head's tests above against the base's scan. It fails
+        # if the scan goes back into a tests/ module, where it was.
+        import _base_proof
+        _base_proof.assert_taken_from_the_base(self, one_definition.__file__)
 
 
 if __name__ == "__main__":
