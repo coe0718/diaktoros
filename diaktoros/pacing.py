@@ -50,7 +50,8 @@ UNAVAILABLE_MAX_S = 2 * 3600
 _UNAVAILABLE_FORGET_S = 6 * 3600
 # A turn the provider killed (#1155), as the inference proxy records it: an HTTP error status, or
 # an upstream it could not reach. ``proxy refused: …`` is the proxy's own policy, never this.
-_PROVIDER_FAILURE = re.compile(r"(?:HTTP [45]\d\d|upstream unreachable): ")
+# A bare ``HTTP 503`` (``provider_error``'s fallback, no message) counts too (#2147).
+_PROVIDER_FAILURE = re.compile(r"(?:HTTP [45]\d\d|upstream unreachable)(?:: |\Z)")
 _UNAVAILABLE_SIGNS = (
     (re.compile(r"empty stream with no finish_reason", re.I), "empty stream with no finish_reason"),
     (re.compile(r"didn.t answer after \d+ attempts", re.I), "wire didn't answer"),
