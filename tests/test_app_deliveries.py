@@ -206,15 +206,36 @@ class Trace(Base):
 class RedeliverHint(unittest.TestCase):
     def test_an_app_loops_failed_gate_points_at_the_apps_log(self):
         with mock.patch.object(gate_failures, "_loop_for", return_value=LOOP):
-            route = gate_failures._route_of("gate_reviewer", {})
-        self.assertEqual(route, "dk-app-acme-reader")
-        hint = gate_failures.redeliver_hint({"gate": "gate_reviewer", "route": route,
+            fields = gate_failures._route_fields("gate_reviewer", {})
+        self.assertEqual(fields, {"route": "dk-app-acme-reader", "ingress": "app-webhook"})
+        hint = gate_failures.redeliver_hint({"gate": "gate_reviewer", **fields,
                                              "action": "opened", "pr": 7})
         self.assertIn("the acme-reader App's settings → Advanced → Recent Deliveries", hint)
         self.assertNotIn("Settings → Webhooks", hint)
         repo_hook = gate_failures.redeliver_hint({"gate": "gate_reviewer",
                                                   "route": "widgets-review"})
         self.assertIn("Settings → Webhooks", repo_hook)
+
+    def test_a_repo_hook_route_named_like_an_app_route_gets_the_repo_hook_hint(self):
+        # #2295: the loop's ingress decides, not the route's name: a repo-hooks seat route may be
+        # named dk-app-*, and its event's log is the repo's hook, not an App's.
+        repo_hooks = {k: v for k, v in LOOP.items() if k != "ingress"}
+        repo_hooks["seats"] = {"reviewer": {"route": "dk-app-foo"}}
+        with mock.patch.object(gate_failures, "_loop_for", return_value=repo_hooks):
+            fields = gate_failures._route_fields("gate_reviewer", {})
+        self.assertEqual(fields, {"route": "dk-app-foo", "ingress": "repo-hooks"})
+        hint = gate_failures.redeliver_hint({"gate": "gate_reviewer", **fields})
+        self.assertIn("the hook ending in /webhooks/dk-app-foo", hint)
+        self.assertNotIn("App's settings", hint)
+
+    def test_an_entry_recorded_before_ingress_falls_back_to_the_routes_name(self):
+        # An entry already in a ledger carries no ``ingress``: an App loop's still gets the App's
+        # log, as before #2295; every new entry with a loop says which it is.
+        hint = gate_failures.redeliver_hint({"gate": "gate_reviewer",
+                                             "route": "dk-app-acme-reader"})
+        self.assertIn("the acme-reader App's settings → Advanced → Recent Deliveries", hint)
+        with mock.patch.object(gate_failures, "_loop_for", return_value=None):
+            self.assertEqual(gate_failures._route_fields("gate_reviewer", {}), {"route": ""})
 
 
 class TraceRun(app_cli.Base):
