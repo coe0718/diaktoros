@@ -54,10 +54,8 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
     except Exception as exc:            # no ledger yet, or unreadable: the PR holds still run
         log(f"maintainer replies to issue-fix comments not checked: {type(exc).__name__}: {exc}")
         return
-    kept = {}
     before = st.kv_get(st.dir / WAITING, {})
-    before = before if isinstance(before, dict) else {}
-    waiting = {}
+    before, kept, waiting = (before if isinstance(before, dict) else {}), {}, {}
     for row in rows:
         number, key = row["number"], str(row["number"])
         if row["active"] or number in st.fix_ask_open():
@@ -81,8 +79,23 @@ def sweep(loop: dict, st, lines: list[str]) -> None:
         else:
             lines.append(f"⚠️ issue #{number}: maintainer reply seen, but the open PR listing "
                          f"or the issue stayed unreadable for {WAIT_DAYS} days; fix not queued")
-    st.kv_set(st.dir / WAITING, waiting)
-    st.kv_set(st.dir / GUARD, kept)
+    _edit(st, WAITING, {**dict.fromkeys(before), **waiting})
+    _edit(st, GUARD, dict.fromkeys(set(guard) - set(kept)))
+
+
+def _edit(st, name: str, changes: dict, add_only: bool = False) -> None:
+    """Apply ``changes`` (``None`` drops a key) to ``name`` under the loop's state lock: the sweep
+    and a webhook's wake each change only the keys they decided, never each other's (#2549)."""
+    with st.locked():
+        old = st.kv_get(st.dir / name, {})
+        found = dict(old) if isinstance(old, dict) else {}
+        for key, value in changes.items():
+            if value is None:
+                found.pop(key, None)
+            elif not (add_only and key in found):
+                found[key] = value
+        if found != old:
+            st.kv_set(st.dir / name, found)
 
 
 def _guard(st) -> dict:
@@ -95,12 +108,13 @@ def _guard(st) -> dict:
 def wake(loop: dict, st, row: dict) -> str:
     """``queued``, ``waiting`` (no reply yet), ``ineligible``, ``unreadable``, or ``unlisted``
     (a reply, but the open PR listing could not be read: kept in ``GUARD``) for one issue. Any
-    outcome read in full settles a guarded reply here, so the webhook's wake clears it too and
-    status never says the listing is awaited once it was read (#2549 review)."""
-    outcome = _wake(loop, st, row)
-    guard = _guard(st)
-    if outcome not in ("unreadable", "unlisted") and guard.pop(str(row["number"]), None):
-        st.kv_set(st.dir / GUARD, guard)
+    outcome read in full settles a guarded reply here, and a queued or ineligible one its waiting
+    line, so the webhook's wake clears them too and status never names a wait it read past."""
+    outcome, key = _wake(loop, st, row), str(row["number"])
+    if outcome not in ("unreadable", "unlisted"):
+        _edit(st, GUARD, {key: None})
+    if outcome in ("queued", "ineligible"):     # no longer waits for a reply either (F4)
+        _edit(st, WAITING, {key: None})
     return outcome
 
 
@@ -132,9 +146,7 @@ def _wake(loop: dict, st, row: dict) -> str:
     prs, error = gh.open_prs_read(loop)
     if prs is None:
         log(f"issue #{number}: open PR listing unreadable, reply wake waits: {error}")
-        guard = _guard(st)
-        guard.setdefault(str(number), {"at": time.time()})
-        st.kv_set(st.dir / GUARD, guard)
+        _edit(st, GUARD, {str(number): {"at": time.time()}}, add_only=True)
         return "unlisted"
     existing = fix_hold._closing(loop, prs, number)
     if existing is not None:

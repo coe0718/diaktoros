@@ -22,6 +22,16 @@ from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 BASE = replies.BASE
 
 
+def offline(loop):
+    return None, "offline"
+
+
+def cutoff(seconds):
+    """The clock ``seconds`` after the ledger drops the fixer's comment (its WAIT_DAYS)."""
+    at = replies.TURN + 60 + fix_reply.WAIT_DAYS * 86400 + seconds    # comment_turn's created
+    return mock.patch.object(fix_reply, "time", SimpleNamespace(time=lambda: at))
+
+
 class OpenPrGuard(replies.Replies):
     def test_an_open_pr_that_fixes_the_issue_stops_the_reply_wake(self):
         # #2021, #2022: the wake queued a second fix turn beside the open fixing PR.
@@ -44,27 +54,22 @@ class OpenPrGuard(replies.Replies):
 class ListingOutage(replies.Replies):
     """Vex on #2549: a reply seen while the open PR listing is unreadable is kept, past its
     comment's WAIT_DAYS window, and status names the listing, not a missing reply."""
-    offline = staticmethod(lambda loop: (None, "offline"))
+    offline = staticmethod(offline)
 
     def at(self, days):
         return mock.patch.object(fix_reply, "time", SimpleNamespace(time=lambda: time.time() + days * 86400))
-
-    def cutoff(self, seconds):
-        """The clock ``seconds`` after the ledger drops the fixer's comment (its WAIT_DAYS)."""
-        at = replies.TURN + 60 + fix_reply.WAIT_DAYS * 86400 + seconds  # comment_turn's created
-        return mock.patch.object(fix_reply, "time", SimpleNamespace(time=lambda: at))
 
     def outage_across_the_cutoff(self, *failing):
         """Vex on #2549 (F1, F3): the listing is down a minute before the comment's cutoff, then
         each of ``failing`` fails a sweep after it; the reply still queues once reads recover."""
         self.reply(201, "jeremy")
-        with self.cutoff(-60), mock.patch.object(gh, "open_prs_read", self.offline):
+        with cutoff(-60), mock.patch.object(gh, "open_prs_read", self.offline):
             self.sweep()
         for seconds, patch in enumerate(failing, 1):
-            with self.cutoff(seconds * 60), patch:
+            with cutoff(seconds * 60), patch:
                 self.sweep()
                 self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
-        with self.cutoff(len(failing) * 60 + 60):
+        with cutoff(len(failing) * 60 + 60):
             self.sweep()
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
         self.assertEqual(fix_reply.status_lines(self.st), [])
@@ -99,15 +104,37 @@ class ListingOutage(replies.Replies):
 
 class WebhookSettlesTheGuard(replies.Delivery):
     def test_a_delivery_that_reads_the_listing_clears_what_status_says(self):
-        # Vex on #2549 (F4): the webhook's wake queued the fix, status still named the listing.
+        # Vex on #2549 (F4): the webhook's wake queued the fix, status still named the listing,
+        # then (from a sweep before the reply) the reply itself.
+        self.sweep()
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.line(12)])
         self.reply(201, "jeremy")
-        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "offline")):
+        with mock.patch.object(gh, "open_prs_read", offline):
             self.assertNotEqual(self.deliver(self.comment())[0], "accepted")
         self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
         decision, reason = self.deliver(self.comment())
         self.assertEqual(decision, "accepted", reason)
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
         self.assertEqual(fix_reply.status_lines(self.st), [])
+        self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
+
+    def test_a_delivery_during_a_sweep_keeps_its_guard(self):
+        # Vex on #2549 (F5): the sweep wrote its whole GUARD over one a delivery had just made.
+        real, delivered = fix_reply.wake, []
+
+        def wake_then_deliver(loop, st, row):
+            outcome = real(loop, st, row)
+            if not delivered:                   # the reply lands while the sweep is mid-way
+                delivered.append(self.reply(201, "jeremy"))
+                with mock.patch.object(gh, "open_prs_read", offline):
+                    self.deliver(self.comment())
+            return outcome
+        with cutoff(-60), mock.patch.object(fix_reply, "wake", wake_then_deliver):
+            self.sweep()
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.guarded_line(12)])
+        with cutoff(60):
+            self.sweep()
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
 
 
 class UnreadableKeepsTheWait(replies.Replies):
