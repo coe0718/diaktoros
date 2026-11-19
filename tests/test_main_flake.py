@@ -103,7 +103,29 @@ class Flake(unittest.TestCase):
         tried = {**self.memory()["rerun"], "at": 0}
         main_check._remember(self.st, self.st.dir / main_check.FILE, "rerun", tried)
         self.assertTrue(self.sweep(red()))
-        self.assertIn("tried, and it failed again", self.notices[0][1]["outcome"])
+        outcome = self.notices[0][1]["outcome"]                  # #2284: it never showed, not red
+        self.assertIn("tried, but it had not shown at this head after 2 hours", outcome)
+        self.assertNotIn("failed again", outcome)
+
+    def test_a_red_the_rerun_did_not_cause_is_not_called_a_failed_rerun(self):
+        """#2284: a check still pending when the rerun was decided that later fails at the same
+        head, or a red check with no check-run id, is not the rerun failing again."""
+        pending = ci.CIState(failed=[SHARDS[0]], pending=[SHARDS[1]], ids={SHARDS[0]: 101,
+                                                                          SHARDS[1]: 102})
+        later = ci.CIState(failed=[SHARDS[1]], pending=[SHARDS[0]], ids={SHARDS[0]: 301,
+                                                                        SHARDS[1]: 102})
+        no_id = ci.CIState(failed=list(SHARDS), ids={SHARDS[0]: 101})
+        for decided, read, said in ((pending, later, f'this red is from "{SHARDS[1]}", which it '
+                                     'did not rerun'),
+                                    (red(), no_id, "whether it failed again could not be read")):
+            with self.subTest(said=said):
+                self.setUp()
+                self.assertFalse(self.sweep(decided))
+                self.assertTrue(self.sweep(read))
+                outcome = self.notices[0][1]["outcome"]
+                self.assertNotIn("failed again.", outcome)
+                self.assertIn(said, outcome)
+                self.assertEqual(self.memory()["rerun"]["checks"], [SHARDS[0]])
 
     def test_a_timeout_is_a_flake_even_with_no_sibling_run(self):
         self.assertFalse(self.sweep(red(), log=TIMEOUT_LOG, sibling=None))
@@ -122,6 +144,18 @@ class Flake(unittest.TestCase):
     def test_an_unreadable_job_is_no_flake(self):
         with mock.patch.object(main_flake, "_failed_job", return_value=None):
             self.assertIsNone(main_flake.flake(LOOP, red(), HEAD))
+
+    def test_a_log_over_the_limit_is_no_flake(self):
+        """#2285: a real failure above the kept tail of an oversized log is not left out, so a
+        tail of only timeouts is no flake; a log under the limit is still judged."""
+        whole = FAILED_LOG + ("x" * 99 + "\n") * (ci_tests.LOG_LIMIT // 100) + TIMEOUT_LOG
+        tail = lambda _loop, _path, login=None, limit=0: whole[-limit:]  # noqa: E731  as gh keeps
+        job = {"run_id": 77, "conclusion": "failure"}
+        with mock.patch.object(ci_tests, "_job_at_head", return_value=job), \
+                mock.patch.object(gh, "read_text", side_effect=tail):
+            self.assertIsNone(main_flake.flake(LOOP, red(), HEAD))
+            whole = TIMEOUT_LOG
+            self.assertEqual(main_flake.flake(LOOP, red(), HEAD)["why"], "timed out")
 
     def test_off_never_reruns(self):
         self.assertTrue(self.sweep(red(), loop={**LOOP, "main_flake_rerun": False}))
