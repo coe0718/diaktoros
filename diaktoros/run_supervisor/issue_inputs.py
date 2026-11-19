@@ -85,7 +85,10 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
         raise run_supervisor.RetryableError('issue unreadable (GitHub read failed)')
     if 'pull_request' in issue:
         raise ValueError('not an issue (a pull request)')
-    if issue.get('state') != 'open':
+    if issue.get('state') not in ('open', 'closed'):
+        # Only GitHub's own word closes it (#2559 review): an unreadable state is a failed read.
+        raise run_supervisor.RetryableError('issue state unreadable (GitHub read failed)')
+    if issue.get('state') == 'closed':
         raise run_supervisor.IssueIneligible('no longer eligible: the issue is no longer open')
     author = str((issue.get('user') or {}).get('login') or '').lower()
     if author not in fix_authors(loop):

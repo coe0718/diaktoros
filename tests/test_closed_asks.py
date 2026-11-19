@@ -104,6 +104,23 @@ class ClosedAsks(base.Gate):
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:ask1")])
         self.assertEqual(self.st.fix_ask_open(), {})
 
+    def test_a_malformed_state_on_the_resume_read_keeps_the_ask(self):
+        """#2559 review: the resume reads the issue again; a malformed answer there, after an
+        open first read, is a failed read to retry, never the issue's closure."""
+        self.reply()
+        for live in MALFORMED:
+            with self.subTest(live=live):
+                self.live = live
+                with mock.patch.object(fix_hold, "issue_closed", return_value=False):
+                    lines = self.sweep()
+                self.assertIn("reply seen, fix not queued", "".join(lines))
+                self.assertIn(12, self.st.fix_ask_open())
+                self.assertEqual(self.enqueued, [])
+        self.live = issue()                           # GitHub answers properly again: resumed
+        self.sweep()
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:ask1")])
+        self.assertEqual(self.st.fix_ask_open(), {})
+
     def test_an_open_issues_ask_is_untouched(self):
         self.sweep()
         self.assertIn(12, self.st.fix_ask_open())
