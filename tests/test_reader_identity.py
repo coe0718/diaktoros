@@ -220,7 +220,7 @@ class ReaderIdentityTests(_Loop):
         self.assertFalse(self.loop_file().exists())
 
     def test_init_refuses_a_reader_sharing_a_seat_token_file(self):
-        self.refused(self.init_argv(reader_file="rev"), r"read the same token file")
+        self.refused(self.init_argv(reader_file="rev"), r"read the same credential file")
 
     def test_init_refuses_a_reader_that_is_the_adjudicator_login(self):
         out = self.refused(self.init_argv("--adjudicator-route", "widgets-breach",
@@ -582,7 +582,7 @@ class ReaderIdentityTests(_Loop):
         self.refused(["set", "--loop", "widgets", "--read-token", "ghost"],
                      r"no token file mapped for the reader 'ghost'")
         self.refused(["set", "--loop", "widgets", "--read-token", "twin",
-                      "--token", f"twin={self.keys / 'fix-pat'}"], r"read the same token file")
+                      "--token", f"twin={self.keys / 'fix-pat'}"], r"read the same credential file")
         loose = self.pat("loose", 0o644)
         self.refused(["set", "--loop", "widgets", "--read-token", "loose",
                       "--token", f"loose={loose}"], r"group/other can read it")

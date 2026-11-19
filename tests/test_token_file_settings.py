@@ -144,7 +144,7 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assert_refused(self.init_argv("--adjudicator-login", FIX), r"also the reader, a seat")
         self.assert_refused(self.init_argv("--adjudicator-login", ADJ,
                                            "--token", f"{ADJ}={self.pats['rev']}"),
-                            r"same token file")
+                            r"same credential file")
         loose = self.pat("loose", 0o644)
         self.assert_refused(self.init_argv("--adjudicator-login", ADJ,
                                            "--token", f"{ADJ}={loose}"),
@@ -191,7 +191,7 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assert_refused([*base, REV, "--token", f"{REV}={self.pats['adj']}"],
                             r"also the reader, a seat")
         self.assert_refused([*base, ADJ, "--token", f"{ADJ}={self.pats['fix']}"],
-                            r"same token file")
+                            r"same credential file")
         loose = self.pat("loose", 0o640)
         self.assert_refused([*base, ADJ, "--token", f"{ADJ}={loose}"], r"group/other can read it")
         self.assert_refused([*base, ADJ, "--token", f"{ADJ}={self.keys / 'gone.pat'}"],
@@ -288,10 +288,10 @@ class TokenFileSettingsTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assert_refused(["apply", "--loop", "widgets"], reason,
                                     {"reviewer_token_file": value})
-        self.assert_refused(["apply", "--loop", "widgets"], r"same token file",
+        self.assert_refused(["apply", "--loop", "widgets"], r"same credential file",
                             {"adjudicator_login": ADJ,
                              "adjudicator_token_file": str(self.pats["fix"])})
-        self.assert_refused(["apply", "--loop", "widgets"], r"same token file",
+        self.assert_refused(["apply", "--loop", "widgets"], r"same credential file",
                             {"fixer_token_file": str(self.pats["rev"])})
         self.assert_refused(["apply", "--loop", "widgets"], r"also the reader",
                             {"adjudicator_login": READER,

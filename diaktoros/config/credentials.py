@@ -80,17 +80,17 @@ def verify_token_settings(settings: dict | None, *, loop: dict | None = None) ->
 
 
 def _shared_token_file(first, second) -> str:
-    """How two token-file references may be one file, or ``""`` when they are provably two.
-    Metadata only; the PAT is never read. A file that cannot be compared (missing, unstatable)
+    """How two credential-file references (a PAT file or an App key, #2243) may be one file, or
+    ``""`` when they are provably two. Metadata only; the credential is never read. A file that cannot be compared (missing, unstatable)
     is never taken as distinct: a missing one used to read as "not the same file" (#1475)."""
     mine, theirs = config.expand_path(first), config.expand_path(second)
-    same = "read the same token file — one account wearing two hats"
+    same = "read the same credential file — one account wearing two hats"
     if os.path.realpath(mine) == os.path.realpath(theirs):
         return same
     try:
         return same if mine.samefile(theirs) else ""
     except OSError as exc:
-        return f"cannot be told apart by token file ({exc.strerror or exc})"
+        return f"cannot be told apart by credential file ({exc.strerror or exc})"
 
 
 def case_clash(loop: dict) -> str:
@@ -252,15 +252,15 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
 
 
 def _distinct_seat_files(where: str, reviewer_file, fixer_file) -> None:
-    """Refuse a reviewer and a fixer reading one token file. A file that cannot be compared now
+    """Refuse a reviewer and a fixer reading one credential file (a PAT or an App key). A file that cannot be compared now
     (gone since it was checked, or unstatable) is refused too, never taken as distinct (#1475)."""
     try:
         same_file = config.expand_path(reviewer_file).samefile(config.expand_path(fixer_file))
     except OSError as exc:
-        raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
+        raise config.ConfigError(f"{where}: cannot verify reviewer/fixer credential file identity: "
                                  f"{exc}") from exc
     if same_file:
-        raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
+        raise config.ConfigError(f"{where}: the reviewer and the fixer read the same credential file "
                                  "— each seat needs its own credential")
 
 

@@ -71,10 +71,10 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
             try:
                 same = mine.samefile(theirs)
             except OSError as exc:
-                raise config.ConfigError(f"{where}: cannot verify adjudicator token file identity: "
+                raise config.ConfigError(f"{where}: cannot verify adjudicator credential file identity: "
                                   f"{exc}") from exc
         if same:
-            raise config.ConfigError(f"{where}: the adjudicator and {other!r} read the same token file "
+            raise config.ConfigError(f"{where}: the adjudicator and {other!r} read the same credential file "
                               f"— {config.FOUR_IDENTITY_RULE}")
     seat["login"] = login
     return seat

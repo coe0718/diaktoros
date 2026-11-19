@@ -8,6 +8,7 @@ that is not an App's bot is never offered ``--app <login>=...``, which ``set --a
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -15,7 +16,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_doctor as app_doctor  # noqa: E402
-from diaktoros import doctor, gh, github_app  # noqa: E402
+import test_token_file_settings as tfs  # noqa: E402
+from diaktoros import doctor, gh, github_app, selftest  # noqa: E402
+from diaktoros.config import credentials  # noqa: E402
 from diaktoros.doctor import identity_checks  # noqa: E402
 
 BOT_REV, BOT_READ = app_doctor.BOT_REV, app_doctor.BOT_READ
@@ -67,6 +70,44 @@ class AppLive(app_doctor.AppLoop):
         self.assertEqual(got.status, doctor.MISMATCH, got.detail)
         self.assertIn("signs as App 99 (other)", got.detail)
         self.assertEqual(self.live({"id": 2, "slug": "acme-reviewer"}).status, doctor.VERIFIED)
+
+
+class SharedCredential(app_doctor.AppLoop):
+    """#2243: an App key shared by two identities is a shared credential file, not a token file."""
+
+    def share_the_readers_key_with_the_reviewer(self):
+        key = next(k for k in self.loop["apps"] if k.casefold() == BOT_REV.casefold())
+        self.loop["apps"][key]["key_file"] = str(self.read_key)
+
+    def test_selftest_names_a_shared_app_key_as_a_credential_file(self):
+        self.share_the_readers_key_with_the_reviewer()
+        ids = {BOT_REV.casefold(): 346013884, BOT_READ.casefold(): 346012008,
+               tfs.FIX.casefold(): 3}
+        report = selftest.Report(io.StringIO())
+        with mock.patch.object(gh, "principal", side_effect=lambda loop, login, fetch=None: {
+                    "login": login, "id": ids[login.casefold()], "app_id": 9}), \
+                mock.patch.object(gh, "fetch", side_effect=lambda loop, path, login=None:
+                                  ({"login": login, "id": 3}, "")):
+            ok = selftest.check_identities(report, self.loop)
+        rows = {r[1]: r for r in report.results}
+        self.assertFalse(ok)
+        _step, _name, status, detail, fix = rows["github:distinct-files"]
+        self.assertEqual(status, selftest.FAIL)
+        self.assertEqual(detail, "two identities share one credential file")
+        self.assertEqual(fix, "give every identity its own PAT file or GitHub App key")
+        self.assertNotIn("token file", detail)
+
+    def test_the_reader_check_names_a_shared_app_key_as_a_credential_file(self):
+        self.share_the_readers_key_with_the_reviewer()
+        problem = credentials.reader_problem(self.loop)
+        self.assertIn(f"the reader {BOT_READ!r} and the reviewer seat", problem)
+        self.assertIn("read the same credential file", problem)
+        self.assertNotIn("token file", problem)
+
+    def test_a_credential_file_that_cannot_be_compared_is_named_kind_neutrally(self):
+        self.read_key.unlink()
+        self.assertEqual(credentials._shared_token_file(self.read_key, self.rev_key),
+                         "cannot be told apart by credential file (No such file or directory)")
 
 
 if __name__ == "__main__":

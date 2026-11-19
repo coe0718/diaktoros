@@ -186,7 +186,8 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
 
     Without one, rulings go to the operator feed and the host ledger only — that is a valid
     configuration, not a failure, so nothing is reported. With one, it must be a fourth account:
-    its own login and its own token file, never the reader's or a seat's. (Distinct *principals*
+    its own login and its own credential file (a PAT file or a GitHub App key), never the
+    reader's or a seat's. (Distinct *principals*
     need a network read; the broker verifies those before every comment: ``/user`` for a PAT,
     ``/app`` and ``/users/<slug>[bot]`` for a GitHub App.)
     """

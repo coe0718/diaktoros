@@ -182,7 +182,7 @@ class SetReview(Base):
         self.install_app_reader()
         seat_key = self.loop_json()["apps"][BOT_REV]["key_file"]
         self.assert_refused(["set", "--loop", "widgets", "--read-token", BOT_READ,
-                             "--app", f"{BOT_READ}=1:{seat_key}"], "same token file")
+                             "--app", f"{BOT_READ}=1:{seat_key}"], "same credential file")
 
     def test_moving_an_app_readers_key_to_an_empty_file_is_refused(self):
         self.install_app_reader()
