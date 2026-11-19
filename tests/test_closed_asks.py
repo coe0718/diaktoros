@@ -22,7 +22,8 @@ from diaktoros import fix_hold, fix_reply, gh, run_supervisor  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
-MALFORMED = ({"number": 12}, {"number": 12, "state": None}, {"number": 12, "state": "unexpected"})
+MALFORMED = ({"number": 12}, {"number": 12, "state": None}, {"number": 12, "state": "unexpected"},
+             {"number": 12, "state": []}, {"number": 12, "state": {}})    # #2559 review F4
 
 
 class ClosedAsks(base.Gate):
@@ -141,6 +142,14 @@ class ClosedAsks(base.Gate):
                 self.assertEqual(self.sweep(), [])
                 self.assertIn(12, self.st.fix_ask_open())
                 self.assertEqual((self.reads, self.enqueued), (0, []))   # nor resumed
+
+    def test_a_malformed_state_does_not_stop_the_sweep_for_a_later_closed_ask(self):
+        """#2559 review F4: an unhashable state on one issue never stops the sweep."""
+        self.st.fix_ask_set(13, "question", 100, "another issue's")
+        answers = {12: {"number": 12, "state": []}, 13: issue(number=13, state="closed")}
+        with mock.patch.object(gh, "api", lambda loop, path, **kw: answers[int(path.split("/")[-1])]):
+            self.assertEqual(self.sweep(), [])
+        self.assertEqual(sorted(self.st.fix_ask_open()), [12])     # #13 dropped, #12 kept
 
     # -- #2051 review F2: a dropped ask's handoff and approval go with it -----------------------
 

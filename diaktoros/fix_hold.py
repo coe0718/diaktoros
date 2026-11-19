@@ -184,11 +184,13 @@ def reply_to(loop: dict, ask: dict, comments: list) -> tuple[str, str] | None:
 def issue_closed(loop: dict, number: int) -> bool | None:
     """Whether the issue is closed, read as the reader: the read ``issue_fix_issue`` makes, so
     the two share one ETag. ``None`` when GitHub could not be read, or its ``state`` is neither
-    ``open`` nor ``closed`` (#2051 review F1): only an explicit ``closed`` drops an ask."""
+    ``open`` nor ``closed``, of any type (#2051 review F1, #2559 review F4): only an explicit
+    ``closed`` drops an ask."""
     issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop["read_token"])
     if not isinstance(issue, dict) or issue.get("number") != number:
         return None
-    return {"open": False, "closed": True}.get(issue.get("state"))
+    state = issue.get("state")      # review F4: any type; only the two strings are read
+    return True if state == "closed" else False if state == "open" else None
 
 
 def drop_ask(st, number: int, ask: dict, why: str, quiet: bool = False) -> bool:
