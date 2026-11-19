@@ -195,11 +195,14 @@ class FilePending(unittest.TestCase):
                         (REPO, HEAD, title, " ".join(title.casefold().split())))
 
     def file(self, reviews=APPROVED, now=None, branch="fix-7", labelled=None, logged=None,
-             audit=None):
+             audit=None, stale=None):
         """One sweep against a fake GitHub. It keeps the labels a new issue is created with, as
         GitHub does for a token with push access; with ``labelled`` it drops them (#1589), and
         the labels endpoint answers with ``labelled(names)``: the issue's labels, or a refusal.
-        ``audit``: what stands in for the broker's audit writer (default: a no-op mock)."""
+        ``audit``: what stands in for the broker's audit writer (default: a no-op mock).
+        ``stale``: the issue POST records that status (or, for ``"unsent"``, an unsent request)
+        and the labels write records none, as a write that never reaches ``gh.request`` would
+        leave it (#2139)."""
         posts = []
 
         def write(loop, path, method, body, login):
@@ -207,8 +210,13 @@ class FilePending(unittest.TestCase):
             if path.endswith("/labels"):
                 data, why = labelled(body["labels"])
                 # The answer's own status, as gh.request records it: None when none arrived.
-                gh._LAST.status = gh.status_of(why) or (200 if data is not None else None)
+                if stale is None:
+                    gh._LAST.status = gh.status_of(why) or (200 if data is not None else None)
                 return data, why
+            if stale == "unsent":
+                gh._LAST.unsent = True
+            elif stale is not None:
+                gh._LAST.status = stale
             kept = body["labels"] if labelled is None else []
             return {"number": 100 + len(posts), "labels": [{"name": x} for x in kept]}, ""
         pr = None if branch is None else {"number": 7, "head": {"sha": HEAD, "ref": branch}}
@@ -441,7 +449,7 @@ class FilePending(unittest.TestCase):
         # #1641: no answer is an unknown outcome; another error, a rate-limit 403, or labels
         # left off a successful answer are reported as they are, never as a permission gap.
         cases = {"no answer": (lambda _n: (None, "timed out"), "unknown"),
-                 "a 5xx": (lambda _n: (None, "HTTP 502: Bad Gateway"), "(HTTP 502"),
+                 "a 5xx": (lambda _n: (None, "HTTP 502: Bad Gateway"), "server error (HTTP 502"),
                  "a rate limit": (lambda _n: (None, "HTTP 403: API rate limit exceeded"),
                                   "rate limit"),
                  "left off": (lambda _n: ([{"name": "bug"}], ""), "left them off")}
@@ -452,6 +460,31 @@ class FilePending(unittest.TestCase):
                 self.assertEqual(self.state(run), "unlabelled")
                 self.assertIn(said, self.error(run))
                 self.assertNotIn("needs permission", self.error(run))
+
+    def test_a_label_write_is_judged_on_its_own_answer_never_the_issue_posts(self):
+        # #2139: _shadow_labels clears gh._LAST before the labels write. A write that returns
+        # without going through gh.request leaves the issue POST's status behind; without the
+        # reset it was read as the labels write's answer (a 403: a permission gap).
+        # A leftover ``unsent`` would say a write that left no answer definitely did not land.
+        for stale, title in ((201, "Created answer"), (403, "Forbidden leftover"),
+                             ("unsent", "Unsent leftover")):
+            with self.subTest(stale=stale):
+                run = self.recorded(title)
+                self.file(labelled=lambda _n: (None, "refused locally"), stale=stale)
+                self.assertEqual(self.state(run), "unlabelled")
+                self.assertIn("got no answer (refused locally): whether GitHub applied them is "
+                              "unknown", self.error(run))
+                self.assertNotIn("needs permission", self.error(run))
+
+    def test_a_5xx_on_the_label_write_leaves_whether_they_landed_unknown(self):
+        # #2140: a 5xx can come after GitHub applied the write, so the gap never says the
+        # labels definitely did not land; it says the outcome is unknown, as a timeout does.
+        run = self.recorded("A finding")
+        self.file(labelled=lambda _n: (None, "HTTP 502: Bad Gateway"))
+        self.assertEqual(self.state(run), "unlabelled")
+        self.assertIn("got a server error (HTTP 502: Bad Gateway): whether GitHub applied them "
+                      "is unknown; check the issue's labels", self.error(run))
+        self.assertNotIn("did not apply", self.error(run))
 
     def audited(self, labelled):
         """The operations the real broker audit records for one filing (#1622 review, F1)."""
