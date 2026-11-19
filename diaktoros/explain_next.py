@@ -164,16 +164,18 @@ def _shadow_fix_ended(c) -> tuple[str, str]:
     """An upheld shadow review whose fixer turn ended with no push, which the sweep does not
     re-arm (#2262): the fix is no longer coming by itself, so the step is a reconcile for a run
     that may have written, retry's own plan when it re-arms this ruling's turn (an older ruling's
-    shadow turn at the same head is an obsolete work order, #2535 review F1), or a fix by hand."""
+    shadow turn at the same head is an obsolete work order, #2535 review F1, which the step names
+    when retry re-arms it too, #2541), or a fix by hand."""
     state, _how, key = c.shadow_turn
     rearm, why, reconcile, rows = fixer_retry(c)
+    others = ", ".join(f"{turn or 'untagged'} ({was})" for turn, was in rows if turn != key)
     if state == "uncertain":
         kind, step = "operator", _reconcile_first(c, "its worker may have written")
     elif any(turn == key for turn, _ in rows):
-        kind, step = "fixer-retry", f"{rearm} re-arms it"
+        kind, step = "fixer-retry", f"{rearm} re-arms it" + (
+            f", and also re-arms {others}, which these findings do not need" if others else "")
     elif rows:
-        older = ", ".join(f"{turn or 'untagged'} ({was})" for turn, was in rows)
-        kind, step = "operator", (f"`retry` would re-arm only {older}, not this ruling's turn "
+        kind, step = "operator", (f"`retry` would re-arm only {others}, not this ruling's turn "
                                   f"{key}, so do not run it for these findings")
     elif reconcile:
         kind, step = "operator", _reconcile_first(c, why)
