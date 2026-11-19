@@ -128,59 +128,30 @@ def _next_approval(c) -> tuple[str, str] | None:
     return kind, action
 
 
-def shadow_fix_turn(c) -> tuple[str, str, str]:
-    """The fixer turn answering this head's upheld shadow review (#2262): ``(state, how, key)``,
-    its ledger state ("" with none, or an unreadable ledger), ``how`` it still answers the
-    findings: ``live`` (queued or running), ``rearmed`` (the sweep's ``queue_shadow_fix``
-    resubmits its turn key and ``submit`` re-arms it, by ``intake.redelivery_refusal``), or ""
-    when it ended and nothing restarts it, and its turn ``key`` (``shadow:<current ruling>``; an
-    older ruling's turn at the same head is not it). Read only when ``c.shadow_fix``."""
-    import sqlite3
-    from .run_supervisor import NOT_ENDED, REARMABLE, SHADOW_FIX_KEY, intake, views
-    ruled = gate.shadows.upheld_shadow_ruling(c.loop, c.number, c.head)
-    try:
-        con = views.read_only_connect(config.host_path("ledger")) if ruled is not None else None
-        if con is None:
-            return "", "", ""
-        con.row_factory = sqlite3.Row
-        try:
-            key = f"{SHADOW_FIX_KEY}{int(ruled)}"
-            row = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                              "seat='fixer' AND turn_key=?", (c.repo, c.number, c.head, key)).fetchone()
-            if row is None:
-                return "", "", ""
-            rearms = row["state"] in REARMABLE and intake.redelivery_refusal(
-                con, row, admitted=True, production=True, seat="fixer") is None
-            return row["state"], ("live" if row["state"] in NOT_ENDED else
-                                  "rearmed" if rearms else ""), key
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError):
-        return "", "", ""
-
-
 def _shadow_fix_ended(c) -> tuple[str, str]:
     """An upheld shadow review whose fixer turn ended with no push, which the sweep does not
     re-arm (#2262): the fix is no longer coming by itself, so the step is a reconcile for a run
     that may have written, retry's own plan when it re-arms this ruling's turn (an older ruling's
-    shadow turn at the same head is an obsolete work order, #2535 review F1), or a fix by hand."""
+    shadow turn at the same head is an obsolete work order, #2535 review F1, which the step names
+    when retry re-arms it too, #2541), or a fix by hand."""
     state, _how, key = c.shadow_turn
     rearm, why, reconcile, rows = fixer_retry(c)
+    others = ", ".join(f"{turn or 'untagged'} ({was})" for turn, was in rows if turn != key)
     if state == "uncertain":
         kind, step = "operator", _reconcile_first(c, "its worker may have written")
     elif any(turn == key for turn, _ in rows):
-        kind, step = "fixer-retry", f"{rearm} re-arms it"
+        kind, step = "fixer-retry", f"{rearm} re-arms it" + (
+            f", and also re-arms {others}, which these findings do not need" if others else "")
     elif rows:
-        older = ", ".join(f"{turn or 'untagged'} ({was})" for turn, was in rows)
-        kind, step = "operator", (f"`retry` would re-arm only {older}, not this ruling's turn "
+        kind, step = "operator", (f"`retry` would re-arm only {others}, not this ruling's turn "
                                   f"{key}, so do not run it for these findings")
     elif reconcile:
         kind, step = "operator", _reconcile_first(c, why)
     else:
         kind, step = "operator", f"`retry` has nothing to re-arm for it ({why or 'not offered'})"
-    return kind, (f"{c.shadow_held} — do not merge head {c.short}; the shadow-fix fixer turn "
-                  f"at this head is {c.shadow_turn[0]} with no fix pushed, and no watchdog sweep "
-                  f"re-arms it: {step}; or fix it by hand, push, and re-request review")
+    # The hold (``c.shadow_held``) already names the ended turn (#2263 review F1).
+    return kind, (f"{c.shadow_held} — do not merge head {c.short}: {step}; or fix it by hand, "
+                  "push, and re-request review")
 
 
 def _next_person(c) -> tuple[str, str] | None:
@@ -235,8 +206,10 @@ def _below_cap_escalation(c) -> str:
 def _next_ruling(c) -> tuple[str, str] | None:
     """Next event while adjudication delivery is pending, ruled, or parked."""
     if c.pending_delivery and not c.adjudicated:
+        # No adjudicator route (``c.adjudicated``): ``_adjudication_next`` names the human
+        # ruling before it reads any escalation source, so none is passed here (#2455).
         kind = "adjudication"
-        action = explain._adjudication_next(c.loop, c.head, escalated_by=_below_cap_escalation(c))
+        action = explain._adjudication_next(c.loop, c.head)
     elif c.pending_delivery:
         kind = "retry"
         action = (f"retry adjudicator delivery for head {c.short} on the next armed watchdog sweep "

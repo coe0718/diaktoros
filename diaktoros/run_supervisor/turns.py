@@ -466,6 +466,7 @@ class ClaimAndLaunch:
                 con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
                             (read.refused, time.time(), row['id']))
                 con.execute('COMMIT')
+                self._refresh_check(None, row, 'cancelled')     # #2326
                 return None
             # Recheck both capacity and PR occupancy under the writer lock. A shadow turn
             # (#218) neither occupies the PR nor waits for it: it writes nothing, so the real
@@ -500,6 +501,7 @@ class ClaimAndLaunch:
                 con.execute("UPDATE runs SET state='failed', attempts=attempts+1, "
                             "error=?,updated=? WHERE id=?", (read.unavailable, now, row['id']))
                 con.execute("COMMIT")
+                self._refresh_check(None, row, 'failed')        # #2326
                 return None
             if merge_hold.spanned(con, row['repo'], row['pr'], now, read.fence):
                 # #2468: a host merge push holds the PR, or held it during the reads. Claimed
@@ -839,6 +841,7 @@ class ClaimAndLaunch:
         if changed:
             self.held_for_ci = True
             self.failure_notice(row['id'], 'waiting')   # once per kind, as a held turn's is
+            self._refresh_check(loop, row, 'waiting')   # a changed reason shows (#2326)
         return True
 
     def _ci_poll_defers(self, row, loop: dict) -> bool:
