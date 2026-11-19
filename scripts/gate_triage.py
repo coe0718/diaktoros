@@ -26,7 +26,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import config, gate, gh  # noqa: E402
-from diaktoros.util import silence  # noqa: E402
+from diaktoros.util import log, silence  # noqa: E402
 
 
 def fix(loop: dict, payload: dict) -> None:
@@ -106,6 +106,19 @@ def _resolve_declined(loop: dict, payload: dict) -> None:
         fix_declined.settle(loop, state_mod.state_for(loop), issue["number"])
 
 
+def _drop_closed_ask(loop: dict, payload: dict) -> None:
+    """A closed issue's held question or plan is dropped (#2051). Only the number is taken from
+    the payload: the live issue decides (#679), and the watchdog sweep is the backstop."""
+    issue = payload.get("issue")
+    if isinstance(issue, dict) and type(issue.get("number")) is int \
+            and payload.get("action") == "closed":
+        from diaktoros import fix_hold, state as state_mod
+        try:
+            fix_hold.drop_closed_ask(loop, state_mod.state_for(loop), issue["number"])
+        except Exception as exc:  # noqa: BLE001 - the watchdog sweep is the backstop
+            log(f"held ask of #{issue['number']} not checked: {type(exc).__name__}: {exc}")
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     if "zen" in payload and "action" not in payload:
@@ -120,6 +133,7 @@ def main() -> None:
     if payload.get("action") == "labeled":
         fix(loop, payload)
     _resolve_declined(loop, payload)
+    _drop_closed_ask(loop, payload)
     if payload.get("action") != "opened":
         silence(f"issues {payload.get('action') or '(no action)'}: only a new issue is triaged")
     issue = payload.get("issue")
