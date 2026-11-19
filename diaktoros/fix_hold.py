@@ -142,9 +142,7 @@ def explain_lines(st, number: int) -> list[str]:
     reply to the fixer's comment (#663)."""
     from . import fix_reply
     ask = st.fix_ask_open().get(number)
-    waiting = st.kv_get(st.dir / fix_reply.WAITING, {})
-    return ([ask_line(number, ask)] if ask else []) + (
-        [fix_reply.line(number)] if isinstance(waiting, dict) and str(number) in waiting else [])
+    return ([ask_line(number, ask)] if ask else []) + fix_reply.status_lines(st, only=number)
 
 
 def explain_rows(loop: dict, st, number: int) -> list[tuple[str, str]]:
