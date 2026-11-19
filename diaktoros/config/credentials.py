@@ -160,7 +160,7 @@ def reader_app_alternative(login: str = "") -> str:
     that reader to an App means naming the App's bot login as the reader too, so the alternative
     changes ``--read-token`` as well.
     """
-    return app_alternative(login, "reader", "--read-token")
+    return app_alternative(login, "reader", "--read-token", placeholder=True)
 
 
 def adjudicator_app_alternative(login: str) -> str:
@@ -169,10 +169,13 @@ def adjudicator_app_alternative(login: str) -> str:
     return app_alternative(login, "adjudicator", "--adjudicator-login")
 
 
-def app_alternative(login: str, role: str, flag: str) -> str:
-    """``--app`` for ``login`` when ``set --app`` would take it (a bot login or a placeholder),
-    else the form that renames ``role`` (through ``flag``) to the App's bot login (#1912)."""
-    if not login or login == "LOGIN" or config.APP_LOGIN.match(login.lower()):
+def app_alternative(login: str, role: str, flag: str, *, placeholder: bool = False) -> str:
+    """``--app`` for ``login`` when ``set --app`` would take it (a bot login, or with
+    ``placeholder`` an empty or ``LOGIN`` stand-in), else the form that renames ``role`` (through
+    ``flag``) to the App's bot login (#1912). Only the reader's advice uses the stand-in: an
+    adjudicator's login is always a real configured one, even one spelled ``LOGIN`` (#2560
+    review F2)."""
+    if (placeholder and login in ("", "LOGIN")) or config.APP_LOGIN.match(login.lower()):
         return f"--app {login or '<that login>'}=APP_ID:/abs/key.pem for a GitHub App {role}"
     return (f"for a GitHub App {role}, name its bot login instead: {flag} <app-slug>[bot] "
             f"--app <app-slug>[bot]=APP_ID:/abs/key.pem — {login!r} is not an App's bot login")

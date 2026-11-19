@@ -80,6 +80,20 @@ def _app_unreachable(name: str, login: str, read: str, response: gh.Response,
     return None
 
 
+def _signer_timed_out(name: str, login: str, exc: Exception, *, app_read: bool) -> doctor.Check:
+    """A signer that did not finish is no answer about the key (#2109): UNKNOWN, as a read with
+    no HTTP answer is. ``app_read``: ``GET /app`` already signed and matched, so only the
+    installation read is unknown (#2560 review F1)."""
+    what = ("GET /app signed with the key and matched, but the installation read's signer did "
+            "not finish in time (a busy or stalled host), so the installation was not read"
+            if app_read else "the signer did not finish in time (a busy or stalled host), so the "
+            "key was never judged and the live check did not finish")
+    return doctor.Check(name, doctor.UNKNOWN, f"{login}: {exc} — {what}",
+                        "run doctor again when the host is less loaded; if it keeps timing out, "
+                        "check the host's signer (`cryptography` in the Hermes runtime venv, or "
+                        "`openssl`); the key file is not implicated")
+
+
 def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     """Whether a GitHub App identity works against GitHub (#1181): its key signs as *that* App
     (``GET /app``: the id and the bot login match) and the App is installed on this repository
@@ -95,17 +109,8 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     entry = github_app.entry(loop, login) or {}
     try:
         app = github_app._as_app(loop, login, "/app")
-        where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
     except github_app.SignTimeout as exc:
-        # A signer that did not finish is no answer about the key (#2109): it was never tried
-        # to completion, so it is UNKNOWN, as a read with no HTTP answer is.
-        return doctor.Check(name, doctor.UNKNOWN,
-                            f"{login}: {exc} — the signer did not finish in time (a busy or "
-                            "stalled host), so the key was never judged and the live check did "
-                            "not finish",
-                            "run doctor again when the host is less loaded; if it keeps timing out, "
-                            "check the host's signer (`cryptography` in the Hermes runtime venv, or "
-                            "`openssl`); the key file is not implicated")
+        return _signer_timed_out(name, login, exc, app_read=False)
     except github_app.AppError as exc:
         return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     found = app.data if isinstance(app.data, dict) else {}
@@ -126,6 +131,14 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     if f"{found.get('slug')}[bot]".casefold() != login.casefold():
         return doctor.Check(name, doctor.MISMATCH, f"{login}: App {entry.get('app_id')} is {found.get('slug')}[bot]",
                             f"name the identity {found.get('slug')}[bot]")
+    # Each read signs its own JWT, so the second signer can time out after /app was judged
+    # (#2560 review F1): what /app said stands, and only the installation is unknown.
+    try:
+        where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
+    except github_app.SignTimeout as exc:
+        return _signer_timed_out(name, login, exc, app_read=True)
+    except github_app.AppError as exc:
+        return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     installation = where.data.get("id") if isinstance(where.data, dict) else None
     if type(installation) is not int:
         silent = _app_unreachable(name, login, f"GET /repos/{loop['repo']}/installation", where,

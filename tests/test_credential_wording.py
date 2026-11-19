@@ -30,12 +30,14 @@ class AppLive(app_doctor.AppLoop):
     """``check_app_live`` with ``_as_app`` answering ``app`` for ``/app`` (200) and an installation
     for the rest, or raising ``raises``."""
 
-    def live(self, app=None, raises=None):
+    def live(self, app=None, raises=None, install_raises=None):
         def as_app(loop, login, path, method="GET", body=None):
             if raises:
                 raise raises
             if path == "/app":
                 return gh.Response(app, "", 200, {})
+            if install_raises:
+                raise install_raises
             return gh.Response({"id": 1}, "", 200, {})
         with mock.patch.object(github_app, "_as_app", side_effect=as_app):
             return identity_checks.check_app_live(self.loop, BOT_REV, offline=False)
@@ -48,6 +50,25 @@ class AppLive(app_doctor.AppLoop):
         self.assertIn("TimeoutExpired", got.detail)
         self.assertIn("did not finish in time", got.detail)
         self.assertNotIn("private key", got.fix)
+        self.assertIn("the key file is not implicated", got.fix)
+
+    def test_a_timeout_after_a_mismatched_app_still_reports_the_mismatch(self):
+        # #2560 review F1: each read signs its own JWT; what /app said stands.
+        timeout = github_app.SignTimeout("App JWT signing failed (cryptography TimeoutExpired)")
+        got = self.live({"id": 99, "slug": "other"}, install_raises=timeout)
+        self.assertEqual(got.status, doctor.MISMATCH, got.detail)
+        self.assertIn("signs as App 99 (other)", got.detail)
+        got = self.live({"id": 2, "slug": "other"}, install_raises=timeout)
+        self.assertEqual(got.status, doctor.MISMATCH, got.detail)
+        self.assertIn("is other[bot]", got.detail)
+
+    def test_a_timeout_after_a_matching_app_names_only_the_installation_unknown(self):
+        got = self.live({"id": 2, "slug": "acme-reviewer"}, install_raises=github_app.SignTimeout(
+            "App JWT signing failed (cryptography TimeoutExpired)"))
+        self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+        self.assertIn("GET /app signed with the key and matched", got.detail)
+        self.assertIn("the installation was not read", got.detail)
+        self.assertNotIn("never judged", got.detail)
         self.assertIn("the key file is not implicated", got.fix)
 
     def test_a_signing_failure_is_still_a_key_mismatch(self):
@@ -134,6 +155,15 @@ class AdjudicatorAppFix(app_doctor.AppLoop):
         with mock.patch("builtins.print"):
             self.assertIsNone(cli_common._split_app_pair(f"{PERSON}=7:/abs/key.pem"))
 
+    def test_a_person_login_spelled_like_the_placeholder_is_not_offered_app(self):
+        # #2560 review F2: an adjudicator's login is real, even one spelled LOGIN.
+        for fix in self.unmapped("LOGIN"):
+            with self.subTest(fix=fix):
+                self.assertNotIn("--app LOGIN=", fix)
+                self.assertIn("--adjudicator-login <app-slug>[bot]", fix)
+        with mock.patch("builtins.print"):
+            self.assertIsNone(cli_common._split_app_pair("LOGIN=7:/abs/key.pem"))
+
     def test_a_bot_login_keeps_the_same_login_app_form(self):
         bot = "acme-arbiter[bot]"
         for fix in self.unmapped(bot):
@@ -148,6 +178,8 @@ class AdjudicatorAppFix(app_doctor.AppLoop):
                          f"{PERSON!r} is not an App's bot login")
         self.assertEqual(credentials.reader_app_alternative(),
                          "--app <that login>=APP_ID:/abs/key.pem for a GitHub App reader")
+        self.assertEqual(credentials.reader_app_alternative("LOGIN"),
+                         "--app LOGIN=APP_ID:/abs/key.pem for a GitHub App reader")
 
 
 if __name__ == "__main__":
