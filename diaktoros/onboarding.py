@@ -201,7 +201,8 @@ def _credential_hashes(loop: dict) -> dict:
 def _loop_settings(loop: dict) -> dict:
     """The loop's own configuration as loaded (``host``, ``base``, ``required_checks``,
     ``hook_admin``, ``fixer_check``, ...), so a ``set`` or a hand edit of the loop file makes
-    the ``loop`` stage stale (#1714). Credentials appear here as paths, never contents."""
+    the ``loop`` stage stale (#1714). Credentials appear here as paths, never contents.
+    selftest's mid-run check passes the loop as read again from its file (#2525)."""
     return dict(loop)
 
 
@@ -466,8 +467,10 @@ def _store(loop: dict, stage: str, entry: dict) -> None:
 
 
 # What each stage's fingerprint covers, for saying what changed (never the values).
-_INPUTS = {"identities": "the repo, a token mapping, an App mapping or a role's login",
-           "loop": "the runtime file or a seat's profile path",
+_INPUTS = {"identities": "the repo, a token mapping, an App mapping, a role's login or the "
+                         "contents of a token or App key file",
+           "loop": "the runtime file, a seat's profile path or a loop setting such as host "
+                   "or base",
            "model": "a seat's model, endpoint or key",
            "live_turn": "the PR's head or the reviewer prompt",
            "armed": "the hooks' state"}

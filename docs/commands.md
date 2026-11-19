@@ -502,7 +502,9 @@ loop file, the runtime file, the credential files and the seats' models (a gatew
 while `host` stayed the same, a token revoked on GitHub) is not seen. If a token, key, setting
 or the runtime file changes while `selftest` runs, it fails `inputs:changed` and exits `1`
 (what passed was the old input), so `setup` stops before arming; that stage is not recorded
-as current.
+as current. The loop file is read again after the checks and again once every stage is
+recorded, so an edit made while the results are being written counts too, and a loop file
+that is removed or no longer loads at any point in the run fails every stage.
 `setup` never changes `unattended_fixer_push`.
 
 `setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes
