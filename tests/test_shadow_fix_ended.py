@@ -39,31 +39,65 @@ class Ended(ruling.Base):
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("DELETE FROM runs WHERE seat='fixer'")
 
+    def row(self, state, error="", retries=0):
+        self.shadow_fix_row(state, error)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET retries=? WHERE seat='fixer'", (retries,))
+
+    # (state, error, retries, ended): one the sweep re-arms (a pre-write failure under
+    # MAX_REARMS), or one still queued or running, still answers the findings; one that ended
+    # otherwise (a failure at MAX_REARMS too: the sweep cannot re-arm it) leaves them to a person.
+    TURNS = (("pending", "", 0, False),
+             ("running", "", 0, False),
+             ("failed", "", 0, False),                                  # the sweep re-arms it
+             ("failed", "", run_supervisor.MAX_REARMS, True),           # #2263 review F3
+             ("succeeded", "", 0, True),
+             ("cancelled", run_supervisor.OPERATOR_CANCEL, 0, True),
+             ("uncertain", "", 0, True))
+    PROMISE = "the fixer answers its findings"
+
     def test_ready_names_a_shadow_fix_turn_that_ended_without_a_push(self):
-        # #2263: one the sweep re-arms (a pre-write failure), or one still queued or running,
-        # still answers the findings; one that ended otherwise leaves them to a person.
-        for state, error, ended in (
-                ("pending", "", False),
-                ("running", "", False),
-                ("failed", "", False),                          # the sweep re-arms it
-                ("succeeded", "", True),
-                ("cancelled", run_supervisor.OPERATOR_CANCEL, True),
-                ("uncertain", "", True)):
-            with self.subTest(state=state):
-                self.shadow_fix_row(state, error)
+        # #2263; review F1: the shadow hold stops promising the fixer's answer once it ended;
+        # review F2: the explain it names carries --loop (more than one loop needs it).
+        for state, error, retries, ended in self.TURNS:
+            with self.subTest(state=state, retries=retries):
+                self.row(state, error, retries)
                 why = self.ready()
                 stuck = [w for w in why if w.startswith("shadow fix:")]
                 self.assertEqual(len(stuck), int(ended), why)
                 self.assertFalse(any(w.startswith("escalated:") for w in why), why)
+                self.assertEqual(any(self.PROMISE in w for w in why), not ended, why)
                 if ended:
                     self.assertIn(f"at head {fg.HEAD[:7]} is {state} with no fix pushed", stuck[0])
                     self.assertIn("a person decides", stuck[0])
+                    self.assertIn(f"`hermes dk explain --loop {self.loop['id']} --pr 7`", stuck[0])
+                    self.assertTrue(any(w.startswith("shadow review:") and "the decision is yours, "
+                                        "not the fixer's" in w for w in why), why)
                 else:
-                    self.assertFalse(any("a person decides" in w for w in why), why)
-                # explain reads the same turn the same way (#2262).
+                    self.assertFalse(any("a person decides" in w or "decision is yours" in w
+                                         for w in why), why)
+                self.clear()
+
+    def test_explain_reads_the_same_turn_the_same_way(self):
+        # #2262/#2263 review F1: blockers and the single next action agree with ready.
+        for state, error, retries, ended in self.TURNS:
+            with self.subTest(state=state, retries=retries):
+                self.row(state, error, retries)
                 report = self.explain()
-                self.assertEqual(any(b.startswith("shadow fix:") for b in report["blockers"]),
-                                 ended, report["blockers"])
+                blockers, action = report["blockers"], report["next"]["action"]
+                self.assertEqual(any(b.startswith("shadow fix:") for b in blockers), ended,
+                                 blockers)
+                self.assertEqual(any(self.PROMISE in b for b in blockers), not ended, blockers)
+                self.assertEqual(self.PROMISE in action, not ended, action)
+                self.assertEqual("the fixer's turn on the upheld findings answers it" in action,
+                                 not ended, action)
+                if ended:
+                    self.assertNotEqual(report["next"]["kind"], "fixer-push", report["next"])
+                    self.assertIn("the decision is yours, not the fixer's", action)
+                    self.assertIn(f"is {state} with no fix pushed", action)
+                else:
+                    self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
+                    self.assertNotIn("decision is yours", action)
                 self.clear()
 
     def test_ready_still_promises_the_fixer_before_its_turn_is_in_the_ledger(self):

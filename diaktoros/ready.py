@@ -25,7 +25,7 @@ reports gates, as everywhere else. GitHub branch protection is not read; ``merge
 """
 from __future__ import annotations
 
-from . import ci, config, explain, explain_next, gate, gh, stale_approval, transition
+from . import ci, config, explain, gate, gh, stale_approval, transition
 from .gate import failures as gate_failures
 
 # GitHub mergeable_state values that leave a PR mergeable (``unstable`` is only a non-required
@@ -274,16 +274,17 @@ def _escalation(loop: dict, number: int, head: str, marker,
 
 def _shadow_fix_ended(number: int, head: str, loop: dict) -> list[tuple[str, str]]:
     """An upheld shadow review's fixer turn that ended with no push and that no sweep re-arms
-    (#2263), read as ``explain`` reads it (``explain_next.shadow_fix_turn``, #2262): the fixer no
+    (#2263), read as ``explain`` reads it (``gate.shadows.shadow_fix_turn``, #2262): the fixer no
     longer answers the findings, so a person does. Nothing while it is queued, running, re-armed
-    by the sweep, or not in the ledger yet."""
-    state, how, _key = explain_next.shadow_fix_turn(loop, number, head)
+    by the sweep, or not in the ledger yet. The ``explain`` it names carries ``--loop``, which
+    it needs with more than one loop configured (#2263 review F2)."""
+    state, how, _key = gate.shadows.shadow_fix_turn(loop, number, head)
     if not state or how:
         return []
     return [(FAILURE, f"shadow fix: the shadow-fix fixer turn at head {head[:7]} is {state} with "
                       "no fix pushed, and no watchdog sweep re-arms it: a person decides (retry "
-                      f"it, or fix it by hand and push; `hermes dk explain --pr {number}` names "
-                      "the step)")]
+                      f"it, or fix it by hand and push; `hermes dk explain --loop {loop['id']} --pr "
+                      f"{number}` names the step)")]
 
 
 def acting(loop: dict, number: int, head: str, reviews: list | None,
