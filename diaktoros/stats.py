@@ -25,8 +25,8 @@ from .state.ledger import read_only
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
 STATES = ("succeeded", "failed", "waiting", "cancelled", "uncertain")
 # Who a marker's ``escalated.by`` names besides the spent cap (a marker with no ``escalated``):
-# the fixer's dispute (#894), the shadow review (#1004) and the operator (#659).
-ESCALATION_KINDS = ("dispute", gate.SHADOW_ESCALATION, "operator")
+# the fixer's dispute (#894), the shadow review (#1004), the cycle (#754) and the operator (#659).
+ESCALATION_KINDS = ("dispute", gate.SHADOW_ESCALATION, gate.CYCLE_ESCALATION, "operator")
 GITHUB_PAGES_MAX = 10
 _SINCE = re.compile(r"^(\d{1,4})([hd])$")
 
@@ -565,7 +565,8 @@ def escalations(db: Path, repo: str, since: float, until: float,
     comes from the loop's breach markers (``breaches``, keyed ``repo#pr``), which keep only each
     PR's latest head: an older escalation, or one whose marker is gone, is ``unknown``, never
     guessed. A marker with ``escalated`` names who asked in its ``by``: ``dispute`` (the fixer),
-    ``shadow`` (the shadow review) or ``operator``; no ``escalated`` is the spent ``cap``. A marker
+    ``shadow`` (the shadow review), ``cycle`` (a finding asking for the PR's own work) or
+    ``operator``; no ``escalated`` is the spent ``cap``. A marker
     in the window with no turn (no adjudicator configured) counts as well.
     None when there is no ledger."""
     db = Path(db)
@@ -597,9 +598,7 @@ def escalations(db: Path, repo: str, since: float, until: float,
         escalated = marker.get("escalated")
         if not escalated:
             return "cap"
-        # The marker names who asked (``escalated.by``): the fixer's dispute (#894), the shadow
-        # review (#1004) or the operator. A marker with no recognised ``by`` reads as the
-        # operator's, as ``gate.breach`` and ``adjudication_situation`` read it.
+        # A marker with no recognised ``by`` reads as the operator's, as ``gate.breach`` does.
         kind = escalated.get("by") if isinstance(escalated, dict) else None
         return kind if kind in ESCALATION_KINDS else "operator"
 
@@ -1213,10 +1212,10 @@ def _escalations_line(escalated: dict, was_escalated: dict) -> str:
     """The digest's escalations line: the total against the window before, how many have a
     ruling, and who asked (``escalations()``'s ``by`` buckets, in the order it lists them)."""
     by = escalated["by"]
+    asked = ", ".join(f"by {kind} {by.get(kind, 0)}" for kind in ("cap", *ESCALATION_KINDS))
     return (f"escalations: {_trend(escalated['total'], was_escalated.get('total', 0))}"
             f" · ruled {escalated['ruled']}, awaiting {escalated['awaiting']}"
-            f" · by cap {by['cap']}, by dispute {by['dispute']}, by shadow {by['shadow']},"
-            f" by operator {by['operator']}, unknown {by['unknown']}")
+            f" · {asked}, unknown {by['unknown']}")
 
 
 def _shadow_lines(data: dict) -> list[str]:

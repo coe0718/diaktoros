@@ -316,11 +316,12 @@ Escalations are counted apart from rulings. One escalation is one adjudicator tu
 spent cap or `escalate` started it, dated when it was committed; a redelivered breach is the same
 turn, and a re-breach at a new head is a new one. `ruled` means it has a ruling (at any time),
 `awaiting` that it has none yet. A breach with no adjudicator configured has no turn and counts
-from its marker. Who asked (`by cap`, `by dispute`, `by shadow`, `by operator`) comes from the
-breach marker, which keeps only each PR's latest head: an older escalation, or one whose marker is
-gone, reads `unknown`. A marker with no `escalated` record is the spent cap; otherwise
+from its marker. Who asked (`by cap`, `by dispute`, `by shadow`, `by cycle`, `by operator`) comes
+from the breach marker, which keeps only each PR's latest head: an older escalation, or one whose
+marker is gone, reads `unknown`. A marker with no `escalated` record is the spent cap; otherwise
 `escalated.by` names it: the fixer's dispute (`dispute`), the shadow review requesting changes at an
-approved head (`shadow`) or `escalate` (`operator`, which is also what an unrecognised `by` reads).
+approved head (`shadow`), the fixer gate parking a PR whose blocking finding asks for the PR's own
+work (`cycle`, #754) or `escalate` (`operator`, which is also what an unrecognised `by` reads).
 
 ```bash
 hermes dk report --since 7d

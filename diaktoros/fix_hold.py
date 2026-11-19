@@ -181,12 +181,55 @@ def reply_to(loop: dict, ask: dict, comments: list) -> tuple[str, str] | None:
     return None
 
 
-def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> None:
+def issue_closed(loop: dict, number: int) -> bool | None:
+    """Whether the issue is closed, read as the reader: the read ``issue_fix_issue`` makes, so
+    the two share one ETag. ``None`` when GitHub could not be read, or its ``state`` is neither
+    ``open`` nor ``closed``, of any type (#2051 review F1, #2559 review F4): only an explicit
+    ``closed`` drops an ask."""
+    issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop["read_token"])
+    if not isinstance(issue, dict) or issue.get("number") != number:
+        return None
+    state = issue.get("state")      # review F4: any type; only the two strings are read
+    return True if state == "closed" else False if state == "open" else None
+
+
+def drop_ask(st, number: int, ask: dict, why: str, quiet: bool = False) -> bool:
+    """Abandon the issue's held ask ``ask`` (only that one, #2382 review F1) with its handoff and
+    plan approval (review F2), and one log line; ``quiet`` when the caller's own line says it."""
+    if not st.fix_ask_drop(number, expect=ask, discard=True):
+        return False
+    log(f"issue #{number}: ask dropped: {why}", quiet=quiet)
+    return True
+
+
+def drop_closed_ask(loop: dict, st, number: int) -> bool:
+    """The triage gate's ``closed`` delivery (#2051): drop the issue's held ask once the live
+    issue reads closed. The delivery is only the cue (#679); the sweep stays the backstop."""
+    ask = st.fix_ask_open().get(number)
+    if ask is None or issue_closed(loop, number) is not True:
+        return False
+    return drop_ask(st, number, ask, "the issue is closed")
+
+
+def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dict[int, str]:
     """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn. ``only``:
-    that issue's ask alone (a maintainer's comment on it, #680)."""
+    that issue's ask alone (a maintainer's comment on it, #680), whose caller logs any drop
+    (review F3: one line on every path). An ask whose issue is closed is dropped before its
+    comments are read (#2051), and one whose resume finds the issue no longer eligible is
+    dropped, not retried (#2245). Returns ``{issue: why}`` of those dropped."""
+    from . import run_supervisor
     from .run_supervisor import issue_inputs
+    dropped: dict[int, str] = {}
     for number, ask in sorted(st.fix_ask_open().items()):
         if only is not None and number != only:
+            continue
+        closed = issue_closed(loop, number)
+        if closed is None:
+            log(f"issue #{number}: state unreadable, ask stays open")
+            continue
+        if closed:
+            if drop_ask(st, number, ask, "the issue is closed", quiet=only is not None):
+                dropped[number] = "the issue is closed"
             continue
         if ask.get("pending"):
             # #2334 review F4: `continue --post-plan` reserved this ask but its comment is not
@@ -217,12 +260,17 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> Non
         try:
             issue_inputs.issue_fix_issue(loop, number)
             base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
+        except run_supervisor.IssueIneligible as exc:   # #2245: no resume can ever run
+            if drop_ask(st, number, ask, str(exc), quiet=only is not None):
+                dropped[number] = str(exc)
+            continue
         except Exception as exc:
             lines.append(f"⚠️ issue #{number}: reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")
             continue                                # the ask stays open: retried next sweep
         st.fix_ask_drop(number, expect=ask)
         log(f"issue #{number}: {login} replied; fix turn resumed at {base[:7]}: {outcome}")
+    return dropped
 
 
 def hold(loop: dict, st, number: int, pr: int, why: str = "") -> None:
