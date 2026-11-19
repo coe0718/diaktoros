@@ -227,8 +227,50 @@ try:
     from hermes_cli import runtime_provider as rp
 except Exception as exc:
     done(kind="unavailable", error="Hermes is not importable from " + source + " (" + text(exc) + ")")
+
+
+def profile_secrets(home):
+    """The profile's secrets through Hermes's secret scope (#2374), so ``get_secret`` readers see
+    them and no key lands in ``os.environ``. A Hermes without ``agent.secret_scope`` gets today's
+    ``.env`` load instead; then None."""
+    try:
+        from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+    except ImportError:
+        load_hermes_dotenv(hermes_home=home)
+        return None
+    secrets = build_profile_secret_scope(home)
+    set_secret_scope(secrets, profile_home=home)
+    return secrets
+
+
+def routing_names(requested):
+    """Settings, not credentials, that Hermes still reads straight from ``os.environ`` on this
+    path: the provider's base-URL override, an external process's command and arguments, and
+    ``CLAUDE_CONFIG_DIR`` (Claude Code's credential file)."""
+    names, providers = {"CLAUDE_CONFIG_DIR"}, {requested}
+    try:
+        from hermes_cli.auth import resolve_provider
+        providers.add(str(resolve_provider(requested) or ""))   # an alias: claude -> anthropic
+    except Exception:
+        pass
+    for provider in providers - {""}:
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            names.add(str(getattr(PROVIDER_REGISTRY.get(provider), "base_url_env_var", "") or ""))
+        except Exception:
+            pass
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(provider)
+            names.update(str(n) for n in getattr(profile, "process_command_env_vars", ()) or ())
+            names.add(str(getattr(profile, "process_args_env_var", "") or ""))
+        except Exception:
+            pass
+    return names - {""}
+
+
 try:
-    load_hermes_dotenv(hermes_home=home)
+    secrets = profile_secrets(home)
     cfg = rp._get_model_config()
     requested = rp.resolve_requested_provider()
 except Exception as exc:
@@ -304,6 +346,10 @@ try:
                ", which the inference proxy cannot refresh")
 except ImportError:
     pass
+
+for name in routing_names(requested) if secrets is not None else ():
+    if name in secrets:
+        os.environ[name] = secrets[name]
 
 def resolve():
     if requested == "claude-subscription-directsdk-experimental":

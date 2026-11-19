@@ -5,8 +5,9 @@ the model, the provider and the account. The isolated turn cannot read the profi
 sandbox has no host home and no credentials), so the **host** resolves it, right before the turn:
 
 * the seat's profile home (``$HERMES_HOME`` for ``default``, else ``profiles/<name>``) is handed to
-  Hermes's own resolution — ``hermes_cli.env_loader.load_hermes_dotenv`` for the profile's
-  ``.env`` and secret sources, then ``hermes_cli.runtime_provider.resolve_runtime_provider`` — the
+  Hermes's own resolution — ``agent.secret_scope`` for the profile's ``.env`` and secret sources
+  (#2374; ``load_hermes_dotenv`` on a Hermes without it), then
+  ``hermes_cli.runtime_provider.resolve_runtime_provider`` — the
   same path ``hermes -p <name> chat`` takes, including ``auth.json`` credential pools and named
   ``custom_providers``. It runs in a **separate process per seat**, with an environment built from
   scratch (no inherited provider variables), so one seat's credential can never satisfy another

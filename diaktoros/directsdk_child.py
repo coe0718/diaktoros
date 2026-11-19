@@ -12,8 +12,16 @@ import types
 def main():
     source, plugin = sys.argv[1:]
     sys.path.insert(0, source)
-    from hermes_cli.env_loader import load_hermes_dotenv
-    load_hermes_dotenv(hermes_home=Path(os.environ['HERMES_HOME']))
+    home = os.environ['HERMES_HOME']
+    try:
+        # The profile's secrets through Hermes's secret scope, not os.environ (#2374).
+        from agent.secret_scope import build_profile_secret_scope, get_secret, set_secret_scope
+    except ImportError:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(hermes_home=Path(home))
+        get_secret = os.environ.get
+    else:
+        set_secret_scope(build_profile_secret_scope(Path(home)), profile_home=home)
     # Load only installed transport modules, not arbitrary client kwargs from config or
     # request data. The package shim preserves DirectSDK's relative imports.
     package = types.ModuleType('_review_loop_directsdk')
@@ -22,11 +30,11 @@ def main():
     # Profile-selected native login stays host-side. No API key, proxy, hook, Node/Python
     # preload or ambient provider environment reaches the native process.
     env = {key: os.environ[key] for key in ('HOME', 'PATH', 'LANG', 'TMPDIR') if key in os.environ}
-    command = os.environ.get('CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND', 'claude')
+    command = get_secret('CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND', 'claude')
     path = shutil.which(command, path=env.get('PATH', '') + ':' + str(Path(env['HOME']) / '.local/bin'))
     if not path:
         raise ValueError('native Claude CLI unavailable')
-    config = os.environ.get('CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR') or os.environ.get('CLAUDE_CONFIG_DIR')
+    config = get_secret('CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR') or get_secret('CLAUDE_CONFIG_DIR')
     if config:
         if not Path(config).is_absolute() or not Path(config).is_dir():
             raise ValueError('native config directory unavailable')
