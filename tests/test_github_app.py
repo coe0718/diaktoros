@@ -153,7 +153,7 @@ class Normalize(unittest.TestCase):
     def test_an_app_key_shared_with_another_identity_is_refused(self):
         raw = self.raw()
         raw["apps"]["acme-arbiter[bot]"]["key_file"] = "/k/fix.pat"
-        with self.assertRaisesRegex(config.ConfigError, "read the same token file"):
+        with self.assertRaisesRegex(config.ConfigError, "read the same credential file"):
             config.normalize(raw)
 
 
@@ -546,7 +546,7 @@ class EveryCredentialCheck(Broker):
         self.loop["apps"]["acme-reader[bot]"] = {"app_id": 9, "key_file": str(self.key)}
         self.loop["read_token"] = "acme-reader[bot]"
         from diaktoros.config import credentials as creds
-        self.assertIn("read the same token file", creds.reader_problem(self.loop))
+        self.assertIn("read the same credential file", creds.reader_problem(self.loop))
 
     def test_selftest_probes_and_redacts_app_keys(self):
         with mock.patch("diaktoros.seat_model.secret_paths", return_value=[]):
