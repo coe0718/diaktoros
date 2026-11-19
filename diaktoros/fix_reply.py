@@ -163,7 +163,9 @@ def on_comment(loop: dict, payload: dict) -> None:
     if number in st.fix_ask_open():                 # an ask (#483) resumes by its own rules
         lines: list[str] = []
         run = st.fix_ask_open()[number].get("run")
-        fix_hold.sweep_asks(loop, st, lines, only=number)
+        dropped = fix_hold.sweep_asks(loop, st, lines, only=number)
+        if number in dropped:                       # #2051, #2245: closed or no longer eligible
+            silence(f"issue #{number}: ask dropped: {dropped[number]}")
         if number in st.fix_ask_open():
             silence(f"issue #{number}: the ask is still open " + " ".join(lines))
         if run:                                     # #2334: the plan `continue` posted

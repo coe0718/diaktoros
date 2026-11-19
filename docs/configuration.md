@@ -345,7 +345,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `handoff` | Fixer pushed and requested review. |
 | `verdict` | Changes requested: fixer queued or held for the operator under push-off policy. |
 | `approved` | Reviewer approved. |
-| `escalation` | Durable cap-breach marker written; next is adjudication or the operator. |
+| `escalation` | Durable breach marker written (the spent cap, or an escalation for a ruling before it); next is adjudication or the operator. |
 | `ruling` | Isolated adjudicator recorded a ruling; the reason also reaches the operator outbox. |
 | `stall` | Watchdog reports a quiet/stuck head. |
 | `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
