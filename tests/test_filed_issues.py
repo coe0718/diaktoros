@@ -294,6 +294,29 @@ class Filing(Base):
         self.assertIn("already filed", self.send(server, title="t", body="b", labels=["bug"])["error"])
         self.assertEqual(len(self.posts), 1)
 
+    def test_a_failed_audit_of_the_confirmed_issue_keeps_its_number(self):
+        # #2511: GitHub confirmed the issue; its audit line can't be written. The number is kept
+        # (posted, never uncertain), the failure is said on stderr, and the audit says reviewer.
+        sup, run_id = self.run_row()
+        server = self.broker(run_id)
+        real, stderr, roles = broker._audit, io.StringIO(), []
+
+        def audit(loop, repo, number, head, branch, role, operation, login):
+            if operation == "file_issue":
+                roles.append(role)
+                raise OSError("audit disk full")
+            return real(loop, repo, number, head, branch, role, operation, login)
+        with mock.patch.object(broker, "_audit", side_effect=audit), \
+                mock.patch.object(sys, "stderr", stderr):
+            answer = self.send(server, title="t", body="b", labels=["bug"])
+        self.assertEqual(answer, {"ok": True, "result": {"accepted": True, "issue": 301}})
+        self.assertEqual(roles, ["reviewer"])
+        with sup._connect() as con:
+            row = con.execute("SELECT state,issue_number FROM filed_issues").fetchone()
+        self.assertEqual(tuple(row), ("posted", 301))
+        self.assertIn("audit record file_issue not written for #7: OSError: audit disk full",
+                      stderr.getvalue())
+
     def host_filing(self, sup, seat, title, state):
         """A host filing (#914, #1864) for a ``seat`` run on PR 7, its POST left in ``state``."""
         sup.enqueue(f"{REPO}:7:{HEAD}:{seat}", REPO, 7, HEAD, seat)
