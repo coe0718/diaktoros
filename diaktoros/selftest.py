@@ -635,8 +635,8 @@ def _unmapped_fix(loop: dict, role: str, login: str) -> str:
         return credentials.seat_fix(loop, role)
     if role == "read":
         return credentials.reader_fix(loop, login)
-    return (f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` (or --app "
-            f"{login}=APP_ID:/abs/key.pem)")
+    return (f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` "
+            f"(or {credentials.adjudicator_app_alternative(login)})")
 
 
 def check_identities(report: Report, loop: dict) -> bool:

@@ -18,10 +18,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_doctor as app_doctor  # noqa: E402
 import test_token_file_settings as tfs  # noqa: E402
 from diaktoros import doctor, gh, github_app, selftest  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.config import credentials  # noqa: E402
 from diaktoros.doctor import identity_checks  # noqa: E402
 
 BOT_REV, BOT_READ = app_doctor.BOT_REV, app_doctor.BOT_READ
+PERSON = "ghost-account"
 
 
 class AppLive(app_doctor.AppLoop):
@@ -108,6 +110,44 @@ class SharedCredential(app_doctor.AppLoop):
         self.read_key.unlink()
         self.assertEqual(credentials._shared_token_file(self.read_key, self.rev_key),
                          "cannot be told apart by credential file (No such file or directory)")
+
+
+class AdjudicatorAppFix(app_doctor.AppLoop):
+    """#2454: the App half of an unmapped adjudicator's fix is one `set --app` would take."""
+
+    def unmapped(self, login):
+        self.loop["seats"]["adjudicator"] = {"login": login}
+        doctor_fix = identity_checks.check_adjudicator_identity(self.loop)
+        self.assertEqual(doctor_fix.status, doctor.ABSENT, doctor_fix.detail)
+        return doctor_fix.fix, selftest._unmapped_fix(self.loop, "adjudicator", login)
+
+    def test_a_person_login_is_told_to_name_the_apps_bot_instead(self):
+        for fix in self.unmapped(PERSON):
+            with self.subTest(fix=fix):
+                self.assertIn(f"--token {PERSON}=/path/to/pat", fix)
+                self.assertNotIn(f"--app {PERSON}=", fix)
+                self.assertIn("for a GitHub App adjudicator, name its bot login instead: "
+                              "--adjudicator-login <app-slug>[bot] "
+                              "--app <app-slug>[bot]=APP_ID:/abs/key.pem", fix)
+                self.assertIn(f"{PERSON!r} is not an App's bot login", fix)
+        # What the old advice named, `set --app` refuses.
+        with mock.patch("builtins.print"):
+            self.assertIsNone(cli_common._split_app_pair(f"{PERSON}=7:/abs/key.pem"))
+
+    def test_a_bot_login_keeps_the_same_login_app_form(self):
+        bot = "acme-arbiter[bot]"
+        for fix in self.unmapped(bot):
+            with self.subTest(fix=fix):
+                self.assertIn(f"--app {bot}=APP_ID:/abs/key.pem for a GitHub App adjudicator", fix)
+                self.assertNotIn("--adjudicator-login <app-slug>[bot]", fix)
+
+    def test_the_reader_alternative_is_unchanged(self):
+        self.assertEqual(credentials.reader_app_alternative(PERSON),
+                         "for a GitHub App reader, name its bot login instead: --read-token "
+                         "<app-slug>[bot] --app <app-slug>[bot]=APP_ID:/abs/key.pem — "
+                         f"{PERSON!r} is not an App's bot login")
+        self.assertEqual(credentials.reader_app_alternative(),
+                         "--app <that login>=APP_ID:/abs/key.pem for a GitHub App reader")
 
 
 if __name__ == "__main__":

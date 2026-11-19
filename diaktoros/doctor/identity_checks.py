@@ -216,7 +216,8 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
         file_kind = "GitHub App key"
     if path is None:
         return doctor.Check("credential:adjudicator", doctor.ABSENT, f"no tokens or apps entry for {login!r}",
-                            f"add --token {login}=/path/to/pat (or --app {login}=APP_ID:/abs/key.pem), or "
+                            f"add --token {login}=/path/to/pat (or "
+                            f"{credentials.adjudicator_app_alternative(login)}), or "
                             "remove seats.adjudicator.login for operator-only rulings")
     if not path.is_file() or path.stat().st_size == 0:
         return doctor.Check("credential:adjudicator", doctor.ABSENT,
