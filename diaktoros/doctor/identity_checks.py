@@ -86,7 +86,8 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     (``GET /repos/<repo>/installation``). Both are reads made with the App's own JWT; no token is
     minted and nothing is written. A read with no HTTP answer (the network, not the key) is
     UNKNOWN, as for a PAT, and so is a 2xx whose body could not be read (a proxy or a captive
-    portal, #1923); only an error answer from GitHub, or a key that cannot sign, is a MISMATCH."""
+    portal, #1923), and so is a signer that timed out (#2109); only an error answer from GitHub,
+    or a key that cannot sign, is a MISMATCH."""
     from .. import github_app
     name = f"app-live:{login}"
     if offline:
@@ -95,6 +96,16 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     try:
         app = github_app._as_app(loop, login, "/app")
         where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
+    except github_app.SignTimeout as exc:
+        # A signer that did not finish is no answer about the key (#2109): it was never tried
+        # to completion, so it is UNKNOWN, as a read with no HTTP answer is.
+        return doctor.Check(name, doctor.UNKNOWN,
+                            f"{login}: {exc} — the signer did not finish in time (a busy or "
+                            "stalled host), so the key was never judged and the live check did "
+                            "not finish",
+                            "run doctor again when the host is less loaded; if it keeps timing out, "
+                            "check the host's signer (`cryptography` in the Hermes runtime venv, or "
+                            "`openssl`); the key file is not implicated")
     except github_app.AppError as exc:
         return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     found = app.data if isinstance(app.data, dict) else {}
