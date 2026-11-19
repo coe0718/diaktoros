@@ -532,9 +532,11 @@ def label_issue_pr(loop: dict, *, repo: str, number: int, pr: int, login: str) -
     the PR exists. The labels come from the host's own re-read of the issue
     (``issue_fix_issue``), never from the model. Best effort: a failure is logged and audited
     (``labels_failed``) and never raised, so the PR open, the review request and the ledger's
-    ``opened`` state stand."""
+    ``opened`` state stand. Only a failed write is ``labels_failed``: the audit line is written
+    after the write is judged, so a failure to write it never says confirmed labels failed (#2035)."""
     from ..run_supervisor import issue_inputs
     from ..util import log
+    operation = "labels"
     try:
         labels = issue_pr_labels(loop, issue_inputs.issue_fix_issue(loop, number))
         if not labels:
@@ -543,14 +545,14 @@ def label_issue_pr(loop: dict, *, repo: str, number: int, pr: int, login: str) -
                              body={"labels": labels}, login=login)
         if not isinstance(result, list):
             raise _denied("GitHub label write did not return a successful response", why)
-        _audit(loop, repo, pr, "", "", "issue_fixer", "labels", login)
     except Exception as exc:  # noqa: BLE001 - the PR is open: its outcome stands
         log(f"PR #{pr} (fix of #{number}) not labeled like its issue: "
             f"{type(exc).__name__}: {exc}")
-        try:
-            _audit(loop, repo, pr, "", "", "issue_fixer", "labels_failed", login)
-        except Exception as audit_exc:  # noqa: BLE001
-            log(f"audit record labels_failed not written for PR #{pr}: {audit_exc}")
+        operation = "labels_failed"
+    try:
+        _audit(loop, repo, pr, "", "", "issue_fixer", operation, login)
+    except Exception as audit_exc:  # noqa: BLE001
+        log(f"audit record {operation} not written for PR #{pr}: {audit_exc}")
 
 
 def request_issue_pr_review(loop: dict, *, repo: str, pr: int, login: str) -> None:
