@@ -466,8 +466,10 @@ def _store(loop: dict, stage: str, entry: dict) -> None:
 
 
 # What each stage's fingerprint covers, for saying what changed (never the values).
-_INPUTS = {"identities": "the repo, a token mapping, an App mapping or a role's login",
-           "loop": "the runtime file or a seat's profile path",
+_INPUTS = {"identities": "the repo, a token mapping, an App mapping, a role's login or the "
+                         "contents of a token or App key file",
+           "loop": "the runtime file, a seat's profile path or a loop setting such as host "
+                   "or base",
            "model": "a seat's model, endpoint or key",
            "live_turn": "the PR's head or the reviewer prompt",
            "armed": "the hooks' state"}
