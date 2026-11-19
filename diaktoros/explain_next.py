@@ -128,16 +128,17 @@ def _next_approval(c) -> tuple[str, str] | None:
     return kind, action
 
 
-def shadow_fix_turn(c) -> tuple[str, str, str]:
+def shadow_fix_turn(loop: dict, number: int, head: str) -> tuple[str, str, str]:
     """The fixer turn answering this head's upheld shadow review (#2262): ``(state, how, key)``,
     its ledger state ("" with none, or an unreadable ledger), ``how`` it still answers the
     findings: ``live`` (queued or running), ``rearmed`` (the sweep's ``queue_shadow_fix``
     resubmits its turn key and ``submit`` re-arms it, by ``intake.redelivery_refusal``), or ""
     when it ended and nothing restarts it, and its turn ``key`` (``shadow:<current ruling>``; an
-    older ruling's turn at the same head is not it). Read only when ``c.shadow_fix``."""
+    older ruling's turn at the same head is not it). Read only when the fix is owed
+    (``gate.shadows.shadow_fix_owed``); ``explain`` and ``ready`` (#2263) both read it."""
     import sqlite3
     from .run_supervisor import NOT_ENDED, REARMABLE, SHADOW_FIX_KEY, intake, views
-    ruled = gate.shadows.upheld_shadow_ruling(c.loop, c.number, c.head)
+    ruled = gate.shadows.upheld_shadow_ruling(loop, number, head)
     try:
         con = views.read_only_connect(config.host_path("ledger")) if ruled is not None else None
         if con is None:
@@ -146,7 +147,7 @@ def shadow_fix_turn(c) -> tuple[str, str, str]:
         try:
             key = f"{SHADOW_FIX_KEY}{int(ruled)}"
             row = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                              "seat='fixer' AND turn_key=?", (c.repo, c.number, c.head, key)).fetchone()
+                              "seat='fixer' AND turn_key=?", (loop["repo"], number, head, key)).fetchone()
             if row is None:
                 return "", "", ""
             rearms = row["state"] in REARMABLE and intake.redelivery_refusal(
