@@ -107,6 +107,28 @@ class Flake(unittest.TestCase):
         self.assertIn("tried, but it had not shown at this head after 2 hours", outcome)
         self.assertNotIn("failed again", outcome)
 
+    def test_a_rerun_that_showed_in_part_is_not_said_to_have_never_shown(self):
+        """#2554: after the wait, a covered check under a new id (still running, or done) is the
+        rerun showing in part, while another covered check is still red under its old id."""
+        both = ci.CIState(failed=list(SHARDS), ids=dict(zip(SHARDS, (101, 102))))
+        ids = {SHARDS[0]: 301, SHARDS[1]: 102}
+        running = ci.CIState(failed=[SHARDS[1]], pending=[SHARDS[0]], ids=ids)
+        done = ci.CIState(failed=[SHARDS[1]], passed=[SHARDS[0]], ids=ids)
+        for read, progress in ((running, True), (done, False)):
+            with self.subTest(progress=progress):
+                self.setUp()
+                self.assertFalse(self.sweep(both))
+                tried = {**self.memory()["rerun"], "at": 0}
+                self.assertEqual(tried["checks"], list(SHARDS))
+                main_check._remember(self.st, self.st.dir / main_check.FILE, "rerun", tried)
+                self.assertTrue(self.sweep(read))
+                outcome = self.notices[0][1]["outcome"]
+                self.assertIn("after 2 hours part of it had shown at this head", outcome)
+                self.assertIn(f'"{SHARDS[1]}" still showed its red from before the rerun', outcome)
+                self.assertEqual(f'still in progress: "{SHARDS[0]}"' in outcome, progress)
+                for wrong in ("had not shown", "failed again", "did not rerun"):
+                    self.assertNotIn(wrong, outcome)
+
     def test_a_red_the_rerun_did_not_cause_is_not_called_a_failed_rerun(self):
         """#2284: a check still pending when the rerun was decided that later fails at the same
         head, or a red check with no check-run id, is not the rerun failing again."""

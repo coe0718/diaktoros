@@ -148,7 +148,9 @@ def _after_rerun(tried: dict, view: ci.CIState, now: float) -> Decision:
     rerun show red, inside RERUN_WAIT_S; else a notice whose note says what this red is (#2284).
     "Failed again" only when a check the rerun covered shows red under a new check-run id; a red
     from a check it never covered (one still pending when it was decided), an id that cannot be
-    read, or a rerun that never showed is said as that, not as the rerun failing."""
+    read, or a rerun that never showed is said as that, not as the rerun failing; after the wait,
+    a rerun that showed in part (a covered check under a new id, perhaps still running) is said
+    as that, not as one that never showed (#2554)."""
     old = set(tried.get("ids") or ())
     covered = tried.get("checks")              # None: a record from before #2284 names no checks
     again, other, unread = [], [], []
@@ -169,8 +171,18 @@ def _after_rerun(tried: dict, view: ci.CIState, now: float) -> Decision:
                                   f"check-run id for {ci._names(unread)}).")
     if now - (tried.get("at") or 0) < RERUN_WAIT_S:
         return Decision("wait")                   # still the jobs that were rerun
-    return Decision("notice", f"{tried_}, but it had not shown at this head after "
-                              f"{RERUN_WAIT_S // 3600} hours.")
+    hours = RERUN_WAIT_S // 3600
+    # A covered check under a new id is the rerun showing (#2554): part of it is there, so it is
+    # not said to have never shown; one still pending is said to be in progress.
+    shown = [name for name in covered or () if type(view.ids.get(name)) is int
+             and view.ids[name] not in old]
+    if shown:
+        running = [name for name in shown if name in view.pending]
+        progress = f" (still in progress: {ci._names(running)})" if running else ""
+        return Decision("notice", f"{tried_}; after {hours} hours part of it had shown at this "
+                                  f"head{progress}, but {ci._names(view.failed)} still showed "
+                                  "its red from before the rerun.")
+    return Decision("notice", f"{tried_}, but it had not shown at this head after {hours} hours.")
 
 
 def flaked_outcome(tried: dict) -> str:
