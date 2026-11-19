@@ -183,18 +183,20 @@ def reply_to(loop: dict, ask: dict, comments: list) -> tuple[str, str] | None:
 
 def issue_closed(loop: dict, number: int) -> bool | None:
     """Whether the issue is closed, read as the reader: the read ``issue_fix_issue`` makes, so
-    the two share one ETag. ``None`` when GitHub could not be read."""
+    the two share one ETag. ``None`` when GitHub could not be read, or its ``state`` is neither
+    ``open`` nor ``closed`` (#2051 review F1): only an explicit ``closed`` drops an ask."""
     issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop["read_token"])
     if not isinstance(issue, dict) or issue.get("number") != number:
         return None
-    return issue.get("state") != "open"
+    return {"open": False, "closed": True}.get(issue.get("state"))
 
 
-def drop_ask(st, number: int, ask: dict, why: str) -> bool:
-    """Close the issue's held ask ``ask`` (only that one, #2382 review F1), with one log line."""
-    if not st.fix_ask_drop(number, expect=ask):
+def drop_ask(st, number: int, ask: dict, why: str, quiet: bool = False) -> bool:
+    """Abandon the issue's held ask ``ask`` (only that one, #2382 review F1) with its handoff and
+    plan approval (review F2), and one log line; ``quiet`` when the caller's own line says it."""
+    if not st.fix_ask_drop(number, expect=ask, discard=True):
         return False
-    log(f"issue #{number}: ask dropped: {why}")
+    log(f"issue #{number}: ask dropped: {why}", quiet=quiet)
     return True
 
 
@@ -209,9 +211,10 @@ def drop_closed_ask(loop: dict, st, number: int) -> bool:
 
 def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dict[int, str]:
     """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn. ``only``:
-    that issue's ask alone (a maintainer's comment on it, #680). An ask whose issue is closed is
-    dropped before its comments are read (#2051), and one whose resume finds the issue no
-    longer eligible is dropped, not retried (#2245). Returns ``{issue: why}`` of those dropped."""
+    that issue's ask alone (a maintainer's comment on it, #680), whose caller logs any drop
+    (review F3: one line on every path). An ask whose issue is closed is dropped before its
+    comments are read (#2051), and one whose resume finds the issue no longer eligible is
+    dropped, not retried (#2245). Returns ``{issue: why}`` of those dropped."""
     from . import run_supervisor
     from .run_supervisor import issue_inputs
     dropped: dict[int, str] = {}
@@ -220,10 +223,10 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dic
             continue
         closed = issue_closed(loop, number)
         if closed is None:
-            log(f"issue #{number}: unreadable, ask stays open")
+            log(f"issue #{number}: state unreadable, ask stays open")
             continue
         if closed:
-            if drop_ask(st, number, ask, "the issue is closed"):
+            if drop_ask(st, number, ask, "the issue is closed", quiet=only is not None):
                 dropped[number] = "the issue is closed"
             continue
         if ask.get("pending"):
@@ -256,7 +259,7 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dic
             issue_inputs.issue_fix_issue(loop, number)
             base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
         except run_supervisor.IssueIneligible as exc:   # #2245: no resume can ever run
-            if drop_ask(st, number, ask, str(exc)):
+            if drop_ask(st, number, ask, str(exc), quiet=only is not None):
                 dropped[number] = str(exc)
             continue
         except Exception as exc:

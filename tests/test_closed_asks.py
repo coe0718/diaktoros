@@ -7,6 +7,8 @@ its comments, the triage gate's ``closed`` delivery drops it at once (the live i
 every sweep. An open issue's ask, and a resume that only could not read GitHub, stay as they are.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -18,6 +20,9 @@ BASE, REPO, issue = base.BASE, base.REPO, base.issue
 
 from diaktoros import fix_hold, fix_reply, gh, run_supervisor  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
+
+MALFORMED = ({"number": 12}, {"number": 12, "state": None}, {"number": 12, "state": "unexpected"})
 
 
 class ClosedAsks(base.Gate):
@@ -110,6 +115,54 @@ class ClosedAsks(base.Gate):
         self.assertIn(12, self.st.fix_ask_open())
         self.assertEqual(self.reads, 0)
 
+    def test_a_malformed_issue_state_keeps_the_ask(self):
+        """#2051 review F1: only an explicit ``closed`` state establishes closure."""
+        self.reply()
+        for live in MALFORMED:
+            with self.subTest(live=live):
+                self.live = live
+                self.assertEqual(self.sweep(), [])
+                self.assertIn(12, self.st.fix_ask_open())
+                self.assertEqual((self.reads, self.enqueued), (0, []))   # nor resumed
+
+    # -- #2051 review F2: a dropped ask's handoff and approval go with it -----------------------
+
+    def plan_approved(self):
+        """Issue 12's ask is a plan a maintainer approved, on a plan-first issue."""
+        self.st.fix_ask_drop(12)
+        self.st.fix_ask_set(12, "plan", 100, "the plan")
+        self.reply(body="/loop approve")
+
+    def assert_fresh(self):
+        """Relabelled, the next fix turn must plan again and carry no old reply."""
+        relabelled = issue(labels=(base.LABEL, fix_hold.PLAN_LABEL))
+        self.assertIsNone(self.st.fix_handoff(12))
+        self.assertTrue(fix_hold.plan_required(self.st, 12, relabelled))
+        prompt = turn_prompts.ask_section(self.loop, 12, relabelled)
+        self.assertIn("## Plan first", prompt)
+        self.assertNotIn("Handoff from your earlier turn", prompt)
+
+    def test_an_ineligible_resume_discards_the_handoff_and_the_approval(self):
+        self.plan_approved()
+        self.live = issue(labels=(fix_hold.PLAN_LABEL,))          # the fix label came off
+        self.sweep()
+        self.assertEqual((self.st.fix_ask_open(), self.enqueued), ({}, []))
+        self.assert_fresh()
+
+    def test_a_retried_resume_then_closure_discards_the_saved_handoff(self):
+        self.plan_approved()
+        with mock.patch("diaktoros.run_supervisor.issue_inputs.issue_fix_issue",
+                        side_effect=run_supervisor.RetryableError("issue unreadable")):
+            self.sweep()
+        self.assertTrue(self.st.fix_plan_approved(12))             # saved by the retry
+        stale = {**self.st.fix_ask_open()[12], "text": "an older ask"}
+        self.assertFalse(fix_hold.drop_ask(self.st, 12, stale, "a stale snapshot"))
+        self.assertIsNotNone(self.st.fix_handoff(12))              # not that ask's: kept
+        self.live = issue(state="closed")
+        self.sweep()
+        self.assertEqual((self.st.fix_ask_open(), self.enqueued), ({}, []))
+        self.assert_fresh()
+
     # -- #2051: the triage gate's closed delivery ----------------------------------------------
 
     def test_the_gates_closed_delivery_drops_the_ask(self):
@@ -122,6 +175,13 @@ class ClosedAsks(base.Gate):
         self.run_gate(self.closed())                  # the payload says closed; GitHub says open
         self.assertIn(12, self.st.fix_ask_open())
 
+    def test_a_closed_delivery_with_a_malformed_live_state_keeps_the_ask(self):
+        for live in MALFORMED:                        # review F1: closure is not established
+            with self.subTest(live=live):
+                self.live = live
+                self.run_gate(self.closed())
+                self.assertIn(12, self.st.fix_ask_open())
+
     # -- #2245: a maintainer's comment on a closed issue's ask -------------------------------
 
     def test_a_comment_on_a_closed_issues_ask_drops_it_and_queues_nothing(self):
@@ -133,13 +193,16 @@ class ClosedAsks(base.Gate):
                    "issue": issue(state="closed"), "sender": {"login": "Jeremy"},
                    "repository": {"full_name": REPO}}
         recorded = []
+        err = io.StringIO()
         with mock.patch.object(util, "_DECISION_RECORDER",
                                lambda reason, decision: recorded.append((decision, reason))), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
                 self.assertRaises(SystemExit):
             fix_reply.on_comment(self.loop, payload)
         decision, reason = recorded[-1]
         self.assertEqual(decision, "declined", reason)
         self.assertIn("ask dropped: the issue is closed", reason)
+        self.assertEqual(err.getvalue().count("ask dropped"), 1, err.getvalue())   # review F3
         self.assertEqual((self.st.fix_ask_open(), self.enqueued), ({}, []))
 
 
