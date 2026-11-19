@@ -866,5 +866,17 @@ class Cli(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
+class Docs(unittest.TestCase):
+    def test_report_docs_name_every_escalation_kind(self):
+        """#2547: ``docs/commands.md`` lists every bucket the report's escalations line prints,
+        and says what each ``escalated.by`` means."""
+        doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "commands.md").read_text()
+        text = " ".join(doc.split())
+        for kind in ("cap", *stats.ESCALATION_KINDS):
+            self.assertTrue(f"`by {kind}`" in text, f"docs/commands.md never lists `by {kind}`")
+        for kind in stats.ESCALATION_KINDS:
+            self.assertTrue(f"(`{kind}`" in text, f"docs/commands.md never says what {kind} is")
+
+
 if __name__ == "__main__":
     unittest.main()
