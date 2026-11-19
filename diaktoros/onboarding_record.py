@@ -14,9 +14,10 @@ through ``attempt``, which prints that the stage could not be recorded and carri
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from . import gh, onboarding
+from . import config, gh, onboarding
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"      # selftest's status words
 TURN_CHECK = "turn:reviewer"                   # reported only once a turn has started
@@ -67,21 +68,48 @@ def selftest_command(loop: dict, *, pr, model: bool, live_turn: bool) -> str:
     return f"hermes dk selftest --loop {loop['id']}{flags}" + (" --live-turn" if live_turn else "")
 
 
+LOOP_FILE = "loop file"      # ``inputs_before``'s key for whether the loop has a config file
+
+
+def _loop_file(loop: dict) -> str:
+    """``"on disk"`` when the loop's config file exists, ``"in memory"`` when it has none (a
+    loop a caller built, as tests do), ``""`` when that cannot be told."""
+    try:
+        exists = os.path.lexists(config.config_dir() / f"{loop['id']}.json")
+    except Exception:              # noqa: BLE001 - unknown never matches
+        return ""
+    return "on disk" if exists else "in memory"
+
+
 def inputs_before(loop: dict, *, runtime_file: Path, resolver=None) -> dict:
     """``{stage: fingerprint}`` for the stages selftest checks, taken before its checks run
-    (#1714). ``record_selftest`` hands each to ``onboarding.record`` as ``inputs``, so a token,
-    key, setting or runtime file that changes during the run is never credited as checked.
-    ``""`` (cannot be computed) never matches, so that stage is not recorded as current."""
-    return {stage: onboarding.fingerprint_now(loop, stage, runtime_file=runtime_file,
-                                              resolver=resolver)
-            for stage in ("identities", "loop", "model")}
+    (#1714), and whether the loop has a config file (``LOOP_FILE``). ``record_selftest`` hands
+    each stage's to ``onboarding.record`` as ``inputs``, so a token, key, setting or runtime
+    file that changes during the run is never credited as checked. ``""`` (cannot be
+    computed) never matches, so that stage is not recorded as current."""
+    prints = {stage: onboarding.fingerprint_now(loop, stage, runtime_file=runtime_file,
+                                                resolver=resolver)
+              for stage in ("identities", "loop", "model")}
+    return {**prints, LOOP_FILE: _loop_file(loop)}
 
 
 def changed_during_run(loop: dict, inputs: dict, *, runtime_file: Path, resolver=None) -> list:
     """The stages in ``inputs`` (``inputs_before``'s answer) whose inputs no longer hash to it:
     a token, key, setting or runtime file that changed while the checks ran (#1714 review F3).
-    The checks saw the old inputs, so the run must not end as a pass on the new ones."""
-    now = inputs_before(loop, runtime_file=runtime_file, resolver=resolver)
+    The checks saw the old inputs, so the run must not end as a pass on the new ones.
+
+    The loop's settings are read again from its file (#2525): ``loop`` is the copy loaded
+    before the checks, so a ``set`` or a hand edit made during the run is only seen on disk.
+    A loop file that is there but cannot be loaded now changes every stage; a loop that has
+    no file (one built in memory) is compared as it is, and a file that came or went is
+    ``LOOP_FILE`` changing."""
+    current = loop
+    if _loop_file(loop) != "in memory":
+        try:
+            current = config.load_id(loop["id"])
+        except Exception:          # noqa: BLE001 - a loop that cannot be read verifies nothing
+            return list(inputs)
+    now = inputs_before(current, runtime_file=runtime_file, resolver=resolver)
     return [stage for stage, before in inputs.items() if now.get(stage) != before]
 
 

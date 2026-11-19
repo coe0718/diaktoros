@@ -201,7 +201,8 @@ def _credential_hashes(loop: dict) -> dict:
 def _loop_settings(loop: dict) -> dict:
     """The loop's own configuration as loaded (``host``, ``base``, ``required_checks``,
     ``hook_admin``, ``fixer_check``, ...), so a ``set`` or a hand edit of the loop file makes
-    the ``loop`` stage stale (#1714). Credentials appear here as paths, never contents."""
+    the ``loop`` stage stale (#1714). Credentials appear here as paths, never contents.
+    selftest's mid-run check passes the loop as read again from its file (#2525)."""
     return dict(loop)
 
 

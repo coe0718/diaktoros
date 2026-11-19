@@ -2,17 +2,22 @@
 
 * #2514: a stale stage's reason names what its fingerprint now covers (credential contents for
   ``identities``, loop settings for ``loop``).
+* #2525: selftest's mid-run ``inputs:changed`` check reads the loop file again, so a setting
+  edited on disk while the checks run is seen.
 
 GitHub, the model and bubblewrap are mocked by ``test_selftest.SelftestBase``.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import json
+import os
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from test_selftest import SelftestBase  # noqa: E402
-from diaktoros import onboarding  # noqa: E402
+from diaktoros import config, onboarding, selftest  # noqa: E402
 
 
 def rotate(path: pathlib.Path, letter: str) -> None:
@@ -42,6 +47,59 @@ class StaleReasons(SelftestBase):
         self.assertEqual(rows["loop"]["status"], onboarding.STALE, rows)
         self.assertIn("loop fingerprint changed", rows["loop"]["reason"])
         self.assertIn("a loop setting such as host or base", rows["loop"]["reason"])
+
+
+class LoopFileEditedDuringSelftest(SelftestBase):
+    """#2525: the loop as its file holds it after the checks, not the copy they ran with.
+
+    The fixture's loop is not a complete config, so ``config.load_id`` is replaced by a plain
+    read of the file; the file itself is real and is what the edits change."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = self.fx.root / "cfg"
+        self.cfg.mkdir()
+        self.file = self.cfg / f"{self.fx.loop['id']}.json"
+        self.file.write_text(json.dumps(self.fx.loop))
+        for patch in (mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(self.cfg)}),
+                      mock.patch.object(config, "load_id", side_effect=self.load)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def load(self, loop_id):
+        return json.loads((self.cfg / f"{loop_id}.json").read_text())
+
+    def run_editing(self, edit):
+        real = selftest.check_identities
+
+        def check_then_edit(report, loop):
+            real(report, loop)
+            edit()
+        with mock.patch.object(selftest, "check_identities", side_effect=check_then_edit):
+            return self.run_selftest(model=False)
+
+    def test_an_untouched_loop_file_still_passes(self):
+        rc, text = self.run_editing(lambda: None)
+        self.assertEqual(rc, 0, text)
+        self.assertNotIn("inputs:changed", text)
+
+    def test_a_setting_edited_on_disk_mid_run_fails_inputs_changed(self):
+        def edit_base():
+            self.file.write_text(json.dumps({**self.fx.loop, "base": "develop"}))
+        rc, text = self.run_editing(edit_base)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("changed while the checks ran: loop ", text)
+        self.assertNotIn("the isolated path is ready", text)
+
+    def test_a_loop_file_that_cannot_be_loaded_mid_run_fails_every_stage(self):
+        rc, text = self.run_editing(lambda: self.file.write_text("{not json"))
+        self.assertEqual(rc, 1, text)
+        self.assertIn("changed while the checks ran: identities, loop, model", text)
+
+    def test_a_loop_file_removed_mid_run_fails_inputs_changed(self):
+        rc, text = self.run_editing(self.file.unlink)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("changed while the checks ran: loop file", text)
 
 
 if __name__ == "__main__":
