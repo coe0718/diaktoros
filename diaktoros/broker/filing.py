@@ -40,7 +40,9 @@ def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, tit
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):
         raise broker._denied("GitHub issue write did not return a successful response", why)
-    broker._audit(loop, repo, number, head, "", "reviewer", "file_issue", login)
+    # GitHub confirmed the issue: an audit failure is said, never raised, so its number is kept
+    # (#2511, as #1640 did for the reader's filings).
+    _audit_confirmed(loop, repo, number, head, "file_issue", login, reviewer=True)
     return result["number"]
 
 
@@ -154,8 +156,9 @@ def _label_gap(missing: list[str], why: str, status: int | None, unanswered: boo
                repo: str) -> str:
     """Why a new issue still lacks ``missing`` after the labels write (#1641). Only a 403 answer
     that is not a rate limit is a confirmed permission refusal; a write sent with no answer (a
-    timeout, a dropped connection) leaves the outcome unknown; any other failure is reported as
-    it is, without a permission claim."""
+    timeout, a dropped connection) or a 5xx (which can come after GitHub applied it, #2140)
+    leaves the outcome unknown; any other failure is reported as it is, without a permission
+    claim."""
     labels = ", ".join(missing)
     if status == 403 and "rate limit" not in (why or "").casefold():
         return (f"GitHub did not apply {labels} ({why or 'HTTP 403'}): the reader {login} needs "
@@ -163,15 +166,20 @@ def _label_gap(missing: list[str], why: str, status: int | None, unanswered: boo
     if unanswered and status is None:
         return (f"the label write for {labels} got no answer ({why or 'no response'}): whether "
                 "GitHub applied them is unknown; check the issue's labels")
+    if status is not None and status >= 500:
+        return (f"the label write for {labels} got a server error ({why or f'HTTP {status}'}): "
+                "whether GitHub applied them is unknown; check the issue's labels")
     return f"GitHub did not apply {labels} ({why or 'the label write left them off'})"
 
 
 def _audit_confirmed(loop: dict, repo: str, number: int, head: str, operation: str,
-                     login: str) -> None:
-    """The reader's audit line after GitHub confirmed the shadow issue: a failure to write it is
-    said on stderr, never raised, so the filed issue's number is never lost to it."""
+                     login: str, reviewer: bool = False) -> None:
+    """The reader's (or with ``reviewer``, the reviewer's) audit line after GitHub confirmed a
+    filed issue: a failure to write it is said on stderr, never raised, so the filed issue's
+    number is never lost to it. The role stays a literal at the ``_audit`` call (#2293)."""
     try:
-        broker._audit(loop, repo, number, head, "", "reader", operation, login)
+        broker._audit(loop, repo, number, head, "", "reviewer" if reviewer else "reader",
+                      operation, login)
     except Exception as exc:  # noqa: BLE001 - the issue exists: its outcome stands
         print(f"diaktoros broker: audit record {operation} not written for #{number}: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
