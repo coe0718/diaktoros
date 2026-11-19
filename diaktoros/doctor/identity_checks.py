@@ -109,7 +109,10 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     except github_app.AppError as exc:
         return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     found = app.data if isinstance(app.data, dict) else {}
-    if not found:
+    # Only an App object (an int id and a slug) says which App the key signs as (#2458): a proxy's
+    # own JSON object answering 200 is the unreadable case, never a key for another App.
+    if type(found.get("id")) is not int or not isinstance(found.get("slug"), str) \
+            or not found.get("slug"):
         silent = _app_unreachable(name, login, "GET /app", app,
                                   "the key and the installation were not read")
         if silent:

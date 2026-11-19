@@ -50,6 +50,24 @@ class AppLive(app_doctor.AppLoop):
         self.assertEqual(got.status, doctor.MISMATCH, got.detail)
         self.assertIn("private key", got.fix)
 
+    def test_a_200_json_object_without_app_fields_does_not_blame_the_key(self):
+        # #2458: a proxy's own JSON object is not an App that the key signs as.
+        for body in ({"message": "portal authentication needed"}, {"id": 2},
+                     {"slug": "acme-reviewer"}, {"id": "2", "slug": "acme-reviewer"}):
+            with self.subTest(body=body):
+                got = self.live(body)
+                self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+                self.assertIn("not the expected JSON", got.detail)
+                self.assertNotIn("signs as App", got.detail)
+                self.assertNotIn("apps", got.fix)
+                self.assertIn("the key file is not implicated", got.fix)
+
+    def test_a_well_formed_other_app_is_still_a_mismatch(self):
+        got = self.live({"id": 99, "slug": "other"})
+        self.assertEqual(got.status, doctor.MISMATCH, got.detail)
+        self.assertIn("signs as App 99 (other)", got.detail)
+        self.assertEqual(self.live({"id": 2, "slug": "acme-reviewer"}).status, doctor.VERIFIED)
+
 
 if __name__ == "__main__":
     unittest.main()
