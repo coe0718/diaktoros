@@ -499,7 +499,8 @@ makes `loop` stale, and a new token or App key written into the same credential 
 `identities` stale (only a hash of the file is kept, never its contents). A change outside the
 loop file, the runtime file, the credential files and the seats' models (a gateway that moved
 while `host` stayed the same, a token revoked on GitHub) is not seen. If a token, key, setting
-or the runtime file changes while `selftest` runs, it fails `inputs:changed` and exits `1`
+or the runtime file changes while `selftest` runs (the loop file is read again at the end,
+and a change before its result is recorded counts too), it fails `inputs:changed` and exits `1`
 (what passed was the old input), so `setup` stops before arming; that stage is not recorded
 as current.
 `setup` never changes `unattended_fixer_push`.

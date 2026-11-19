@@ -28,13 +28,17 @@ _STAGE_OF = {"identities": ("github:",), "loop": onboarding.FAILURE_SCOPE["loop"
 
 def attempt(say, loop: dict, stage: str, *args, **kwargs) -> bool:
     """``onboarding.record`` that cannot fail the caller: on any error say so and return False."""
+    return _attempt_entry(say, loop, stage, *args, **kwargs) is not None
+
+
+def _attempt_entry(say, loop: dict, stage: str, *args, **kwargs) -> dict | None:
+    """``attempt`` that returns the stored entry, or ``None`` when it could not be recorded."""
     try:
-        onboarding.record(loop, stage, *args, **kwargs)
-        return True
+        return onboarding.record(loop, stage, *args, **kwargs)
     except Exception as exc:       # noqa: BLE001 - the check's own result must stand
         say(f"  (onboarding: the {stage} stage could not be recorded: "
             f"{type(exc).__name__}: {exc}; the result above stands)")
-        return False
+        return None
 
 
 def _summary(results, stage: str) -> str:
@@ -119,7 +123,10 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
     """Record the stages this selftest run covers; returns the stages written, in order.
 
     ``inputs`` is ``inputs_before``'s answer from the start of the run; ``None`` (a caller that
-    took none) records against the inputs as they are now."""
+    took none) records against the inputs as they are now. A stage stored against other inputs
+    than those (they changed after selftest's last ``inputs:changed`` check, so
+    ``onboarding.record`` stored it with no fingerprint) adds an ``inputs:changed`` FAIL to
+    ``report`` (#2526): the run's result must match what was recorded."""
     results = report.results
     checks = onboarding.report_checks(results)
     command = selftest_command(loop, pr=pr, model=model, live_turn=live_turn)
@@ -135,13 +142,29 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
     if live_turn and live_pr is not None and ran:
         head = str((live_pr.get("head") or {}).get("sha") or "")
         plan.append(("live_turn", onboarding.PASSED, {"pr": (live_pr.get("number"), head)}))
+    downgraded = []
     for stage, status, extra in plan:
         if inputs is not None and stage in inputs:
             extra = {**extra, "inputs": inputs[stage]}
-        if attempt(say, loop, stage, status, command, _summary(results, stage),
-                   checks=checks, **common, **extra):
+        entry = _attempt_entry(say, loop, stage, status, command, _summary(results, stage),
+                               checks=checks, **common, **extra)
+        if entry is not None:
             written.append(stage)
+            if "inputs" in extra and entry.get("fingerprint") != extra["inputs"]:
+                downgraded.append(stage)
+    _report_downgraded(report, loop, downgraded)
     return written
+
+
+def _report_downgraded(report, loop: dict, stages: list) -> None:
+    """An ``inputs:changed`` FAIL naming ``stages``, unless the run already failed one."""
+    if not stages or any(r[1] == "inputs:changed" and r[2] == FAIL for r in report.results):
+        return
+    report.add("inputs", "inputs:changed", FAIL,
+               f"changed before the result was recorded: {', '.join(stages)} (recorded as "
+               "failed: what passed above was checked against the old inputs)",
+               f"re-run `hermes dk selftest --loop {loop.get('id') or '<id>'}` once the "
+               "token, key or setting is no longer changing")
 
 
 def record_arm(loop: dict, *, say, pause: bool, ok: bool, login: str | None = None) -> bool:

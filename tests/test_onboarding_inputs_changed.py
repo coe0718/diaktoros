@@ -4,6 +4,8 @@
   ``identities``, loop settings for ``loop``).
 * #2525: selftest's mid-run ``inputs:changed`` check reads the loop file again, so a setting
   edited on disk while the checks run is seen.
+* #2526: a stage that ``onboarding.record`` stores ``failed`` because its inputs changed after
+  that check also fails the run.
 
 GitHub, the model and bubblewrap are mocked by ``test_selftest.SelftestBase``.
 """
@@ -100,6 +102,50 @@ class LoopFileEditedDuringSelftest(SelftestBase):
         rc, text = self.run_editing(self.file.unlink)
         self.assertEqual(rc, 1, text)
         self.assertIn("changed while the checks ran: loop file", text)
+
+
+class InputsChangedWhileRecording(SelftestBase):
+    """#2526: the window between the last ``inputs:changed`` check and the record."""
+
+    def stored(self):
+        return onboarding._load(self.fx.loop)
+
+    def test_a_token_rotated_inside_the_recorder_fails_the_run(self):
+        token = pathlib.Path(self.fx.loop["tokens"]["reviewer"])
+        real = onboarding.record
+
+        def rotate_then_record(loop, stage, *args, **kwargs):
+            if stage == "identities":
+                rotate(token, "Q")
+            return real(loop, stage, *args, **kwargs)
+        with mock.patch.object(onboarding, "record", side_effect=rotate_then_record):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("inputs:changed", text)
+        self.assertIn("changed before the result was recorded: identities", text)
+        self.assertNotIn("the isolated path is ready", text)
+        stored = self.stored()
+        self.assertEqual(stored["identities"]["status"], onboarding.FAILED, stored)
+        self.assertEqual(stored["identities"]["fingerprint"], "")
+
+    def test_a_change_seen_mid_run_is_reported_once(self):
+        token = pathlib.Path(self.fx.loop["tokens"]["reviewer"])
+        real = selftest.check_identities
+
+        def check_then_rotate(report, loop):
+            real(report, loop)
+            rotate(token, "W")
+        report = []
+        real_add = selftest.Report.add
+
+        def add(this, step, name, status, *rest):
+            report.append((name, status))
+            return real_add(this, step, name, status, *rest)
+        with mock.patch.object(selftest, "check_identities", side_effect=check_then_rotate), \
+                mock.patch.object(selftest.Report, "add", add):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(report.count(("inputs:changed", selftest.FAIL)), 1, text)
 
 
 if __name__ == "__main__":
