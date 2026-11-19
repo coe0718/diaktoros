@@ -91,7 +91,9 @@ PATH = '/v1/chat/completions'          # the chat-completions local path (histor
 UPSTREAM_SUFFIX = '/chat/completions'  # the chat-completions upstream suffix (historical name)
 
 _TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$")
-_SAFE_VALUE = re.compile(r'^[A-Za-z0-9._:/=+-]{1,128}$')
+# ``\Z``, not ``$``: ``$`` also matches before a final newline, and a kept value goes into an
+# outbound header, where a newline is a ValueError that drops the agent's connection (#2280).
+_SAFE_VALUE = re.compile(r'^[A-Za-z0-9._:/=+-]{1,128}\Z')
 # Never taken from the sandbox, and never accepted as a host "extra" header either: the proxy
 # sets authentication itself, and the transport owns framing.
 _RESERVED = frozenset({'authorization', 'x-api-key', 'proxy-authorization', 'cookie', 'host',
@@ -691,15 +693,18 @@ def _connect(address, timeout, source_address=None):
     """``socket.create_connection``, but each resolved address gets at most ``CONNECT_TIMEOUT``
     to connect; the socket then waits ``timeout`` for reads (#1993). Otherwise a host whose
     IPv6 route is dead spends the whole read timeout on each IPv6 address before IPv4 is tried,
-    and every request fails while the provider is fine."""
+    and every request fails while the provider is fine. ``timeout`` None (no read timeout) or
+    ``http.client``'s default sentinel mean what they do to ``create_connection`` (#2010)."""
     host, port = address
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        timeout = socket.getdefaulttimeout()
     error = None
     for family, kind, proto, _name, sockaddr in socket.getaddrinfo(host, port, 0,
                                                                     socket.SOCK_STREAM):
         sock = None
         try:
             sock = socket.socket(family, kind, proto)   # inside: a family the kernel lacks falls through
-            sock.settimeout(min(CONNECT_TIMEOUT, timeout))
+            sock.settimeout(CONNECT_TIMEOUT if timeout is None else min(CONNECT_TIMEOUT, timeout))
             if source_address:
                 sock.bind(source_address)
             sock.connect(sockaddr)

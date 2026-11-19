@@ -19,7 +19,7 @@ from contextlib import closing, redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import config, gate, pacing, retry_action  # noqa: E402
+from diaktoros import config, gate, inference_proxy, pacing, retry_action  # noqa: E402
 from diaktoros.cli import operations  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, views  # noqa: E402
@@ -39,13 +39,23 @@ def killed_by(error: str):
 class Classify(unittest.TestCase):
     def test_the_providers_errors_count_and_the_proxys_own_refusal_does_not(self):
         for error in (DEEPSEEK, "HTTP 503: overloaded", "HTTP 429: slow down",
-                      "upstream unreachable: ConnectionRefusedError: [Errno 111]"):
+                      "upstream unreachable: ConnectionRefusedError: [Errno 111]",
+                      "HTTP 503", "HTTP 429"):   # provider_error's bare fallback (#2147)
             with self.subTest(error=error):
                 self.assertTrue(pacing.provider_failure(error))
         for error in ("proxy refused: request of 9 bytes over the 8-byte limit", "", None,
-                      "Traceback: HTTP 400: in the turn's own words", "HTTP 400 no colon"):
+                      "Traceback: HTTP 400: in the turn's own words", "HTTP 400 no colon",
+                      "HTTP 5030"):
             with self.subTest(error=error):
                 self.assertFalse(pacing.provider_failure(error))
+
+    def test_the_proxys_bare_fallback_shape_counts(self):
+        """#2147: a body nested deep enough that ``json.loads`` raises RecursionError (not the
+        ValueError ``provider_error`` catches) records a bare ``HTTP 503``; it must count, not
+        reset the run as a non-provider failure would."""
+        error = inference_proxy.provider_error(503, b"[" * 200_000)
+        self.assertEqual(error, "HTTP 503")
+        self.assertTrue(pacing.provider_failure(error))
 
 
 class Count(unittest.TestCase):
