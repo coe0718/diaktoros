@@ -235,8 +235,10 @@ def _below_cap_escalation(c) -> str:
 def _next_ruling(c) -> tuple[str, str] | None:
     """Next event while adjudication delivery is pending, ruled, or parked."""
     if c.pending_delivery and not c.adjudicated:
+        # No adjudicator route (``c.adjudicated``): ``_adjudication_next`` names the human
+        # ruling before it reads any escalation source, so none is passed here (#2455).
         kind = "adjudication"
-        action = explain._adjudication_next(c.loop, c.head, escalated_by=_below_cap_escalation(c))
+        action = explain._adjudication_next(c.loop, c.head)
     elif c.pending_delivery:
         kind = "retry"
         action = (f"retry adjudicator delivery for head {c.short} on the next armed watchdog sweep "
