@@ -52,30 +52,41 @@ KILL_GRACE_S = 30
 
 
 def unittest_runner(*, code: Path, venv: Path, runtime: Path, home: Path, rust: Path,
-                    query: Path, timeout: int = 300):
-    """``run(tree, ids, pythonpath)``: ``python -m unittest -v`` of exactly ``ids`` in ``tree``, in
-    the same network-less sandbox a seat uses; the runner's combined output. The reproduction
-    proof (#484) and the change proof (#1782) both run their tests through it."""
+                    query: Path, timeout: int = 300, ledger_db: Path | None = None, stop=None):
+    """Run the named unittest ids with their import path; return combined sandbox output."""
     def run(tree: Path, ids: list[str], pythonpath: str = ".") -> str:
-        # The test directory on the path (#893): a suite whose modules import their helpers
-        # absolutely (``import _home_guard``) only imports with its tests/ there.
-        result = contained.run(
-            code=code, venv=venv, runtime=runtime, home=home, checkout=tree, rust=rust,
-            query=query, timeout=timeout,
-            entry=['/bin/sh', '-c', 'p="$1"; shift; PYTHONPATH="$p" exec /opt/venv/bin/python '
-                   '-m unittest -v "$@" 2>&1', 'sh', pythonpath, *ids])
+        entry = ['/bin/sh', '-c', 'p="$1"; shift; PYTHONPATH="$p" exec /opt/venv/bin/python '
+                 '-m unittest -v "$@" 2>&1', 'sh', pythonpath, *ids]
+        with ExitStack() as stack:
+            options = {}
+            if sys.platform == 'darwin':
+                from . import native_backend
+                ledger = Path(ledger_db) if ledger_db is not None else config.host_path('ledger')
+                # Proofs must not contend with or mutate the live turn's volume.
+                options['workspace'] = stack.enter_context(native_backend.workspace(
+                    pool=ledger.parent.resolve() / 'native-proof-cleanup'))
+                # Direct Python lets the backend select the Framework binary and keep the venv.
+                entry = [str(Path(venv).resolve() / 'bin/python'), '-c',
+                         'import os,runpy,sys; p=sys.argv.pop(1); '
+                         'sys.path[1:2]=p.split(os.pathsep); os.environ["PYTHONPATH"]=p; '
+                         'sys.argv[0]="unittest"; runpy.run_module("unittest",run_name="__main__")',
+                         pythonpath, '-v', *ids]
+            result = contained.run(
+                code=code, venv=venv, runtime=runtime, home=home, checkout=tree, rust=rust,
+                query=query, timeout=timeout, entry=entry, **options,
+                **({'stop': stop} if stop is not None else {}))
         return result.stdout + result.stderr
     return run
 
 
 def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, home: Path,
-                   rust: Path, query: Path, timeout: int = 300):
+                   rust: Path, query: Path, timeout: int = 300, ledger_db: Path | None = None, stop=None):
     """The host's reproduction prover (#484) for an issue-fix turn: ``prover(manifest, ids)``
     copies the staged original head twice, applies the fix's test files to one and the whole fix
     to the other, and runs only the named ``unittest`` ids in the same network-less sandbox a
     seat uses. Only a Python ``unittest`` id is understood (what ``ci_tests`` parses)."""
     run = unittest_runner(code=code, venv=venv, runtime=runtime, home=home, rust=rust,
-                          query=query, timeout=timeout)
+                          query=query, timeout=timeout, ledger_db=ledger_db, stop=stop)
 
     def prover(manifest: dict, ids: list[str]) -> dict:
         return repro_proof.prove(Path(checkout), manifest, ids, run)
@@ -83,7 +94,7 @@ def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, hom
 
 
 def query_text(prompt: str, role: str, prefetched, not_exported: list[str],
-               proof: tuple[str, str]) -> str:
+               proof: tuple[str, str], *, layout=None) -> str:
     """The seat's query. The host's note goes ahead of every PR record (``compose_prompt`` says
     why): the prefetch, how many paths were not exported, and the change proof's verdict
     (#1782). The PR's own names come after the record, quoted and bounded: the unexported paths
@@ -99,7 +110,7 @@ def query_text(prompt: str, role: str, prefetched, not_exported: list[str],
     if proved:
         note = ((note + '\n\n') if note else '') + proved
     return (compose_prompt(prompt, note) + '\n\n' + not_exported_section(not_exported) + rows
-            + tool_instructions(role) + '\n')
+            + tool_instructions(role, layout=layout) + '\n')
 
 
 def change_proof_parts(loop: dict, scope, checkout: Path, root: Path, progress, **sandbox) -> tuple[str, str]:
@@ -113,7 +124,8 @@ def change_proof_parts(loop: dict, scope, checkout: Path, root: Path, progress, 
                                     time.gmtime()))
     blank = root / 'proof-query.txt'
     blank.write_text('')
-    run = unittest_runner(query=blank, timeout=change_proof.RUN_TIMEOUT_S, **sandbox)
+    run = unittest_runner(query=blank, timeout=change_proof.RUN_TIMEOUT_S,
+                          ledger_db=getattr(scope, 'ledger_db', None), **sandbox)
     return change_proof.for_head(loop, scope, checkout, root / 'merge-base', run, log=util.log)
 
 
@@ -429,13 +441,23 @@ def exported_secrets(root: Path) -> tuple[list[str], list[str]]:
     return violations, advisories
 
 
+def _source_git_command(source_fd: int) -> list[str]:
+    if sys.platform != 'darwin':
+        return ['/usr/bin/git', '-C', f'/proc/self/fd/{source_fd}']
+    # fchdir only in an isolated helper: never chdir the multithreaded host.
+    return [str(Path(sys.executable).resolve()), '-I', '-B', '-c',
+            'import os,sys; fd=int(sys.argv[1]); os.fchdir(fd); os.close(fd); '
+            'os.execve("/usr/bin/git", ["/usr/bin/git", *sys.argv[2:]], os.environ)',
+            str(source_fd)]
+
+
 def _export_committed_source(source_fd: int, destination: Path,
                              skipped: list | None = None) -> None:
     """Keep the repository directory pinned while Git reads the committed tree."""
     env = {'PATH': '/usr/bin:/bin', 'HOME': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
            'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_NO_REPLACE_OBJECTS': '1',
            'GIT_OPTIONAL_LOCKS': '0'}
-    command = ['/usr/bin/git', '-C', f'/proc/self/fd/{source_fd}']
+    command = _source_git_command(source_fd)
 
     def git(*args: str, limit: int) -> bytes:
         process = None
@@ -541,9 +563,8 @@ def _export_committed_source(source_fd: int, destination: Path,
     client = destination / 'diaktoros'
     client.mkdir(exist_ok=True)
     (client / '__init__.py').touch()
-    shutil.copyfile(Path(__file__).with_name('broker_client.py'), client / 'broker_client.py')
-    shutil.copyfile(Path(__file__).with_name('wire.py'), client / 'wire.py')
-    shutil.copyfile(Path(__file__).with_name('inference_proxy.py'), client / 'inference_proxy.py')
+    for name in ('broker_client.py', 'wire.py', 'envnames.py', 'inference_proxy.py'):
+        shutil.copyfile(Path(__file__).with_name(name), client / name)
 
 
 # Each role is told only about its own broker command. Advertising another role's command would
@@ -625,10 +646,11 @@ TOOLS = {
 }
 
 
-def tool_instructions(role: str) -> str:
+def tool_instructions(role: str, *, layout=None) -> str:
     if role not in TOOLS:
         raise TurnDenied('unsupported role')
-    return TOOLS[role] + _COMMON
+    text = TOOLS[role] + _COMMON
+    return layout.tool_paths(text) if layout is not None else text
 
 
 # The seats whose turn is nudged to submit before its step cap (#554). A reviewer and a fixer
@@ -720,6 +742,46 @@ def _write_sandbox_home(home: Path, model: str, api_mode: str, client_identity: 
     return provider
 
 
+def _turn_entry(layout, *, provider, model, max_steps, timeout, api_mode):
+    if layout is not None:
+        from . import native_turn
+        return native_turn.entry(layout, provider=provider, model=model, max_steps=max_steps,
+                                 timeout=timeout, api_mode=api_mode)
+    from .turn_layout import TurnLayout
+    layout = TurnLayout.linux()
+    return ['/opt/venv/bin/python', '-P', '-m', 'diaktoros.inference_proxy', 'bridge', '--',
+            *layout.hermes_entry(provider=provider, model=model, max_steps=max_steps,
+                                 timeout=timeout)]
+
+
+def _stage_source(root: Path, source: Path, scope):
+    code, home = root / 'code', root / 'home'
+    if note := skipped_gitlinks_note(_safe_code_snapshot(Path(source), code)):
+        util.log(note)
+    client = root / 'client' / 'diaktoros'
+    client.mkdir(mode=0o700, parents=True)
+    (client / '__init__.py').touch()
+    for name in ('broker_client.py', 'wire.py', 'envnames.py'):
+        shutil.copyfile(Path(__file__).with_name(name), client / name)
+    if scope.role in ('fixer', 'issue_fixer'):
+        # Convenience only: the broker independently compares this with scope.head.
+        turn = client.parent / Path(broker_client.TURN_FILE).name
+        turn.write_text(json.dumps({'head': scope.head}) + '\n')
+        turn.chmod(0o444)
+    return code, home, client
+
+
+def _check_turn(loop, scope, no_write):
+    if scope.repo != loop.get('repo') or scope.role not in TOOLS:
+        raise TurnDenied('scope mismatch')
+    if no_write is not False and (no_write is not True or scope.role != 'reviewer'):
+        raise TurnDenied('no-write mode supports only a reviewer turn')
+    if sys.platform == 'darwin':
+        from . import native_backend
+        if reason := native_backend.unavailable():
+            raise TurnDenied(reason)
+
+
 def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path,
              runtime: Path, rust: Path, upstream: str, key: str, model: str,
              prompt: str, timeout: int = 600, work_root: Path | None = None,
@@ -737,10 +799,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     when given — an OAuth seat's token is then refreshed host-side during the turn.
     ``proxy_model`` is the model id forced on the wire (Hermes's spelling), default ``model``.
 
-    ``no_write`` (host-only; the selftest's live turn) starts the broker in its record-only
-    mode: a reviewer's verdict is authorized with live reads and recorded, never POSTed.
-    ``observed``, when given, receives the sandbox exit code, bounded output tails and the
-    recorded submissions.
+    ``no_write`` is a host-only reviewer selftest: authorize with live reads and record the
+    verdict without POSTing. ``observed`` receives bounded stdout/stderr, exit code and submissions.
 
     ``review_diff``, when given, is the host-built diff of the PR (``run_supervisor.pr_facts.pr_change``);
     it is mounted read-only at ``/opt/review/pr.diff``, outside the ``/work`` a fixer publishes
@@ -761,10 +821,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     after the checkout is staged, the dependencies prefetched and the stop check passed. A turn
     that fails or is refused earlier never calls it (#1378: the daily turn cap counts from it).
     """
-    if scope.repo != loop.get('repo') or scope.role not in TOOLS:
-        raise TurnDenied('scope mismatch')
-    if no_write is not False and (no_write is not True or scope.role != 'reviewer'):
-        raise TurnDenied('no-write mode supports only a reviewer turn')
+    _check_turn(loop, scope, no_write)
     # The host (gate enqueue) creates the work root; a worker never recreates host state (#108).
     if hostdirs.in_worker():  # checks only: nothing is created here
         hostdirs.ensure(Path(work_root or loop['state_dir']).expanduser())
@@ -777,23 +834,16 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if parent.is_symlink() or parent.stat().st_mode & 0o077:
         raise TurnDenied('work root must be private')
-    with tempfile.TemporaryDirectory(prefix='turn-', dir=parent) as tmp:
+    with ExitStack() as resources:
+        tmp = resources.enter_context(tempfile.TemporaryDirectory(prefix='turn-', dir=parent))
         root = Path(tmp)
-        code, home = root / 'code', root / 'home'
-        if note := skipped_gitlinks_note(_safe_code_snapshot(Path(source), code)):
-            util.log(note)                    # <ledger>.workers.log keeps it (#800)
-        client = root / 'client' / 'diaktoros'
-        client.mkdir(mode=0o700, parents=True)
-        (client / '__init__.py').touch()
-        shutil.copyfile(Path(__file__).with_name('broker_client.py'), client / 'broker_client.py')
-        shutil.copyfile(Path(__file__).with_name('wire.py'), client / 'wire.py')
-        if scope.role in ('fixer', 'issue_fixer'):
-            # Host-written and mounted read-only at /opt/client: the push helper's base_head.
-            # A convenience, not an authority — the broker compares it with scope.head itself.
-            turn = client.parent / Path(broker_client.TURN_FILE).name
-            turn.write_text(json.dumps({'head': scope.head}) + '\n')
-            turn.chmod(0o444)
-        provider = _write_sandbox_home(home, model, api_mode, client_identity, reasoning_effort)
+        native = sys.platform == 'darwin'
+        code, home, client = _stage_source(root, source, scope)
+        if native:
+            from . import native_turn
+            provider = native_turn.write_home(home, model, api_mode, client_identity, reasoning_effort)
+        else:
+            provider = _write_sandbox_home(home, model, api_mode, client_identity, reasoning_effort)
         review = None
         if review_diff is not None:
             review = root / 'review'
@@ -830,7 +880,14 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
                     + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
             prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
+        workspace = layout = None
         try:
+            query = root / 'query.txt'
+            if native:
+                workspace, layout = resources.enter_context(native_turn.prepare(
+                    home=home, code=code, venv=venv, checkout=checkout,
+                    client=client.parent, query=query, ledger_db=getattr(scope, 'ledger_db', None)))
+                home = workspace.home
             if prefetched:
                 _report(progress, deps.ledger_text(prefetched))
             else:
@@ -840,16 +897,21 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             if observed is not None:
                 observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
             proof = change_proof_parts(loop, scope, checkout, root, progress, code=code,
-                                       venv=venv, runtime=runtime, home=home, rust=rust)
-            query = root / 'query.txt'
-            query.write_text(query_text(prompt, scope.role, prefetched, not_exported, proof))
+                                       venv=venv, runtime=runtime, home=home, rust=rust, stop=stop)
+            text = query_text(prompt, scope.role, prefetched, not_exported, proof, layout=layout)
+            if native and review is not None:
+                import shlex
+                text = compose_prompt(text, 'The host-provided PR diff is at '
+                                      + shlex.quote(str(review / 'pr.diff')) + '.')
+            query.write_text(text)
         except BaseException:
             deps.release(prefetched)
             raise
         with ExitStack() as stack:
             # The cache generation stays held until the sandbox that mounts it has exited.
             stack.callback(deps.release, prefetched)
-            sockets = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='rl-', dir=tempfile.gettempdir())))
+            sockets = Path(stack.enter_context(tempfile.TemporaryDirectory(
+                prefix='rl-', dir='/tmp' if native else tempfile.gettempdir()))).resolve()
             # AF_UNIX has a ~108-byte pathname limit, independent of work_root.
             if len(os.fsencode(sockets)) > 50:
                 raise TurnDenied('scratch socket directory path too long')
@@ -870,18 +932,15 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 loop, scope, broker_root, require_push=scope.role == 'fixer',
                 require_receipt=scope.role == 'reviewer', no_write=no_write,
                 prover=(sandbox_prover(checkout=checkout, code=code, venv=venv, runtime=runtime,
-                                       home=home, rust=rust, query=query)
+                                       home=home, rust=rust, query=query,
+                                       ledger_db=getattr(scope, 'ledger_db', None), stop=stop)
                         if scope.role == 'issue_fixer' else None)))
             server = broker_ipc.serve_in_thread(broker)
             try:
                 # -P (#1373): /work, the cwd, is the tree under review; a `diaktoros` package
                 # there must never shadow the trusted bridge on sys.path.
-                command = ['/opt/venv/bin/python', '-P', '-m', 'diaktoros.inference_proxy',
-                           'bridge', '--', '/opt/venv/bin/python', '/opt/venv/bin/hermes', 'chat',
-                           '--query-file', '/opt/query', '--oneshot', '-Q',
-                           '--provider', provider, '-m', model, '-t', 'terminal,file',
-                           '--ignore-rules', '--max-turns', str(steps),
-                           '--run-budget', str(timeout)]
+                command = _turn_entry(layout, provider=provider, model=model, max_steps=steps,
+                                      timeout=timeout, api_mode=api_mode)
                 grace = KILL_GRACE_S
                 if stop is not None and stop.is_set():
                     raise contained.Stopped()
@@ -889,7 +948,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     on_launch()
                 stopping = {"stop": stop} if stop is not None else {}
                 try:
-                    result = contained.run(code=code, venv=venv, runtime=runtime,
+                    runner = native_turn.native_backend.run if native else contained.run
+                    result = runner(code=code, venv=venv, runtime=runtime,
                         home=home, checkout=checkout, rust=rust, query=query, entry=command,
                         node=node,
                         inference_socket_dir=inference.directory,
@@ -899,7 +959,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         # A ruling is judgement, not a change: the adjudicator's tree is mounted
                         # read-only so nothing it runs can dress up the head it rules on.
                         checkout_writable=scope.role not in ('adjudicator', 'triage'),
-                        **stopping)
+                        **({'workspace': workspace, 'extra_env': {'OPENAI_API_KEY': 'sandbox-dummy'}}
+                           if native else {}), **stopping)
                 except contained.Stopped as exc:
                     # An operator's cancel (#1148): the same kill as the budget's, and the same
                     # record of what the turn printed and was last doing.

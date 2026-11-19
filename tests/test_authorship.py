@@ -224,7 +224,8 @@ class Authorship(fg.Base):
             # Families that return lists.
             for name in ("check_triage", "check_seat_models", "check_seat_extras", "check_tokens",
                          "check_routes", "check_gateway_scripts", "check_gate_timeouts",
-                         "check_runtime_paths", "check_hooks", "check_environment"):
+                         "check_runtime_paths", "check_hooks", "check_environment",
+                         "check_native_platform"):
                 module = next(module for module in modules if name in vars(module))
                 stack.enter_context(mock.patch.object(module, name, return_value=[]))
             stack.enter_context(mock.patch.object(doctor, "check_review_only_update",

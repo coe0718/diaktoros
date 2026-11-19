@@ -80,6 +80,18 @@ def _source(venv: Path | None) -> Path | None:
     return None
 
 
+def native_python(venv: Path) -> Path:
+    """Bypass a Framework Python launcher that re-spawns with forbidden attributes."""
+    binary = (venv / "bin" / "python").resolve(strict=True)
+    application = binary.parent.parent / "Resources/Python.app/Contents/MacOS/Python"
+    if binary.parent.name == "bin" and application.is_file():
+        target = application.resolve(strict=True)
+        if binary.parent.parent not in target.parents or not os.access(target, os.X_OK):
+            raise ValueError("Framework Python application leaves its runtime or is not executable")
+        return target
+    return binary
+
+
 def runtime_for(venv: Path) -> Path | None:
     """The directory holding both the venv interpreter's link target and where it resolves."""
     link = venv / "bin" / "python"
@@ -87,6 +99,9 @@ def runtime_for(venv: Path) -> Path | None:
         return None
     literal = Path(os.path.normpath(link.parent / os.readlink(link))) if link.is_symlink() else link
     resolved = Path(os.path.realpath(link))
+    if sys.platform == "darwin":
+        # Seatbelt grants canonical paths, not a second mount at a Homebrew alias.
+        return resolved.parent.parent
     # Each interpreter sits in <install>/bin/; the root must hold both installs.
     roots = [str(p.parent.parent) for p in (literal, resolved)]
     root = Path(os.path.commonpath(roots))
@@ -234,6 +249,17 @@ def node_problem(value: object) -> str:
         return f"{value} does not exist"
     if _node_root_is_unsafe(root):
         return f"{root} is a home directory or credential store, never a Node root"
+    if sys.platform == "darwin":
+        why = native_root_problem(str(root))
+        if why:
+            return why
+        try:
+            target = (root / "bin" / "node").resolve(strict=True)
+        except (OSError, RuntimeError):
+            return f"{root}/bin/node cannot be resolved"
+        if root not in target.parents or not target.is_file() or not os.access(target, os.X_OK):
+            return f"{root}/bin/node must be executable inside its dedicated install root"
+        return ""
     if not node_mounted(root):
         # The sandbox sees this root where the host does, links and all: nothing is bound at
         # /opt/node, so the host's file is the rule, and the seat run judges the rest (#2478 F11).
@@ -346,7 +372,8 @@ def seat_node_version(root: Path, settings: dict) -> tuple[Path | None, str]:
     from . import contained
     mounts = {key: Path(settings.get(key) or "/usr") for key in ("venv", "runtime", "rust")}
     if node_mounted(root):
-        mounts["node"], expected = root, contained.NODE_MOUNT + "/bin/node"
+        mounts["node"] = root
+        expected = str(root / "bin" / "node") if sys.platform == "darwin" else contained.NODE_MOUNT + "/bin/node"
     else:
         expected = str(root / "bin" / "node")
     with tempfile.TemporaryDirectory(prefix="dk-node-") as tmp:
@@ -389,7 +416,8 @@ def node_report(settings: dict) -> tuple[str, str, str]:
             root, version = seat_node_version(root, settings)
         if root is None:
             return "warn", f"the runtime file's node {value}: {version}; seats get no Node", SETUP_NODE
-        where = "mounted at /opt/node" if node_mounted(root) else _VISIBLE
+        where = ("read-only at its native path" if sys.platform == "darwin" else
+                 "mounted at /opt/node" if node_mounted(root) else _VISIBLE)
         return "ok", f"node {version} at {root}, {where}", ""
     root, version = node_version()          # the operator's environment, not the worker's
     if root is None:
@@ -451,6 +479,96 @@ def source_head_problem(source: Path) -> str:
     return ""
 
 
+def native_root_problem(value: object) -> str:
+    """Reject recursive read grants to broad prefixes or credential-bearing roots."""
+    if not isinstance(value, str) or not Path(value).is_absolute():
+        return "must be an absolute path to a dedicated directory"
+    if any(ord(char) < 32 for char in value):
+        return "path contains control characters"
+    try:
+        root = Path(value).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "path cannot be resolved"
+    if not root.is_dir():
+        return "not a directory"
+    broad = {Path(p) for p in ("/", "/Users", "/Volumes", "/private", "/tmp",
+                               "/private/tmp", "/usr", "/usr/local", "/opt",
+                               "/opt/homebrew", "/opt/homebrew/Cellar", "/opt/homebrew/opt",
+                               "/Library", "/Library/Frameworks", "/System")}
+    if root in broad or _node_root_is_unsafe(root):
+        return "broad system, home or credential directory; select a dedicated runtime generation"
+    # Profiles can live outside HOME; never recursively expose their parent either.
+    protected = [config.home(), *[home / name for home in _homes()
+                                 for name in (".ssh", ".aws", ".gnupg", ".config", ".hermes")]]
+    if any(root == path.resolve() or root in path.resolve().parents for path in protected):
+        return "directory contains host credentials or Hermes state"
+    return ""
+
+
+def native_problems(settings: dict) -> dict[str, str]:
+    """Extra native read-root and executable checks, shared by setup/doctor/selftest."""
+    out = {}
+    for key in HOST_KEYS:
+        value = settings.get(key)
+        if not value:
+            continue
+        why = native_root_problem(value)
+        if why:
+            out[key] = why
+    for key, names in (("venv", ("python", "hermes")), ("rust", ("cargo", "rustc"))):
+        if key in out or not isinstance(settings.get(key), str):
+            continue
+        root = Path(settings[key]).resolve()
+        for name in names:
+            binary = root / "bin" / name
+            try:
+                target = binary.resolve(strict=True)
+            except (OSError, RuntimeError):
+                target = binary
+            if not target.is_file() or not os.access(target, os.X_OK):
+                out[key] = f"{binary} is not an executable file"
+            elif name != "python" and root not in target.parents:
+                out[key] = f"{binary} leaves its dedicated install root"
+    if "venv" not in out and isinstance(settings.get("venv"), str):
+        try:
+            native_python(Path(settings["venv"]))
+        except (OSError, RuntimeError, ValueError) as exc:
+            out["venv"] = f"native Python is unusable: {exc}"
+    return out
+
+
+def native_unavailable() -> str:
+    """Setup's fail-closed prerequisite gate, without starting a seat."""
+    from . import contained
+    return contained.unavailable() or native_tools()[1]
+
+
+def native_tools() -> tuple[dict[str, Path], str]:
+    """The selected Apple SDK and compiler tree, never all of /Library or Xcode."""
+    import subprocess
+    found = {}
+    for key, args in (("sdk", ["--sdk", "macosx", "--show-sdk-path"]),
+                      ("clang", ["--sdk", "macosx", "--find", "clang"])):
+        try:
+            result = subprocess.run(["/usr/bin/xcrun", *args], capture_output=True,
+                                    text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
+            raw = result.stdout.strip()
+            if result.returncode or not raw or not Path(raw).is_absolute():
+                return {}, "Apple Command Line Tools/selected macOS SDK unavailable; run xcode-select --install"
+            found[key] = Path(raw).resolve(strict=True)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return {}, "Apple Command Line Tools/selected macOS SDK unavailable; run xcode-select --install"
+    tools = found["clang"].parent.parent
+    for root in (found["sdk"], tools):
+        if why := native_root_problem(str(root)):
+            return {}, f"unsafe Apple tool path {root}: {why}"
+    if not found["sdk"].is_dir() or any(not (tools / "bin" / name).is_file()
+                                         or not os.access(tools / "bin" / name, os.X_OK)
+                                         for name in ("clang", "ar")):
+        return {}, "selected Apple SDK/compiler tree lacks executable clang/ar"
+    return {"sdk": found["sdk"], "developer_tools": tools}, ""
+
+
 def problems(settings: dict) -> dict[str, str]:
     """Why each host path would fail ``selftest``'s runtime step; an empty dict when none would."""
     from .selftest import _interpreter_outside
@@ -477,6 +595,8 @@ def problems(settings: dict) -> dict[str, str]:
                 out["runtime"] = f"the venv interpreter points to {outside}, outside {runtime}"
     if "rust" not in out and not (Path(settings["rust"]) / "bin" / "cargo").is_file():
         out["rust"] = f"{settings['rust']}/bin/cargo does not exist"
+    if sys.platform == "darwin":
+        out.update(native_problems(settings))
     return out
 
 

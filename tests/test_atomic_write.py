@@ -33,6 +33,9 @@ DIFFERENT = {
     "diaktoros/routes.py::_write_registry": (
         "RegistryDurabilityError: published, directory unsynced",
         {"tempfile.mkstemp": 1, "os.replace": 1}),
+    "diaktoros/native_recovery.py::Record.write": (
+        "publishes relative to the leased directory fd; the path-based helper can be redirected",
+        {"os.replace": 1}),
     "diaktoros/state/backup.py::_swap_in": (
         "a restore swaps staged members in, journalling each displaced file aside (#1049)",
         {"os.rename": 1, "os.replace": 1}),
@@ -200,6 +203,39 @@ class Helper(unittest.TestCase):
             util.atomic_write(self.path, "one")
             util.atomic_write(self.path, "two")
         self.assertEqual(len(set(names)), 2)
+
+
+class AnchoredRecoveryWriter(unittest.TestCase):
+    def test_publication_stays_in_the_leased_directory_after_path_replacement(self):
+        from diaktoros import native_recovery
+
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp).resolve()
+            root, pinned, decoy = (parent / name for name in ("root", "pinned", "decoy"))
+            root.mkdir(mode=0o700)
+            decoy.mkdir(mode=0o700)
+            journal = decoy / native_recovery.JOURNAL
+            journal.write_text("untouched")
+            with native_recovery.Record(root, create=True) as receipt:
+                root.rename(pinned)
+                root.symlink_to(decoy, target_is_directory=True)
+                real_fsync, synced = os.fsync, []
+
+                def fsync(fd):
+                    synced.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+                    return real_fsync(fd)
+
+                with mock.patch.object(native_recovery.os, "fsync", fsync):
+                    receipt.write({"fixture": True})
+                with self.assertRaises(BlockingIOError):
+                    native_recovery.Record(pinned)
+            self.assertEqual(synced, ["file", "dir"])
+            self.assertEqual(journal.read_text(), "untouched")
+            published = pinned / native_recovery.JOURNAL
+            self.assertEqual(json.loads(published.read_text()), {"fixture": True})
+            self.assertEqual(stat.S_IMODE(published.stat().st_mode), 0o600)
+            self.assertEqual(sorted(p.name for p in pinned.iterdir()),
+                             [native_recovery.JOURNAL, native_recovery.LEASE])
 
 
 class OneHome(unittest.TestCase):

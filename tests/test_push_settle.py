@@ -42,7 +42,10 @@ class Settle(unittest.TestCase):
                      "read_token": "read", "unattended_fixer_push": True, "fixers": ["fix"],
                      "reviewers": ["review"], "seats": {"fixer": {"login": "fix"}}}
         self.ref = HEAD
-        for patch in (mock.patch.object(gh, "api", side_effect=self.api),
+        # These receipts model Linux namespace exit; native crash retention is
+        # covered separately by test_native_supervisor.
+        for patch in (mock.patch.object(workers.sys, "platform", "linux"),
+                      mock.patch.object(gh, "api", side_effect=self.api),
                       mock.patch.object(config, "by_repo", return_value=self.loop),
                       mock.patch.object(workers, "process_state", return_value="gone")):
             patch.start()

@@ -159,6 +159,9 @@ class ContainmentUnavailable(RuntimeError):
 
 def unavailable() -> str:
     """Why no sandbox can start here, with the fix, or "" when bubblewrap is present."""
+    if sys.platform == 'darwin':
+        from . import native_backend
+        return native_backend.unavailable()
     if shutil.which("bwrap", path=LAUNCH_PATH) is None:
         return (f"bubblewrap (bwrap) is not installed in {LAUNCH_PATH}, and a turn never runs "
                 "without it: install the bubblewrap package, confirm with `hermes dk "
@@ -356,6 +359,9 @@ def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
     missing = unavailable()
     if missing:
         raise ContainmentUnavailable(missing)
+    if sys.platform == 'darwin':
+        from . import native_backend
+        return native_backend.run(timeout=timeout, **kwargs)
     # Each launch gets its own /etc (#240), written fresh and removed with the run.
     with tempfile.TemporaryDirectory(prefix="rl-etc-") as etc:
         return _run(timeout=timeout, etc_dir=write_etc(Path(etc)), **kwargs)
@@ -367,11 +373,21 @@ def _run(*, timeout: int, stop=None, **kwargs) -> subprocess.CompletedProcess:
     # Parent environment is discarded, not merely filtered by a fragile denylist.
     home = str(Path(kwargs["home"]).resolve(strict=True))
     argv = command(**kwargs)
-    process = subprocess.Popen(argv,
-                               env={"PATH": LAUNCH_PATH, "HOME": home,
-                                    "HERMES_HOME": home},
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               start_new_session=True)
+    return capture(argv, env={"PATH": LAUNCH_PATH, "HOME": home, "HERMES_HOME": home},
+                   timeout=timeout, stop=stop)
+
+
+def capture(argv: list[str], *, env: dict[str, str], timeout: int,
+            cwd: Path | None = None, stop=None) -> subprocess.CompletedProcess:
+    """Capture an already-contained command; this function supplies no sandbox."""
+    process = subprocess.Popen(argv, env=env, cwd=cwd, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
+    return capture_process(process, argv=argv, timeout=timeout, stop=stop)
+
+
+def capture_process(process: subprocess.Popen, *, argv: list[str], timeout: int,
+                    stop=None, abort=None) -> subprocess.CompletedProcess:
+    """Keep shared bounds; a native guardian supplies its own verified abort."""
     output = {"stdout": bytearray(), "stderr": bytearray()}
     deadline = time.monotonic() + timeout
     try:
@@ -401,11 +417,24 @@ def _run(*, timeout: int, stop=None, **kwargs) -> subprocess.CompletedProcess:
             # one whose last output the operator needs most.
             raise subprocess.TimeoutExpired(argv, timeout, bytes(output["stdout"]),
                                             bytes(output["stderr"]))
-        process.wait(timeout=remaining)
+        while process.poll() is None:
+            if stop is not None and stop.is_set():
+                raise Stopped(bytes(output["stdout"]), bytes(output["stderr"]))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout, bytes(output["stdout"]),
+                                                bytes(output["stderr"]))
+            try:
+                process.wait(timeout=remaining if stop is None else min(remaining, STOP_POLL_S))
+            except subprocess.TimeoutExpired:
+                continue
         return subprocess.CompletedProcess(argv, process.returncode,
                                            output["stdout"].decode(errors="replace"),
                                            output["stderr"].decode(errors="replace"))
     except BaseException:
+        if abort is not None:
+            abort()
+            raise
         # The parent may have exited while descendants still hold the pipes.
         # Kill the isolated process group even when the direct child is gone.
         try:

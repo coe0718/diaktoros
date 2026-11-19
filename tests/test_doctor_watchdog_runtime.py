@@ -174,7 +174,9 @@ class RuntimePaths(unittest.TestCase):
         return settings
 
     def checks_by_name(self):
-        return {c.name: c for c in doctor.check_runtime_paths(self.loop)}
+        # The structural fixtures have no native executables; do not change real Git dispatch.
+        with mock.patch("sys.platform", "linux"):
+            return {c.name: c for c in doctor.check_runtime_paths(self.loop)}
 
     def test_all_valid_paths_pass(self):
         self.write_runtime()

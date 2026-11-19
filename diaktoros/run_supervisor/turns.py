@@ -23,6 +23,21 @@ from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
 
+def _native_unverified(error):
+    """Cleanup or broker wrappers must not erase missing native exit proof."""
+    from ..native_lifecycle import CleanupIncomplete
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, CleanupIncomplete):
+            return True
+        pending.extend(e for e in (current.__cause__, current.__context__) if e is not None)
+    return False
+
+
 @dataclass
 class _ClaimRead:
     """What a pending row's claim-time reads found; ``_claim_commit`` settles the row from it.
@@ -519,7 +534,7 @@ class ClaimAndLaunch:
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from .. import pacing, trusted_turn
+        from .. import native_cleanup, native_lifecycle, pacing, trusted_turn
         turn = _Turn(run_id, owner, int(self.budget_of(run_id)))
         # An operator's stop (#1148: contained.Stopped, TurnCancelled) ends like any failed turn
         # here; complete_uncertain sees the request and makes it cancelled, never retried (or
@@ -533,10 +548,17 @@ class ClaimAndLaunch:
             # Another turn took the last slot while this one staged (#1378): nothing launched.
             _cap_held(turn, exc.seat, exc.cap)
             turn.retry = False
+        except native_cleanup.AdmissionRefused as exc:
+            turn.error = f'native storage admission paused: {exc}'[:600]
+            turn.paced_until = time.time() + run_supervisor.RETRY_BASE
+            turn.retry = False
         except (run_supervisor.IssueIneligible, run_supervisor.ReviewHeadMoved) as exc:
             # Before launch, no model ran (#723): a cancellation, not a failure; never re-armed.
             # A review's moved head is delivered to the new head by the watchdog (#2468).
             turn.error, turn.cancel, turn.retry = str(exc)[:600], True, False
+        except native_lifecycle.CleanupIncomplete as exc:
+            turn.error = f"native process completion unverified: {exc}"[:600]
+            turn.stopped, turn.retry = False, False
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
             # (no credential is ever formatted into one), and bounded.
@@ -549,6 +571,8 @@ class ClaimAndLaunch:
                 turn.retry = not run_supervisor.unpublished_before(turn.row)
             if isinstance(exc, trusted_turn.TurnDenied) and 'did not shut down' in str(exc):
                 turn.stopped = False  # a live broker thread may still write: quarantine
+            if _native_unverified(exc):
+                turn.stopped, turn.retry = False, False
         finally:
             self._production_finish(turn)
 

@@ -1027,6 +1027,8 @@ class LockInventory(unittest.TestCase):
         "auth.lock": "a Hermes profile's own file, copied by seat_model",
         "gateway.lock": "a Hermes gateway's own lock in a profile home, only probed by doctor",
         "fetch.lock": "lives in the deps cache, not a state directory",
+        "ownership.lock": "native recovery lease inside a private cleanup pool or volume",
+        "disposal.lock": "native creator lease inside a private cleanup volume",
         ".fixer-push-policy.lock": "lives in the config directory (*.json only is archived)",
         ".lock": "a suffix: the pacing, migrate, routes, seat_model and safe_push locks, none in a "
                  "state directory; observer's and routes' are named in full or registered",

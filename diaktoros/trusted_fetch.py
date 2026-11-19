@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import re
+import sys
 import tempfile
 import ctypes
 import urllib.error
@@ -39,13 +40,17 @@ class FetchDenied(Exception):
 def _publish_exclusive(private: pathlib.Path, root: pathlib.Path) -> None:
     """Atomically publish a staged directory without replacing an existing one."""
     libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
+    darwin = sys.platform == 'darwin'
+    rename = getattr(libc, 'renamex_np' if darwin else 'renameat2', None)
+    if rename is None:
         raise FetchDenied("exclusive sandbox publish unavailable")
-    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
-                          ctypes.c_char_p, ctypes.c_uint)
-    renameat2.restype = ctypes.c_int
-    if renameat2(-100, os.fsencode(private), -100, os.fsencode(root), 1) != 0:
+    rename.argtypes = ((ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint) if darwin else
+                       (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint))
+    rename.restype = ctypes.c_int
+    # RENAME_EXCL and RENAME_NOREPLACE both atomically refuse an existing target.
+    args = ((os.fsencode(private), os.fsencode(root), 4) if darwin else
+            (-100, os.fsencode(private), -100, os.fsencode(root), 1))
+    if rename(*args) != 0:
         raise FetchDenied(f"sandbox publish failed (errno={ctypes.get_errno()})")
 
 

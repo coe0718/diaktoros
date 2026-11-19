@@ -1,6 +1,6 @@
 """Credentialless CLI for the one-run broker socket (copy into staged code).
 
-Standard library only: this file is copied into the sandbox on its own.
+Standard library only: staged with its wire and environment-name helpers.
 
 A fixer publishes with ``push --files <path>... --message-file <file>`` (or ``--message``): the
 client reads those files from ``/work``, builds the broker's manifest
@@ -29,8 +29,10 @@ from pathlib import Path
 import re
 import socket
 import stat
+from . import envnames
 
-SOCKET = '/run/review-loop/broker/broker.sock'
+DEFAULT_SOCKET = '/run/review-loop/broker/broker.sock'
+SOCKET = envnames.get('BROKER_SOCKET', DEFAULT_SOCKET)
 TRIAGE_COMMENT_MAX = 1000          # run_supervisor.issue_inputs.TRIAGE_COMMENT_MAX; runs standalone
 DECLINE_KINDS = ('size-limit', 'not-this-pr')   # ci_decline.KINDS (#1526); runs standalone
 MAX_FRAME = 768 * 1024           # broker_ipc.MAX_PUSH_REQUEST
@@ -40,11 +42,14 @@ MAX_FRAME = 768 * 1024           # broker_ipc.MAX_PUSH_REQUEST
 WRITE_TIMEOUT = 900
 
 # The exported PR tree, and the host's read-only facts about this turn (``{"head": sha}``).
-WORK = '/work'
+DEFAULT_WORK = '/work'
+WORK = envnames.get('WORK', DEFAULT_WORK)
 # The read-only export the seat's /work was copied from (contained.EXPORT_DIR): the base a diff is
 # taken against.
-EXPORT = '/opt/export'
-TURN_FILE = '/opt/client/review-loop-turn.json'
+DEFAULT_EXPORT = '/opt/export'
+EXPORT = envnames.get('EXPORT', DEFAULT_EXPORT)
+DEFAULT_TURN_FILE = '/opt/client/review-loop-turn.json'
+TURN_FILE = envnames.get('TURN_FILE', DEFAULT_TURN_FILE)
 
 # The broker's own limits (diaktoros.safe_push), repeated here only so an agent learns about a
 # refusal before spending its write. The broker re-checks every one of them.

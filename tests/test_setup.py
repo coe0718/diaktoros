@@ -55,11 +55,12 @@ def host_layout(root: pathlib.Path) -> dict[str, pathlib.Path]:
     return {"source": source, "venv": venv, "runtime": python, "rust": rust}
 
 
+@patch.object(sys, "platform", "linux")
 class Detection(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = pathlib.Path(temp.name)
+        self.root = pathlib.Path(temp.name).resolve()
         self.paths = host_layout(self.root)
 
     def test_runtime_is_the_directory_holding_both_the_alias_and_the_install(self):
@@ -173,6 +174,7 @@ class Detection(unittest.TestCase):
         self.assertEqual(set(runtime_detect.problems({})), set(runtime_detect.HOST_KEYS))
 
 
+@patch.object(sys, "platform", "linux")
 class Setup(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -195,7 +197,7 @@ class Setup(unittest.TestCase):
         self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = pathlib.Path(temp.name)
+        self.root = pathlib.Path(temp.name).resolve()
         self.paths = host_layout(self.root)
         self.runtime_file = runtime_detect.path()
         self.runtime_file.unlink(missing_ok=True)
