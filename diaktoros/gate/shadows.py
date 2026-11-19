@@ -237,7 +237,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         return "pending", (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
                 f"{short} is unknown"), ""
     if review is not None and str(review[0]) == "REQUEST_CHANGES":
-        return _dissent_state(loop, number, head, short, ruling, marker)
+        return _dissent_state(loop, number, head, short, ruling, marker, db)
     if pending is not None:
         # A shadow run queued after the newest review (a re-review at the same head, #1097's
         # shadow review) can still change it: wait for it, even past an earlier approval.
@@ -253,7 +253,8 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
     return "", "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
 
 
-def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marker) -> tuple[str, str, str]:
+def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marker,
+                   db=None) -> tuple[str, str, str]:
     """``(kind, hold, note)`` once the newest shadow review of the head requested changes: the
     adjudicator's ruling on it (#1004 parts 2 and 3), or the operator's decision."""
     mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
@@ -266,6 +267,12 @@ def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marke
         # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
         # a loop without unattended pushes, or a review-only author's PR, is the operator's.
         if fixer_answers_upheld(loop, number):
+            # #2263 review F1: not once its fixer turn ended unanswered and no sweep re-arms it.
+            state, how, _key = shadow_fix_turn(loop, number, head, db=db)
+            if state and not how:
+                return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT), "
+                        f"but its shadow-fix fixer turn is {state} with no fix pushed and no "
+                        "watchdog sweep re-arms it: the decision is yours, not the fixer's"), ""
             return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
                     "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
         return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
@@ -311,6 +318,39 @@ def shadow_fix_owed(loop: dict, marker, head: str, db=None) -> bool:
     number = int(m.get("pr") or 0)
     return (upheld_shadow_ruling(loop, number, head, db=db) is not None
             and fixer_answers_upheld(loop, number))
+
+
+def shadow_fix_turn(loop: dict, number: int, head: str, db=None) -> tuple[str, str, str]:
+    """The fixer turn answering this head's upheld shadow review (#2262): ``(state, how, key)``,
+    its ledger state ("" with none, or an unreadable ledger), ``how`` it still answers the
+    findings: ``live`` (queued or running), ``rearmed`` (the sweep's ``queue_shadow_fix``
+    resubmits its turn key and ``submit`` re-arms it, by ``intake.redelivery_refusal``), or ""
+    when it ended and nothing restarts it, and its turn ``key`` (``shadow:<current ruling>``; an
+    older ruling's turn at the same head is not it). Read only when the fix is owed
+    (``shadow_fix_owed``): the upheld hold's text (#2263 review F1), ``explain`` and ``ready``."""
+    import sqlite3
+    from ..run_supervisor import (NOT_ENDED, REARMABLE, SHADOW_FIX_KEY, intake,
+                                  production_ledger, views)
+    ruled = upheld_shadow_ruling(loop, number, head, db=db)
+    try:
+        con = views.read_only_connect(db or production_ledger()) if ruled is not None else None
+        if con is None:
+            return "", "", ""
+        con.row_factory = sqlite3.Row
+        try:
+            key = f"{SHADOW_FIX_KEY}{int(ruled)}"
+            row = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                              "seat='fixer' AND turn_key=?", (loop["repo"], number, head, key)).fetchone()
+            if row is None:
+                return "", "", ""
+            rearms = row["state"] in REARMABLE and intake.redelivery_refusal(
+                con, row, admitted=True, production=True, seat="fixer") is None
+            return row["state"], ("live" if row["state"] in NOT_ENDED else
+                                  "rearmed" if rearms else ""), key
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return "", "", ""
 
 
 def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float | None:
