@@ -210,7 +210,9 @@ def drop_closed_ask(loop: dict, st, number: int) -> bool:
 def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dict[int, str]:
     """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn. ``only``:
     that issue's ask alone (a maintainer's comment on it, #680). An ask whose issue is closed is
-    dropped before its comments are read (#2051). Returns ``{issue: why}`` of those dropped."""
+    dropped before its comments are read (#2051), and one whose resume finds the issue no
+    longer eligible is dropped, not retried (#2245). Returns ``{issue: why}`` of those dropped."""
+    from . import run_supervisor
     from .run_supervisor import issue_inputs
     dropped: dict[int, str] = {}
     for number, ask in sorted(st.fix_ask_open().items()):
@@ -253,6 +255,10 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dic
         try:
             issue_inputs.issue_fix_issue(loop, number)
             base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
+        except run_supervisor.IssueIneligible as exc:   # #2245: no resume can ever run
+            if drop_ask(st, number, ask, str(exc)):
+                dropped[number] = str(exc)
+            continue
         except Exception as exc:
             lines.append(f"⚠️ issue #{number}: reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")

@@ -79,6 +79,14 @@ class ClosedAsks(base.Gate):
         self.sweep()
         self.assertEqual(self.st.fix_ask_open(), {})
 
+    def test_a_resume_that_finds_the_issue_ineligible_drops_the_ask(self):
+        self.reply()
+        self.live = issue(labels=())                  # open, but the fix label came off
+        self.assertEqual(self.sweep(), [])
+        self.assertEqual((self.st.fix_ask_open(), self.enqueued), ({}, []))
+        self.sweep()
+        self.assertEqual(self.reads, 1)               # dropped: a later sweep reads nothing
+
     def test_a_retryable_error_on_resume_keeps_the_ask_for_the_next_sweep(self):
         self.reply()
         with mock.patch("diaktoros.run_supervisor.issue_inputs.issue_fix_issue",
