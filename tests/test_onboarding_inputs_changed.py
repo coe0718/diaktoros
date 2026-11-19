@@ -6,10 +6,13 @@
   edited on disk while the checks run is seen.
 * #2526: a stage that ``onboarding.record`` stores ``failed`` because its inputs changed after
   that check also fails the run.
+* #2561 review: a loop setting edited on disk while the stages are recorded (F1), and a loop
+  file removed before the first snapshot (F2), fail ``inputs:changed`` too.
 
 GitHub, the model and bubblewrap are mocked by ``test_selftest.SelftestBase``.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import io
 import json
 import os
 import pathlib
@@ -19,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from test_selftest import SelftestBase  # noqa: E402
-from diaktoros import config, onboarding, selftest  # noqa: E402
+from diaktoros import config, onboarding, onboarding_record, selftest  # noqa: E402
 
 
 def rotate(path: pathlib.Path, letter: str) -> None:
@@ -51,8 +54,8 @@ class StaleReasons(SelftestBase):
         self.assertIn("a loop setting such as host or base", rows["loop"]["reason"])
 
 
-class LoopFileEditedDuringSelftest(SelftestBase):
-    """#2525: the loop as its file holds it after the checks, not the copy they ran with.
+class LoopFileBase(SelftestBase):
+    """The loop as the ``selftest`` command hands it over: loaded from its config file.
 
     The fixture's loop is not a complete config, so ``config.load_id`` is replaced by a plain
     read of the file; the file itself is real and is what the edits change."""
@@ -71,6 +74,21 @@ class LoopFileEditedDuringSelftest(SelftestBase):
     def load(self, loop_id):
         return json.loads((self.cfg / f"{loop_id}.json").read_text())
 
+    def run_selftest(self, **kwargs):
+        out = io.StringIO()
+        rc = selftest.run(onboarding_record.from_file(self.fx.loop), out=out, **kwargs)
+        return rc, out.getvalue()
+
+    def edit_base(self):
+        self.file.write_text(json.dumps({**self.fx.loop, "base": "develop"}))
+
+    def stored(self):
+        return onboarding._load(self.fx.loop)
+
+
+class LoopFileEditedDuringSelftest(LoopFileBase):
+    """#2525: the loop as its file holds it after the checks, not the copy they ran with."""
+
     def run_editing(self, edit):
         real = selftest.check_identities
 
@@ -86,9 +104,7 @@ class LoopFileEditedDuringSelftest(SelftestBase):
         self.assertNotIn("inputs:changed", text)
 
     def test_a_setting_edited_on_disk_mid_run_fails_inputs_changed(self):
-        def edit_base():
-            self.file.write_text(json.dumps({**self.fx.loop, "base": "develop"}))
-        rc, text = self.run_editing(edit_base)
+        rc, text = self.run_editing(self.edit_base)
         self.assertEqual(rc, 1, text)
         self.assertIn("changed while the checks ran: loop ", text)
         self.assertNotIn("the isolated path is ready", text)
@@ -101,7 +117,7 @@ class LoopFileEditedDuringSelftest(SelftestBase):
     def test_a_loop_file_removed_mid_run_fails_inputs_changed(self):
         rc, text = self.run_editing(self.file.unlink)
         self.assertEqual(rc, 1, text)
-        self.assertIn("changed while the checks ran: loop file", text)
+        self.assertIn("changed while the checks ran: identities, loop, model, loop file", text)
 
 
 class InputsChangedWhileRecording(SelftestBase):
@@ -146,6 +162,53 @@ class InputsChangedWhileRecording(SelftestBase):
             rc, text = self.run_selftest(model=False)
         self.assertEqual(rc, 1, text)
         self.assertEqual(report.count(("inputs:changed", selftest.FAIL)), 1, text)
+
+
+class LoopFileChangedOutsideTheChecks(LoopFileBase):
+    """#2561 review: the loop file changing where the mid-run check cannot see it."""
+
+    def test_a_setting_edited_inside_the_recorder_fails_the_run(self):
+        """F1: ``record`` fingerprints the in-memory loop, so only the file shows the edit."""
+        real, edited = onboarding.record, []
+
+        def edit_then_record(loop, stage, *args, **kwargs):
+            if stage == "loop" and not edited:
+                self.edit_base()
+                edited.append(stage)
+            return real(loop, stage, *args, **kwargs)
+        with mock.patch.object(onboarding, "record", side_effect=edit_then_record):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("changed before the result was recorded: loop", text)
+        self.assertNotIn("the isolated path is ready", text)
+        stored = self.stored()
+        self.assertEqual(stored["loop"]["status"], onboarding.FAILED, stored)
+        self.assertEqual(stored["loop"]["fingerprint"], "")
+        self.assertEqual(stored["identities"]["status"], onboarding.PASSED, stored)
+
+    def test_a_loop_file_removed_before_the_first_snapshot_fails_inputs_changed(self):
+        """F2: loaded from its file, so a file gone by the snapshot is not "in memory"."""
+        real, calls = onboarding_record.inputs_before, []
+
+        def unlink_then_snapshot(loop, **kwargs):
+            if not calls:
+                self.file.unlink()
+            calls.append(loop)
+            return real(loop, **kwargs)
+        with mock.patch.object(onboarding_record, "inputs_before",
+                               side_effect=unlink_then_snapshot):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("changed while the checks ran: identities, loop, model, loop file", text)
+        self.assertNotIn("the isolated path is ready", text)
+        stored = self.stored()
+        self.assertNotEqual(stored["loop"]["status"], onboarding.PASSED, stored)
+
+    def test_a_loop_built_in_memory_is_not_read_from_a_file(self):
+        self.file.unlink()
+        out = io.StringIO()
+        rc = selftest.run(self.fx.loop, out=out, model=False)
+        self.assertEqual(rc, 0, out.getvalue())
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ through ``attempt``, which prints that the stage could not be recorded and carri
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from . import config, gh, onboarding
@@ -72,22 +71,37 @@ def selftest_command(loop: dict, *, pr, model: bool, live_turn: bool) -> str:
     return f"hermes dk selftest --loop {loop['id']}{flags}" + (" --live-turn" if live_turn else "")
 
 
-LOOP_FILE = "loop file"      # ``inputs_before``'s key for whether the loop has a config file
+LOOP_FILE = "loop file"      # ``inputs_before``'s key for whether the loop's config file is there
+
+
+class LoopFromFile(dict):
+    """A loop the ``selftest`` command loaded from its config file (``from_file``). selftest
+    reads that file again to see a setting changed during the run (#2525); a loop built in
+    memory (as tests do) has no file to read. Kept on the loop itself, not inferred from the
+    file being there, so a file removed before the first snapshot still fails (#2561 F2)."""
+
+
+def from_file(loop: dict) -> LoopFromFile:
+    """``loop``, as ``config.load_id`` returned it, marked as loaded from its config file."""
+    return LoopFromFile(loop)
 
 
 def _loop_file(loop: dict) -> str:
-    """``"on disk"`` when the loop's config file exists, ``"in memory"`` when it has none (a
-    loop a caller built, as tests do), ``""`` when that cannot be told."""
+    """``"in memory"`` for a loop not loaded from a file; for one that was, ``"on disk"`` while
+    its config file is there and ``""`` (never matches) once it is gone or cannot be told."""
+    if not isinstance(loop, LoopFromFile):
+        return "in memory"
     try:
-        exists = os.path.lexists(config.config_dir() / f"{loop['id']}.json")
+        path = config.config_dir() / f"{loop['id']}.json"
+        there = path.is_file() and not path.is_symlink()
     except Exception:              # noqa: BLE001 - unknown never matches
         return ""
-    return "on disk" if exists else "in memory"
+    return "on disk" if there else ""
 
 
 def inputs_before(loop: dict, *, runtime_file: Path, resolver=None) -> dict:
     """``{stage: fingerprint}`` for the stages selftest checks, taken before its checks run
-    (#1714), and whether the loop has a config file (``LOOP_FILE``). ``record_selftest`` hands
+    (#1714), and whether the loop's config file is there (``LOOP_FILE``). ``record_selftest`` hands
     each stage's to ``onboarding.record`` as ``inputs``, so a token, key, setting or runtime
     file that changes during the run is never credited as checked. ``""`` (cannot be
     computed) never matches, so that stage is not recorded as current."""
@@ -102,15 +116,14 @@ def changed_during_run(loop: dict, inputs: dict, *, runtime_file: Path, resolver
     a token, key, setting or runtime file that changed while the checks ran (#1714 review F3).
     The checks saw the old inputs, so the run must not end as a pass on the new ones.
 
-    The loop's settings are read again from its file (#2525): ``loop`` is the copy loaded
-    before the checks, so a ``set`` or a hand edit made during the run is only seen on disk.
-    A loop file that is there but cannot be loaded now changes every stage; a loop that has
-    no file (one built in memory) is compared as it is, and a file that came or went is
-    ``LOOP_FILE`` changing."""
+    A loop loaded from its file (``LoopFromFile``) is read from it again (#2525): ``loop`` is
+    the copy loaded before the checks, so a ``set`` or a hand edit made during the run is only
+    seen on disk. A file that is gone or cannot be loaded now changes every stage; a loop
+    built in memory is compared as it is."""
     current = loop
-    if _loop_file(loop) != "in memory":
+    if isinstance(loop, LoopFromFile):
         try:
-            current = config.load_id(loop["id"])
+            current = from_file(config.load_id(loop["id"]))
         except Exception:          # noqa: BLE001 - a loop that cannot be read verifies nothing
             return list(inputs)
     now = inputs_before(current, runtime_file=runtime_file, resolver=resolver)
@@ -126,7 +139,10 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
     took none) records against the inputs as they are now. A stage stored against other inputs
     than those (they changed after selftest's last ``inputs:changed`` check, so
     ``onboarding.record`` stored it with no fingerprint) adds an ``inputs:changed`` FAIL to
-    ``report`` (#2526): the run's result must match what was recorded."""
+    ``report`` (#2526): the run's result must match what was recorded. ``record`` fingerprints
+    the in-memory loop, so once every stage is written its inputs are compared again with the
+    loop file read again (``changed_during_run``), and a stage stored as current against
+    inputs that changed meanwhile is stored again as failed (#2561 F1)."""
     results = report.results
     checks = onboarding.report_checks(results)
     command = selftest_command(loop, pr=pr, model=model, live_turn=live_turn)
@@ -142,7 +158,7 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
     if live_turn and live_pr is not None and ran:
         head = str((live_pr.get("head") or {}).get("sha") or "")
         plan.append(("live_turn", onboarding.PASSED, {"pr": (live_pr.get("number"), head)}))
-    downgraded = []
+    downgraded, current = [], {}
     for stage, status, extra in plan:
         if inputs is not None and stage in inputs:
             extra = {**extra, "inputs": inputs[stage]}
@@ -152,8 +168,25 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
             written.append(stage)
             if "inputs" in extra and entry.get("fingerprint") != extra["inputs"]:
                 downgraded.append(stage)
+            elif "inputs" in extra:
+                current[stage] = (status, extra)
+    for stage in _changed_since(loop, inputs, current, runtime_file, resolver):
+        status, extra = current[stage]
+        _attempt_entry(say, loop, stage, onboarding.FAILED if status == onboarding.PASSED
+                       else status, command, _summary(results, stage), checks=checks,
+                       **common, **{**extra, "inputs": ""})
+        downgraded.append(stage)
     _report_downgraded(report, loop, downgraded)
     return written
+
+
+def _changed_since(loop: dict, inputs, current: dict, runtime_file: Path, resolver) -> list:
+    """The stages in ``current`` (stored as current against ``inputs``) whose inputs, with the
+    loop file read again, no longer hash to ``inputs``: changed while they were recorded."""
+    if not current:
+        return []
+    return changed_during_run(loop, {stage: inputs[stage] for stage in current},
+                              runtime_file=runtime_file, resolver=resolver)
 
 
 def _report_downgraded(report, loop: dict, stages: list) -> None:

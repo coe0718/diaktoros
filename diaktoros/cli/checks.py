@@ -71,9 +71,10 @@ def cmd_selftest(args) -> int:
         print("--timeout must be positive")
         return 2
     try:
-        loop = config.load_id(args.loop)
+        # Marked as loaded from its file, so selftest reads that file again (#2525, #2561 F2).
+        loop = onboarding_record.from_file(config.load_id(args.loop))
     except config.ConfigError as exc:
-        print(f"cannot selftest loop: {hook_checks._safe_report_text(str(exc))}")
+        print(f"cannot selftest loop:{hook_checks._safe_report_text(str(exc))}")
         return 2
     # Default to what production gives the reviewer seat, so a passing selftest proves the turn
     # fits the budget the unattended worker will actually enforce (#49).
