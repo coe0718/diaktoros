@@ -236,6 +236,18 @@ def moved_review(db: str | Path, repo: str, pr: int, head: str) -> str | None:
 # A turn's own words in the merge check (#753): one clause, bounded under GitHub's 140-character
 # status description with the reason it follows (``merge_check.description`` cuts the middle).
 TURN_NOTE_MAX = 90
+RESUMES = " — resumes "     # how a held line with a reset time ends (``pacing.hold_line``)
+
+
+def _held_clause(held: str) -> str:
+    """A held line's words within ``TURN_NOTE_MAX``, its "— resumes …" end kept whole (#2325): a
+    long reason ("provider unavailable (…)") is cut, never when the turn resumes."""
+    from .. import gh
+    reason, sep, resumes = held.rpartition(RESUMES)
+    end = f"{sep}{resumes}"
+    if not sep or len(end) > TURN_NOTE_MAX // 2:
+        return gh.one_line(held, TURN_NOTE_MAX)
+    return gh.one_line(reason, TURN_NOTE_MAX - len(end)) + end
 
 
 def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str, held=lambda: None) -> str:
@@ -264,7 +276,7 @@ def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str, held=lam
     if row is None:
         return ''
     state, error, retries, retry_at = row
-    error = gh.one_line(error or '', TURN_NOTE_MAX)
+    error = ' '.join(str(error or '').split())      # one line; bounded where it is said
     turn = f"{seat} turn"
     if state == 'pending':
         try:
@@ -276,7 +288,8 @@ def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str, held=lam
         return f"{turn} running"
     if state == 'waiting' and error.startswith('held: '):
         # The held line names its seat too ("held: reviewer usage window …"): said once.
-        return f"{turn} held: {error.removeprefix('held: ').removeprefix(f'{seat} ')}"
+        return f"{turn} held: {_held_clause(error.removeprefix('held: ').removeprefix(f'{seat} '))}"
+    error = gh.one_line(error, TURN_NOTE_MAX)
     if state == 'waiting':
         at = f", next check {pacing.when(retry_at)}" if type(retry_at) in (int, float) else ''
         return (f"{turn} waiting to retry (attempt {(retries or 0) + 1} of "

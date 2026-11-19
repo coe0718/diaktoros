@@ -246,7 +246,8 @@ def _escalation(loop: dict, number: int, head: str, marker,
     """An escalated or parked head waits for its ruling; once it is in, the decision is the
     operator's. With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
     The reason says which (#1245): a stale "awaiting" after the ruling misled. An upheld shadow
-    review the fixer answers waits on no person: the shadow line says so (#1353).
+    review the fixer answers waits on no person: the shadow line says so (#1353), while that
+    fixer turn has not ended unanswered (``_shadow_fix_ended``, #2263).
 
     A parked cap marker holds the head only while ``gate.breach_holds`` says so (#1468): a
     dismissed verdict or a raised cap ends it, as in the watchdog and ``explain``. ``spent`` is
@@ -255,7 +256,7 @@ def _escalation(loop: dict, number: int, head: str, marker,
     if gate.shadows.shadow_overruled(loop, marker, head):        # #1004: ACCEPT, approval stands
         return []
     if gate.shadows.shadow_fix_owed(loop, marker, head):   # #1004 part 3: REJECT, the fixer answers
-        return []
+        return _shadow_fix_ended(number, head, loop)
     parked = gate.breach_delivery_status(marker if isinstance(marker, dict) else {}, head) in {
         "awaiting-adjudication", "adjudicating"}
     if not (gate.escalated(marker, head) or parked and (
@@ -269,6 +270,21 @@ def _escalation(loop: dict, number: int, head: str, marker,
         return [(FAILURE, "escalated, and this loop has no adjudicator route: a person decides")]
     return [(PENDING, _with_turn(loop, number, head, "adjudicator",
                                  "escalated: parked awaiting adjudication"))]
+
+
+def _shadow_fix_ended(number: int, head: str, loop: dict) -> list[tuple[str, str]]:
+    """An upheld shadow review's fixer turn that ended with no push and that no sweep re-arms
+    (#2263), read as ``explain`` reads it (``gate.shadows.shadow_fix_turn``, #2262): the fixer no
+    longer answers the findings, so a person does. Nothing while it is queued, running, re-armed
+    by the sweep, or not in the ledger yet. The ``explain`` it names carries ``--loop``, which
+    it needs with more than one loop configured (#2263 review F2)."""
+    state, how, _key = gate.shadows.shadow_fix_turn(loop, number, head)
+    if not state or how:
+        return []
+    return [(FAILURE, f"shadow fix: the shadow-fix fixer turn at head {head[:7]} is {state} with "
+                      "no fix pushed, and no watchdog sweep re-arms it: a person decides (retry "
+                      f"it, or fix it by hand and push; `hermes dk explain --loop {loop['id']} --pr "
+                      f"{number}` names the step)")]
 
 
 def acting(loop: dict, number: int, head: str, reviews: list | None,
