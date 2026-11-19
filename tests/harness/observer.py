@@ -108,7 +108,7 @@ def group_observer() -> None:
     check("  event", block["event"], "escalation")
     check("  the spent budget, and who owns it now",
           block["message"].splitlines()[0],
-          f"⚠️ [widgets] #7 `{HEAD_A[:7]}` loop stopped — cap spent — 3/3 verdicts, "
+          f"⚠️ [widgets] #7 `{HEAD_A[:7]}` loop stopped — sent for a ruling — 3/3 verdicts, "
           f"no approval · next: adjudicator delivery pending")
     run("gate_fixer.py", review_payload(rid=10))
     check("  a redelivered cap event pings nobody twice",

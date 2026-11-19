@@ -85,6 +85,8 @@ DIGEST_EVENT = "digest"
 
 # How a transition reads in a chat line. Derived from the event, never from the payload: an
 # observer that phrased things differently per call site would be a second, wrong source of truth.
+# So ``escalation``'s label holds for every breach, a spent cap or an escalation raised before it
+# (#2460); its outcome clause says which.
 EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "✅",
          "escalation": "⚠️", "ruling": "⚖️", "stall": "⏳", "closed": "🧹", "digest": "🗂",
          "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌", "held": "⏸",
@@ -93,7 +95,7 @@ EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "�
          "ci_declined": "🙅", "main_flaked": "🎲", "granted": "🎟"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
-         "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
+         "escalation": "loop stopped — sent for a ruling", "ruling": "adjudicator ruled",
          "stall": "stalled",
          "closed": "PR closed",
          "triaged": "issue triaged", "fixing": "issue handed to the fixer",

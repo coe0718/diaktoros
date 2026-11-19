@@ -69,7 +69,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `verdict` | Changes requested | The fixer will run when pushes are off |
 | `approved` | Approval transition at a recorded head | Approval is still live or the PR can safely be merged now |
 | `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval. One notice per PR and head ("approval at H is stale: <check> is red"), found by the watchdog sweep, which writes nothing to GitHub (#473). `explain` shows it as a blocker and its `next` is an operator decision (do not merge) | A person has looked at it: re-run the check or push a fix. A new head clears it. A PR not approved at its head is never flagged. "Never reported" can only fire when `required_checks` names checks (with none, every reported check gates and none can be missing). `hermes dk ready` excludes a PR whose approval is stale at its head (#479) |
-| `escalation` | Durable cap marker | Adjudicator received/finished its turn |
+| `escalation` | Durable breach marker: the spent cap, or an escalation for a ruling raised before it (the notice says which) | Adjudicator received/finished its turn |
 | `ruling` | Host recorded ACCEPT/REJECT/RESPEC | Code merged or the cap was reset |
 | `stall` | Watchdog decided a stall warrants reporting | The watchdog repaired the underlying defect |
 | `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk (cleanup runs for every closed PR, but the notice is sent only for PRs this loop worked on) |
