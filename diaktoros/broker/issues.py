@@ -20,7 +20,8 @@ class IssueWrites:
         """The issue fixer's one write, then the observer's notice of how it ended (#231).
 
         Only a write the ledger recorded is announced: a request refused before that (a bad
-        manifest, a title too long) changed nothing and the seat may resubmit it.
+        manifest, a title too long) changed nothing and the seat may resubmit it. One denied
+        because the issue closed meanwhile is logged, not announced (#2248).
         """
         try:
             return self._issue_fix_write(raw, request)
@@ -30,7 +31,8 @@ class IssueWrites:
             except Exception:
                 loop = None
             outcome = _issue_fix_outcome(self.scope, loop)
-            if outcome:
+            from .. import fix_settle
+            if outcome and not fix_settle.quiet_denial(self.scope.number, outcome):   # #2248
                 # #1523: an open plan or question waits on the maintainer, not on the loop.
                 turn = "you" if _posted_ask(self.scope, loop) else ""
                 broker_ipc._issue_notice(loop, self.scope, "fixed", outcome, next_turn=turn)
