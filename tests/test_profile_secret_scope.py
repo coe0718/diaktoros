@@ -11,6 +11,7 @@ A fake Hermes in a throwaway source tree, shaped like the real one:
 No real Hermes, credentials or network.
 """
 import _home_guard
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ from diaktoros import config, directsdk_backend as backend, seat_model
 
 KEY = "profile-key-placeholder-2374"
 OTHER = "unrelated-secret-placeholder-2374"   # a profile secret no step of the turn asks for
+POOL_KEY = "pool-token-placeholder-2374"      # a key Hermes resolves from its pool, not the .env
 
 FAKE_SCOPE = """
 import os
@@ -80,12 +82,19 @@ def resolve_requested_provider():
 def resolve_runtime_provider(**_):
     with open(os.path.join(os.environ["HERMES_HOME"], "seen.json"), "w") as handle:
         json.dump({name: os.environ.get(name) for name in WATCHED}, handle)
-    if get_secret("FAKE_FAIL"):
-        raise RuntimeError("No usable credentials found for provider 'deepseek'.")
-    return {"provider": "deepseek", "api_mode": "chat_completions",
-            "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.test/v1"),
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.test/v1")
+    if get_secret("FAKE_FAIL"):     # an upstream error that quotes the profile's secrets
+        raise RuntimeError("upstream at " + base_url + " rejected " + get_secret("DEEPSEEK_API_KEY")
+                           + " (also " + get_secret("UNRELATED_TOKEN") + ")")
+    if get_secret("FAKE_POOL"):     # a pooled key whose refresh fails, quoting it
+        class Pool:
+            def try_refresh_matching(self, api_key_hint):
+                raise RuntimeError("refresh of " + api_key_hint + " rejected")
+        return {"provider": "deepseek", "api_mode": "chat_completions", "base_url": base_url,
+                "api_key": %r, "credential_pool": Pool()}
+    return {"provider": "deepseek", "api_mode": "chat_completions", "base_url": base_url,
             "api_key": get_secret("DEEPSEEK_API_KEY", "")}
-""" % (WATCHED,)
+""" % (WATCHED, POOL_KEY)
 
 FAKE_AUTH = """
 from types import SimpleNamespace
@@ -180,19 +189,38 @@ class Resolver(Base):
                     self.assertEqual(seen, {**routing, "DEEPSEEK_API_KEY": None, "UNRELATED_TOKEN": None})
 
     def test_no_secret_value_appears_in_the_resolvers_answer_or_diagnostics(self):
-        # The key travels in the answer's ``key`` field, to the host proxy only; no other field,
-        # and no failure, carries a secret value.
+        # The key travels in the answer's ``key`` field, to the host proxy only; no other field
+        # carries a secret value.
         self.secrets({"FAKE_REQUESTED": "deepseek", "DEEPSEEK_API_KEY": KEY, "UNRELATED_TOKEN": OTHER})
         answer, _ = self.resolve()
         public = json.dumps({k: v for k, v in answer.items() if k != "key"})
         self.assertNotIn(KEY, public)
         self.assertNotIn(OTHER, public)
-        self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_FAIL": "1", "DEEPSEEK_API_KEY": KEY,
-                      "UNRELATED_TOKEN": OTHER})
-        answer, _ = self.resolve()
+
+    def test_an_error_that_quotes_a_profile_secret_is_redacted(self):
+        # Review of #2568, round 2, F3: Hermes's exception text reaches the diagnostic, so an
+        # upstream error quoting the key (or another profile secret) must not carry it out. The
+        # base URL is a setting, not a secret, and stays readable.
+        for where in (".env", "external source"):
+            with self.subTest(where=where):
+                secrets = {"DEEPSEEK_API_KEY": KEY, "UNRELATED_TOKEN": OTHER,
+                           "DEEPSEEK_BASE_URL": "https://ds.test/v1"}
+                if where == ".env":
+                    self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_FAIL": "1", **secrets})
+                else:
+                    self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_FAIL": "1"}, secrets)
+                answer, _ = self.resolve()
+                self.assertEqual(answer["kind"], "credential")
+                self.assertEqual(answer["error"], "RuntimeError: upstream at https://ds.test/v1 "
+                                                  "rejected [REDACTED] (also [REDACTED])")
+
+    def test_a_failed_refresh_that_quotes_the_resolved_key_is_redacted(self):
+        # A key from Hermes's own pool is in no .env; it is redacted because it was resolved.
+        self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_POOL": "1"})
+        stale = hashlib.sha256(POOL_KEY.encode()).hexdigest()
+        answer = seat_model.run_resolver("rev", "refresh", {}, stale=stale)
         self.assertEqual(answer["kind"], "credential")
-        self.assertNotIn(KEY, json.dumps(answer))
-        self.assertNotIn(OTHER, json.dumps(answer))
+        self.assertEqual(answer["error"], "refresh failed (RuntimeError: refresh of [REDACTED] rejected)")
 
 
 FAKE_CLIENT = """

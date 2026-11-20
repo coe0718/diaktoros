@@ -23,8 +23,18 @@ def done(**answer):
     out.flush()
     os._exit(0)
 
+# The profile's secret values by name, and every key resolved (#2374): text() removes each from
+# every error before it leaves, so an exception that quotes one (an upstream rejecting a key) never
+# reaches a diagnostic. ``ROUTING`` names the settings that are not secrets (a base URL, a path).
+PRIVATE, KEYS, ROUTING = {}, set(), set()
+
 def text(exc):
-    return (type(exc).__name__ + ": " + str(exc))[:400]
+    said = type(exc).__name__ + ": " + str(exc)
+    private = {v for k, v in PRIVATE.items() if k not in ROUTING} | KEYS
+    for value in sorted(private, key=len, reverse=True):
+        if isinstance(value, str) and len(value) >= 4:
+            said = said.replace(value, "[REDACTED]")
+    return said[:400]
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest() if isinstance(value, str) else ""
@@ -243,6 +253,7 @@ def profile_secrets(home):
         return None
     hydrate_profile_secret_sources(home)
     secrets = build_profile_secret_scope(home)
+    PRIVATE.update(secrets)
     set_secret_scope(secrets, profile_home=home)
     return secrets
 
@@ -351,7 +362,8 @@ try:
 except ImportError:
     pass
 
-for name in routing_names(requested) if secrets is not None else ():
+ROUTING.update(routing_names(requested) if secrets is not None else ())
+for name in ROUTING:
     if name in secrets:
         os.environ[name] = secrets[name]
 
@@ -360,7 +372,10 @@ def resolve():
         os.environ["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + os.path.join(os.environ["HOME"], ".local/bin")
     runtime = rp.resolve_runtime_provider()
     key = runtime.get("api_key")
-    return runtime, key() if callable(key) else key, callable(key)
+    key = key() if callable(key) else key
+    if isinstance(key, str):
+        KEYS.add(key)
+    return runtime, key, callable(runtime.get("api_key"))
 
 try:
     runtime, key, minted = resolve()
