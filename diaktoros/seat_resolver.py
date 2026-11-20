@@ -23,18 +23,35 @@ def done(**answer):
     out.flush()
     os._exit(0)
 
-# The profile's secret values by name, and every key resolved (#2374): text() removes each from
-# every error before it leaves, so an exception that quotes one (an upstream rejecting a key) never
-# reaches a diagnostic. ``ROUTING`` names the settings that are not secrets (a base URL, a path).
-PRIVATE, KEYS, ROUTING = {}, set(), set()
+# An error raised while Hermes reads a profile may quote a credential this program never sees (an
+# upstream echoing the key it rejected, a pool key before it is returned, a key from the .env an
+# older Hermes loads), so no message leaves as written (#2374): text() keeps the error's class, the
+# ``code`` and ``provider`` Hermes attaches when they are plain names, and the head of the few
+# Hermes messages built from a provider's name alone. plain() is for an error raised before any
+# credential is loaded: importing Hermes, and describe's reads of config.yaml, whose values that
+# mode answers with anyway.
+SAFE_MESSAGES = (r"No usable credentials found for provider '[\w.:-]{1,64}'\.",
+                 r"Unknown provider '[\w.:-]{1,64}'\.",
+                 r"provider '[\w.:-]{1,64}' is disabled in config")
 
 def text(exc):
-    said = type(exc).__name__ + ": " + str(exc)
-    private = {v for k, v in PRIVATE.items() if k not in ROUTING} | KEYS
-    for value in sorted(private, key=len, reverse=True):
-        if isinstance(value, str) and len(value) >= 4:
-            said = said.replace(value, "[REDACTED]")
-    return said[:400]
+    import re
+    said = type(exc).__name__
+    for name in ("code", "provider"):
+        value = getattr(exc, name, None)
+        if isinstance(value, str) and re.fullmatch(r"[\w.:-]{1,64}", value):
+            said += " " + name + "=" + value
+    for pattern in SAFE_MESSAGES:
+        found = re.match(pattern, str(exc))
+        if found:
+            return said + ": " + found.group(0)
+    return said
+
+def plain(exc):
+    return (type(exc).__name__ + ": " + str(exc))[:400]
+
+# An uncaught error reaches the host as the last line of stderr: the same safe text, no traceback.
+sys.excepthook = lambda kind, exc, tb: sys.stderr.write(text(exc) + "\n")
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest() if isinstance(value, str) else ""
@@ -121,14 +138,14 @@ def hermes_facts(requested, block):
         import hermes_cli  # noqa: F401
     except Exception as exc:
         return {"unavailable": "missing",
-                "detail": "Hermes is not importable from " + source + " (" + text(exc) + ")"}
+                "detail": "Hermes is not importable from " + source + " (" + plain(exc) + ")"}
     missing = []
     for module, name in HERMES_WIRE_FUNCTIONS:
         try:
             if not callable(getattr(importlib.import_module(module), name, None)):
                 missing.append(module + "." + name)
         except Exception as exc:
-            missing.append(module + " (" + text(exc) + ")")
+            missing.append(module + " (" + plain(exc) + ")")
     if missing:
         return {"unavailable": "drift",
                 "detail": "the Hermes at " + source + " lacks " + ", ".join(missing)}
@@ -138,7 +155,7 @@ def hermes_facts(requested, block):
         # Hermes WAS asked and raised on this profile: the turn resolves through the same code
         # and would fail the same way, so this is a refusal (the seat is held), not "not asked".
         return {"error": "the Hermes at " + source + " raised reading this profile ("
-                         + text(exc) + ")"}
+                         + plain(exc) + ")"}
 
 
 def _hermes_facts(requested, block):
@@ -154,14 +171,14 @@ def _hermes_facts(requested, block):
     try:
         facts["url_wire"] = rp._detect_api_mode_for_url(str(block.get("base_url") or "")) or ""
     except Exception as exc:        # Hermes itself cannot read it (a named entry ignores it)
-        facts["url_wire"], facts["url_error"] = "", text(exc)
+        facts["url_wire"], facts["url_error"] = "", plain(exc)
     name = requested.strip().lower()
     if not name or name == "auto":
         return facts
     try:
         entry = rpc._get_named_custom_provider(name)
     except Exception as exc:
-        facts["error"] = "Hermes refuses provider " + name + " (" + text(exc) + ")"
+        facts["error"] = "Hermes refuses provider " + name + " (" + plain(exc) + ")"
         return facts
     if entry:
         url = str(entry.get("base_url") or "").rstrip("/")
@@ -183,7 +200,7 @@ def _hermes_facts(requested, block):
             hermes_auth.resolve_provider(name)
         except Exception as exc:
             facts["error"] = ("Hermes knows no provider " + name + " (no enabled providers." + name
-                              + " or custom_providers entry, and not a built-in: " + text(exc) + ")")
+                              + " or custom_providers entry, and not a built-in: " + plain(exc) + ")")
     return facts
 
 
@@ -213,7 +230,7 @@ if mode == "describe":             # read-only: the profile's config, no credent
     except NoYamlReader as exc:
         done(kind="interpreter", error=str(exc))
     except Exception as exc:
-        done(kind="config", error="profile config.yaml unreadable (" + text(exc) + ")")
+        done(kind="config", error="profile config.yaml unreadable (" + plain(exc) + ")")
     block = cfg.get("model") if isinstance(cfg, dict) else None
     if isinstance(block, str):
         block = {"default": block}
@@ -236,7 +253,7 @@ try:
     from hermes_cli.env_loader import load_hermes_dotenv
     from hermes_cli import runtime_provider as rp
 except Exception as exc:
-    done(kind="unavailable", error="Hermes is not importable from " + source + " (" + text(exc) + ")")
+    done(kind="unavailable", error="Hermes is not importable from " + source + " (" + plain(exc) + ")")
 
 
 def profile_secrets(home):
@@ -253,7 +270,6 @@ def profile_secrets(home):
         return None
     hydrate_profile_secret_sources(home)
     secrets = build_profile_secret_scope(home)
-    PRIVATE.update(secrets)
     set_secret_scope(secrets, profile_home=home)
     return secrets
 
@@ -362,8 +378,7 @@ try:
 except ImportError:
     pass
 
-ROUTING.update(routing_names(requested) if secrets is not None else ())
-for name in ROUTING:
+for name in (routing_names(requested) if secrets is not None else ()):
     if name in secrets:
         os.environ[name] = secrets[name]
 
@@ -373,8 +388,6 @@ def resolve():
     runtime = rp.resolve_runtime_provider()
     key = runtime.get("api_key")
     key = key() if callable(key) else key
-    if isinstance(key, str):
-        KEYS.add(key)
     return runtime, key, callable(runtime.get("api_key"))
 
 try:

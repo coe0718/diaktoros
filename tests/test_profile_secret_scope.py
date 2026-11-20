@@ -69,12 +69,26 @@ def get_secret_source_values(hermes_home):
 WATCHED = ("DEEPSEEK_BASE_URL", "FAKE_COMMAND", "FAKE_ARGS", "CLAUDE_CONFIG_DIR",
            "DEEPSEEK_API_KEY", "UNRELATED_TOKEN")
 
-# Hermes's own split, in miniature: the key through get_secret, the routing settings straight from
-# os.environ. It records what os.environ held for WATCHED in seen.json.
+# Hermes's own split, in miniature: the key through get_secret (os.environ on a Hermes without the
+# scope), the routing settings straight from os.environ. It records what os.environ held for
+# WATCHED in seen.json, and raises the errors the FAKE_* switches ask for.
 FAKE_RUNTIME = """
 import json, os
-from agent.secret_scope import get_secret
-WATCHED = %r
+try:
+    from agent.secret_scope import get_secret
+except ImportError:
+    def get_secret(name, default=None):
+        return os.environ.get(name, default)
+WATCHED, POOL_KEY = %r, %r
+class AuthError(RuntimeError):
+    def __init__(self, message, *, provider=None, code=None):
+        super().__init__(message)
+        self.provider, self.code = provider, code
+class Answer(dict):     # stands in for any error the resolver does not catch itself
+    def get(self, name, default=None):
+        if name == "api_mode":
+            raise RuntimeError("bad answer for " + get_secret("DEEPSEEK_API_KEY"))
+        return super().get(name, default)
 def _get_model_config():
     return {"default": "m", "provider": get_secret("FAKE_REQUESTED")}
 def resolve_requested_provider():
@@ -86,14 +100,20 @@ def resolve_runtime_provider(**_):
     if get_secret("FAKE_FAIL"):     # an upstream error that quotes the profile's secrets
         raise RuntimeError("upstream at " + base_url + " rejected " + get_secret("DEEPSEEK_API_KEY")
                            + " (also " + get_secret("UNRELATED_TOKEN") + ")")
+    if get_secret("FAKE_POOL_FAIL"):    # a pooled key quoted before Hermes returns it
+        raise RuntimeError("upstream rejected " + POOL_KEY)
+    if get_secret("FAKE_MISSING"):  # Hermes's own message, with a tail no template vouches for
+        raise AuthError("No usable credentials found for provider 'deepseek'. Set DEEPSEEK_API_KEY. ("
+                        + get_secret("UNRELATED_TOKEN") + ")", provider="deepseek", code="missing_api_key")
     if get_secret("FAKE_POOL"):     # a pooled key whose refresh fails, quoting it
         class Pool:
             def try_refresh_matching(self, api_key_hint):
                 raise RuntimeError("refresh of " + api_key_hint + " rejected")
         return {"provider": "deepseek", "api_mode": "chat_completions", "base_url": base_url,
-                "api_key": %r, "credential_pool": Pool()}
-    return {"provider": "deepseek", "api_mode": "chat_completions", "base_url": base_url,
-            "api_key": get_secret("DEEPSEEK_API_KEY", "")}
+                "api_key": POOL_KEY, "credential_pool": Pool()}
+    answer = {"provider": "deepseek", "api_mode": "chat_completions", "base_url": base_url,
+              "api_key": get_secret("DEEPSEEK_API_KEY", "")}
+    return Answer(answer) if get_secret("FAKE_UNCAUGHT") else answer
 """ % (WATCHED, POOL_KEY)
 
 FAKE_AUTH = """
@@ -197,30 +217,49 @@ class Resolver(Base):
         self.assertNotIn(KEY, public)
         self.assertNotIn(OTHER, public)
 
-    def test_an_error_that_quotes_a_profile_secret_is_redacted(self):
-        # Review of #2568, round 2, F3: Hermes's exception text reaches the diagnostic, so an
-        # upstream error quoting the key (or another profile secret) must not carry it out. The
-        # base URL is a setting, not a secret, and stays readable.
-        for where in (".env", "external source"):
-            with self.subTest(where=where):
-                secrets = {"DEEPSEEK_API_KEY": KEY, "UNRELATED_TOKEN": OTHER,
-                           "DEEPSEEK_BASE_URL": "https://ds.test/v1"}
-                if where == ".env":
-                    self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_FAIL": "1", **secrets})
-                else:
-                    self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_FAIL": "1"}, secrets)
-                answer, _ = self.resolve()
-                self.assertEqual(answer["kind"], "credential")
-                self.assertEqual(answer["error"], "RuntimeError: upstream at https://ds.test/v1 "
-                                                  "rejected [REDACTED] (also [REDACTED])")
+    def test_an_error_leaves_without_a_message_hermes_did_not_build_from_names(self):
+        # Review of #2568, rounds 2 and 3, F3: an error may quote a credential the resolver never
+        # sees, so none leaves as written. Vex's cases: a profile key an upstream quotes (long or
+        # short, from the .env or an external source), a pool key quoted before Hermes returns
+        # it, and all of them again on a Hermes without the secret scope.
+        cases = {"long key": ("FAKE_FAIL", KEY), "short key": ("FAKE_FAIL", "xyz"),
+                 "pool key not yet returned": ("FAKE_POOL_FAIL", KEY)}
+        for scope in ("secret scope", "no secret scope"):
+            if scope == "no secret scope":
+                (self.source / "agent" / "secret_scope.py").unlink()
+            for case, (switch, key) in cases.items():
+                for where in (".env", "external source"):
+                    with self.subTest(scope=scope, case=case, where=where):
+                        secrets = {"DEEPSEEK_API_KEY": key, "UNRELATED_TOKEN": OTHER}
+                        if where == ".env":
+                            self.secrets({"FAKE_REQUESTED": "deepseek", switch: "1", **secrets})
+                        else:
+                            self.secrets({"FAKE_REQUESTED": "deepseek", switch: "1"}, secrets)
+                        answer, _ = self.resolve()
+                        self.assertEqual((answer["kind"], answer["error"]), ("credential", "RuntimeError"))
 
-    def test_a_failed_refresh_that_quotes_the_resolved_key_is_redacted(self):
-        # A key from Hermes's own pool is in no .env; it is redacted because it was resolved.
+    def test_hermes_still_names_the_provider_that_lacks_a_credential(self):
+        # Hermes's code and provider, and the head of its message, are built from names; the rest
+        # of the message is not vouched for and stays behind.
+        self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_MISSING": "1", "UNRELATED_TOKEN": OTHER})
+        answer, _ = self.resolve()
+        self.assertEqual(answer["error"], "AuthError code=missing_api_key provider=deepseek: "
+                                          "No usable credentials found for provider 'deepseek'.")
+
+    def test_a_failed_refresh_leaves_without_its_message(self):
+        # The refresh error quotes the pooled key, which is in no .env.
         self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_POOL": "1"})
         stale = hashlib.sha256(POOL_KEY.encode()).hexdigest()
         answer = seat_model.run_resolver("rev", "refresh", {}, stale=stale)
-        self.assertEqual(answer["kind"], "credential")
-        self.assertEqual(answer["error"], "refresh failed (RuntimeError: refresh of [REDACTED] rejected)")
+        self.assertEqual((answer["kind"], answer["error"]), ("credential", "refresh failed (RuntimeError)"))
+
+    def test_an_uncaught_error_reaches_the_host_without_its_message(self):
+        # With no answer, the host quotes the resolver's last stderr line: the error's class only.
+        self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_UNCAUGHT": "1", "DEEPSEEK_API_KEY": KEY})
+        with self.assertRaises(seat_model.SeatModelError) as caught:
+            seat_model.run_resolver("rev", "resolve", {})
+        self.assertIn("Hermes gave no answer (rc=1): RuntimeError;", str(caught.exception))
+        self.assertNotIn(KEY, str(caught.exception))
 
 
 FAKE_CLIENT = """
@@ -286,7 +325,8 @@ class DirectSDKChild(Base):
 @_home_guard.needs_real_hermes(reason="no Hermes checkout")
 class RealHermes(unittest.TestCase):
     """The pinned Hermes resolves a seat whose key lives only in the profile's ``.env``, or only
-    in a command helper (a cold external source), through the scope."""
+    in a command helper (a cold external source), through the scope; and a profile without one
+    gets Hermes's own diagnostic, cut to its template."""
 
     def resolve(self, cfg: dict, dotenv: str) -> dict:
         source = Path(_home_guard.HERMES_AGENT_SOURCE)
@@ -314,6 +354,14 @@ class RealHermes(unittest.TestCase):
                                "secrets": {"command": {"enabled": True, "command": helper}}}, "")
         self.assertNotIn("error", answer)
         self.assertEqual(answer["key"], KEY)
+
+    def test_a_missing_key_still_names_the_provider(self):
+        # The resolver keeps only messages it has a template for (#2374); this pins the template
+        # to the message the pinned Hermes builds.
+        answer = self.resolve({"model": {"provider": "deepseek", "default": "deepseek-chat"}},
+                              f"UNRELATED_TOKEN={OTHER}\n")
+        self.assertEqual(answer["error"], "AuthError code=missing_api_key provider=deepseek: "
+                                          "No usable credentials found for provider 'deepseek'.")
 
 
 if __name__ == "__main__":
