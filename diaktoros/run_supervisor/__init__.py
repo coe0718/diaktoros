@@ -67,6 +67,9 @@ MAX_RETRIES = 4
 CI_HOLD = "held: waiting for CI"
 # A shadow held for its reviewer turn's verdict (#1647): polled like a CI hold.
 VERDICT_HOLD = "held: waiting for the reviewer's verdict"
+# An issue fix a maintainer's reply woke waits ``reply_settle_seconds`` first (#2248), so a close
+# right after the reply ends it at the claim's eligibility read, before any model runs.
+SETTLE_HOLD = "held: settling after a maintainer's reply"
 # A fixer push held as one that may have written, and the host's proof that one wrote nothing
 # (#1763): settled runs are failed, not reconciled, so `retry` and a redelivery re-arm them.
 PUSH_QUARANTINE = "post-write push quarantine: "
