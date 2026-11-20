@@ -39,6 +39,15 @@ class Setting(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
                 config.normalize(rac.raw(reply_settle_seconds=bad))
 
+    def test_the_reader_takes_the_loops_value_and_defaults_what_it_cannot_read(self):
+        from diaktoros import fix_settle
+        self.assertEqual(fix_settle.seconds({}), 120)
+        self.assertEqual(fix_settle.seconds({KEY: 0}), 0)
+        self.assertEqual(fix_settle.seconds({KEY: 30}), 30)
+        for junk in (-3, "30", True, None, 2.5):
+            with self.subTest(junk=junk):
+                self.assertEqual(fix_settle.seconds({KEY: junk}), 120)
+
     def test_the_form_schema_and_its_overlay(self):
         spec = settings_form.SETTINGS_SCHEMA[KEY]
         self.assertEqual((spec["type"], spec["default"]), ("int", config.DEFAULTS[KEY]))

@@ -20,7 +20,8 @@ A turn is queued only when all of these hold:
   until a wake (the sweep's or the webhook's) reads it (#2021 review).
 
 The new turn reads the issue's comments (#511), so it sees the reply. It is a maintainer's
-hand-off, so ``auto_fix_daily`` does not count it.
+hand-off, so ``auto_fix_daily`` does not count it. It starts ``reply_settle_seconds`` after it
+is queued (#2248, ``fix_settle``): a reply followed by a close ends it before any model runs.
 
 With ``comment_webhook`` on, the triage route and hook carry ``issue_comment`` and a maintainer's
 comment does the same at once (``on_comment``, #680), for an ask too. The delivery is a nudge,
@@ -32,7 +33,7 @@ from __future__ import annotations
 
 import time
 
-from . import config, fix_hold, gate, gh
+from . import config, fix_hold, fix_settle, gate, gh
 from . import fix_reply_state as kept
 from .fix_reply_state import STATE, WAITING  # noqa: F401 - the files' names
 from .util import epoch, log, silence
@@ -129,15 +130,17 @@ def _wake(loop: dict, st, row: dict) -> str:
     if existing is not None:
         log(f"issue #{number}: open PR #{existing} already fixes it; reply wakes no fix turn")
         return "ineligible"
-    base, outcome = fix_hold.queue_fix(loop, number, f"issue-fix:reply{reply['id']}")
+    base, outcome = fix_hold.queue_fix(loop, number, f"issue-fix:reply{reply['id']}", settle=True)
     login = str(reply["user"]["login"]).lower()
+    wait = fix_settle.seconds(loop) if outcome == "enqueued" else 0     # #2248
+    starts = f", starts in {wait}s unless the issue closes" if wait else ""
     log(f"issue #{number}: {login} replied to the fixer's comment; fix turn at {base[:7]}: "
-        f"{outcome}")
+        f"{outcome}{starts}")
     if outcome in ("enqueued", "rearmed", "pending"):
         from . import observer
         observer.notify(loop, st, "fixing", number, "", identity=f"reply{reply['id']}",
                         outcome=f"{login} replied; fix turn queued from {loop['base']} at "
-                                f"{base[:7]}", issue=True, outcome_kind="queued")
+                                f"{base[:7]}{starts}", issue=True, outcome_kind="queued")
     return "queued"
 
 
