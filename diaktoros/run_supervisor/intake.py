@@ -147,16 +147,26 @@ class RunIntake:
                 if refused is not None:
                     outcome += f": {refused}"
                 else:
-                    self._rearm(con, prior['id'], reset=False, budget=requested)
+                    self._rearm(con, prior['id'], reset=False, budget=requested, settle=settle)
                     outcome = 'rearmed'
             elif prior and prior['state'] == 'waiting' and prior['retry_at']:
                 outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
             con.execute("COMMIT")
         # A redelivery of an unclaimed run must rearm the worker after a
         # transient generation/read outage; active or completed runs stay deduped.
-        if (self.fixture_mode or self.production_config) and outcome in ('enqueued', 'pending', 'rearmed'):
+        if self._wants_worker(prior, outcome):
             self._spawn()
         return outcome
+
+    def _wants_worker(self, prior, outcome: str) -> bool:
+        """Whether ``submit`` spawns a worker: for a run it made runnable, and for a redelivery
+        of a reply's row still settling (#2248 review F2), so a lost spawn is not left to an
+        unrelated recover to start once due. A worker lingers until that row is due."""
+        if not (self.fixture_mode or self.production_config):
+            return False
+        return outcome in ('enqueued', 'pending', 'rearmed') or (
+            prior is not None and prior['state'] == 'waiting'
+            and prior['error'] == run_supervisor.SETTLE_HOLD)
 
     def _insert_runs(self, con, rows: list, shadow, identity: tuple, now: float,
                      settle: float = 0.0) -> None:
@@ -190,18 +200,24 @@ class RunIntake:
                          run_supervisor.SETTLE_HOLD if held else None))
 
     @staticmethod
-    def _rearm(con, run_id: str, *, reset: bool, budget: float | None = None) -> None:
+    def _rearm(con, run_id: str, *, reset: bool, budget: float | None = None,
+               settle: float = 0.0) -> None:
         """Make a pre-write run pending again, inside the caller's transaction. Admission,
         generation terms and history stay; claim attempts restart; its notice is resolved
         so a later failure is reported afresh. ``budget`` (the loop's current seat budget,
-        #49) replaces the row's, so a turn killed at its budget reruns on the raised one."""
+        #49) replaces the row's, so a turn killed at its budget reruns on the raised one.
+        ``settle`` seconds (a reply's redelivery, #2248 review F3): it waits on ``SETTLE_HOLD``
+        as a new row would, not pending at once."""
         if budget is not None:
             con.execute("UPDATE runs SET budget=? WHERE id=?", (float(budget), run_id))
-        con.execute("UPDATE runs SET state='pending', owner=NULL, lease=NULL, pid=NULL, "
-                    "launch_intent=NULL, outcome=NULL, attempts=0, retry_at=NULL, "
-                    "cancel_requested=NULL, "
+        now, held = time.time(), settle > 0
+        con.execute("UPDATE runs SET state=?, owner=NULL, lease=NULL, pid=NULL, "
+                    "launch_intent=NULL, outcome=NULL, attempts=0, retry_at=?, "
+                    "cancel_requested=NULL, error=CASE WHEN ? THEN ? ELSE error END, "
                     "retries=CASE WHEN ? THEN 0 ELSE retries END, updated=? WHERE id=?",
-                    (1 if reset else 0, time.time(), run_id))
+                    ("waiting" if held else "pending", now + settle if held else None,
+                     1 if held else 0, run_supervisor.SETTLE_HOLD, 1 if reset else 0, now,
+                     run_id))
         con.execute("DELETE FROM operator_notices WHERE run_id=?", (run_id,))
 
     def retry(self, run_id: str, budget: float | None = None) -> str:

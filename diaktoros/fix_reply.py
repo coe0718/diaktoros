@@ -132,7 +132,7 @@ def _wake(loop: dict, st, row: dict) -> str:
         return "ineligible"
     base, outcome = fix_hold.queue_fix(loop, number, f"issue-fix:reply{reply['id']}", settle=True)
     login = str(reply["user"]["login"]).lower()
-    wait = fix_settle.seconds(loop) if outcome == "enqueued" else 0     # #2248
+    wait = fix_settle.seconds(loop) if outcome in ("enqueued", "rearmed") else 0     # #2248
     starts = f", starts in {wait}s unless the issue closes" if wait else ""
     log(f"issue #{number}: {login} replied to the fixer's comment; fix turn at {base[:7]}: "
         f"{outcome}{starts}")
