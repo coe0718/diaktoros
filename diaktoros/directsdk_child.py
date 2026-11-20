@@ -14,13 +14,16 @@ def main():
     sys.path.insert(0, source)
     home = os.environ['HERMES_HOME']
     try:
-        # The profile's secrets through Hermes's secret scope, not os.environ (#2374).
+        # The profile's secrets through Hermes's secret scope, not os.environ (#2374), with its
+        # external sources resolved first into the snapshot the scope reads.
         from agent.secret_scope import build_profile_secret_scope, get_secret, set_secret_scope
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
     except ImportError:
         from hermes_cli.env_loader import load_hermes_dotenv
         load_hermes_dotenv(hermes_home=Path(home))
         get_secret = os.environ.get
     else:
+        hydrate_profile_secret_sources(Path(home))
         set_secret_scope(build_profile_secret_scope(Path(home)), profile_home=home)
     # Load only installed transport modules, not arbitrary client kwargs from config or
     # request data. The package shim preserves DirectSDK's relative imports.

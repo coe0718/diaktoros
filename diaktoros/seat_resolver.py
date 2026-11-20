@@ -231,13 +231,17 @@ except Exception as exc:
 
 def profile_secrets(home):
     """The profile's secrets through Hermes's secret scope (#2374), so ``get_secret`` readers see
-    them and no key lands in ``os.environ``. A Hermes without ``agent.secret_scope`` gets today's
-    ``.env`` load instead; then None."""
+    them and no key lands in ``os.environ``. The external sources (a command helper, 1Password,
+    Bitwarden) are resolved first, into Hermes's per-home snapshot the scope reads; a fresh
+    process has none. A Hermes without ``agent.secret_scope`` gets today's ``.env`` load
+    instead; then None."""
     try:
         from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
     except ImportError:
         load_hermes_dotenv(hermes_home=home)
         return None
+    hydrate_profile_secret_sources(home)
     secrets = build_profile_secret_scope(home)
     set_secret_scope(secrets, profile_home=home)
     return secrets
