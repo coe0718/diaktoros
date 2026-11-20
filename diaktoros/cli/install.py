@@ -274,6 +274,8 @@ def _init_settings(args, d: dict) -> dict:
     return {
         # Sign what the loop posts (#197): on unless --attribution off or the form says so.
         "attribution": cli_common._attribution_arg(args, d["attribution"]),
+        # How long a reply-woken fix turn waits before it starts (#2248).
+        "reply_settle_seconds": getattr(args, "reply_settle_seconds", d["reply_settle_seconds"]),
         # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
         # author's branch) is also refused below unless acknowledged.
         **{key: cli_common._on_off(args, key, d[key]) for key in config.flags.SWITCHES},
@@ -903,6 +905,10 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
                       help="how long a run may hold its seat slot")
     init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
                       help="how long an in-flight mark blocks a second run at the same head")
+    init.add_argument("--reply-settle-seconds", type=int, default=d["reply_settle_seconds"],
+                      metavar="N", help="seconds a fix turn a maintainer's reply woke waits "
+                                        "before it starts, 0-3600, 0 = at once (default: the "
+                                        "plugin setting, else 120)")
     init.add_argument("--review-only-update", choices=("on", "off"), default=None,
                       help="push a clean merge of the base into a review-only author's PR "
                            "branch (same repository only; off by default; turning it on "
