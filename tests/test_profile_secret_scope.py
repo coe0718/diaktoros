@@ -26,10 +26,11 @@ def build_profile_secret_scope(hermes_home):
     out = {}
     path = os.path.join(str(hermes_home), ".env")
     if os.path.exists(path):
-        for line in open(path):
-            if "=" in line:
-                name, value = line.strip().split("=", 1)
-                out[name] = value
+        with open(path) as handle:
+            for line in handle:
+                if "=" in line:
+                    name, value = line.strip().split("=", 1)
+                    out[name] = value
     return out
 def set_secret_scope(secrets, *, profile_home=None):
     global _SCOPE
@@ -45,10 +46,11 @@ import os
 def load_hermes_dotenv(*, hermes_home=None, **_):
     path = os.path.join(str(hermes_home), ".env")
     if os.path.exists(path):
-        for line in open(path):
-            if "=" in line:
-                name, value = line.strip().split("=", 1)
-                os.environ[name] = value
+        with open(path) as handle:
+            for line in handle:
+                if "=" in line:
+                    name, value = line.strip().split("=", 1)
+                    os.environ[name] = value
 """
 
 # Hermes's own split, in miniature: the key through get_secret, the base-URL override straight
