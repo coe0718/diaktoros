@@ -496,9 +496,13 @@ record does not know about `doctor`: a `runtime:*` problem `doctor` alone finds 
 while the record is current, so run `hermes dk doctor` yourself after changing the host.
 Every check `selftest --no-model` can fail belongs to a stage (#1718): a ❌ in the repo hooks
 (`hooks:signature`, `hook:<id>`, `app-webhook`), the gateway, the state directory, the
-watchdog's cron shim or job (`cron:*`) or the observer route records `loop` as `failed`, so the
-next `setup` runs step 4 again. Only `inputs:changed` is not a stage's check: it marks the stage
-whose inputs changed as failed instead.
+watchdog's cron shim or job (`cron:*`) or the observer route records `loop` as `failed`, and a
+❌ in a seat's model (`seat:*`, which `--no-model` still resolves) records `model` as `failed`
+rather than `skipped` (#2588), so the next `setup` runs step 4 again. Only `inputs:changed` is
+not a stage's check: it marks the stage whose inputs changed as failed instead. Each entry also
+keeps a hash of the rules that judged it (which checks count for its stage); an entry written
+under other rules, or by a diaktoros from before #2588, reads `stale`, so the first `setup` after
+an upgrade runs step 4 (and asks about arming) once again.
 What does make the record stale (#1714): a change to the loop's own settings (a `set` or an
 edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_check`, ...)
 makes `loop` stale, and a new token or App key written into the same credential file makes
@@ -1464,7 +1468,8 @@ record (`onboarding.json` in the loop's state directory) that the checks leave. 
 `stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
 summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
 identities and a hash of each credential file's contents, the loop's settings and the runtime
-file, a seat's model, the PR head, the hook state), or that an earlier
+file, a seat's model, the PR head, the hook state), that it was recorded under other rules for
+which checks count (an older diaktoros), or that an earlier
 stale stage is the cause. A stage whose inputs cannot be read now is stale, never passed.
 
 ```bash
@@ -1491,7 +1496,8 @@ hermes dk onboard --loop "<loop-id>" --pr 12
   by hand, still shows `not_attempted`.
 - Which command writes which stage. `doctor` writes nothing (it only produces the `runtime:*`
   checks). `selftest` writes `identities`, `loop` and `model` on every run, from the results it
-  already computed; `selftest --no-model` writes `model` as `skipped`, never `passed`; and
+  already computed; `selftest --no-model` writes `model` as `skipped`, never `passed` (`failed`
+  when a `seat:*` check failed); and
   `live_turn` only when `--pr N --live-turn` ran a turn. `arm` writes `armed`, only for a confirmed
   arm: not `--pause`, the hook write read back ok, and a fresh read of the hooks that says `armed`
   (read as the `--admin-token` login when given, else as the reader; when that read does not say

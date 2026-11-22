@@ -626,6 +626,33 @@ class Setup(unittest.TestCase):
         self.assertIn("starting at the loop stage (failed)", out)
         self.assertNotIn("skipped doctor", out)
 
+    def test_a_loop_entry_from_before_the_wider_scope_is_rerun_by_the_next_setup(self):
+        # #2588 F1: a loop entry an older diaktoros wrote (no rules hash; a cron:job FAIL then
+        # was dropped and the stage read passed) must not let setup skip step 4 after upgrade.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        data = json.loads(onboarding.path(loop).read_text())
+        data["stages"]["loop"].pop("rules", None)
+        onboarding.path(loop).write_text(json.dumps(data))
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (stale: loop was recorded under other rules", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_failed_seat_check_of_no_model_is_rerun_by_the_next_setup(self):
+        # #2588 F2: selftest --no-model asks for model skipped; a seat:* FAIL in that run must
+        # not leave a skipped model that setup reads as covering step 4.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        onboarding.record(loop, "model", "skipped", "hermes dk selftest --no-model", "model",
+                          checks=[("seat:fixer", "fail")], runtime_file=self.runtime_file)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the model stage (failed)", out)
+        self.assertNotIn("skipped doctor", out)
+
     def test_an_armed_record_skips_arm_even_with_arm_and_a_changed_hook_state_runs_it(self):
         loop = self.installed()
         self.record_checks(loop)

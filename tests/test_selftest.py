@@ -1200,6 +1200,21 @@ class OnboardingRecordTests(SelftestBase):
                 self.assertEqual(entry["status"], "failed", entry)
                 self.assertEqual(entry["checks"][name], "fail")
 
+    def test_a_failed_seat_check_under_no_model_keeps_the_model_stage_from_skipped(self):
+        # #2588 F2: --no-model asks for model `skipped`, but check_seats still runs; a seat that
+        # failed to resolve only during that check (a transient error) must store model failed.
+        from diaktoros import selftest_inference
+
+        def broken(report, loop, settings, resolver=None):
+            report.add("runtime", "seat:fixer", selftest.FAIL, "transient", "")
+            return {}
+        with mock.patch.object(selftest_inference, "check_seats", side_effect=broken):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        entry = self.stored()["model"]
+        self.assertEqual(entry["status"], "failed", entry)
+        self.assertEqual(entry["checks"]["seat:fixer"], "fail")
+
     def test_a_failed_hook_signature_keeps_the_loop_stage_from_passed(self):
         # #1714 review F2: the recheck a changed host triggers fails on the hook signature; the
         # next setup must not read the loop stage as covered.
