@@ -2,7 +2,8 @@
 when nothing binds the name again, anywhere. ``ALLOWED += ('intruder',)`` after it let a writer
 record 'intruder' while the drift guard reported only the tuple's roles. Eighth: nor through a
 namespace dict (``globals()['ALLOWED'] = …``), nor by a name the guard cannot read, which fails
-every constant closed.
+every constant closed. Ninth: a ``setattr`` of a computed name on anything not shown never to be
+a scanned module (an ``except`` capture, an import from another package) fails them closed too.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -36,10 +37,17 @@ REBOUND = {
                                      "setattr(synthetic, name, ('intruder',))\n",
     'by setattr on sys.modules': "import sys\nname = 'ALLOWED_2587'\n"
                                  "setattr(sys.modules['synthetic'], name, ('intruder',))\n",
+    # Ninth review: on a module reached through a read of a namespace, or any other name.
+    'by setattr on a module read from globals()': "import sys\nme = sys.modules[__name__]\n"
+        "name = 'ALLOWED_2587'\nsetattr(globals().get('me'), name, ('reviewer', 'intruder'))\n",
+    'by setattr on an alias of its module': "import synthetic\nm = synthetic\n"
+                                            "name = 'ALLOWED_2587'\nsetattr(m, name, ('x',))\n",
 }
-# Reads of a namespace dict, and setattr on another package's module, rebind nothing here.
+# Reads of a namespace dict, and a computed setattr on another package's module or on a caught
+# exception, rebind nothing here.
 READ_ONLY = ("x = globals().get('ALLOWED_2587')\ny = vars(object())['a']\n"
-             "import os\nname = 'getcwd'\nsetattr(os, name, os.getcwd)\n")
+             "import os\nname = 'getcwd'\nsetattr(os, name, os.getcwd)\n"
+             "try:\n    pass\nexcept ValueError as exc:\n    setattr(exc, name, True)\n")
 
 
 def real():

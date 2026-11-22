@@ -77,30 +77,32 @@ def _namespace_writes(node, up) -> str | None:
     return ANY                        # passed on, aliased, updated, assigned: may write any name
 
 
-def _package_modules(tree, modules) -> set[str]:
-    """The names a tree binds to a module of ``modules`` (the scanned ones, by name)."""
-    found = set()
+def _never_modules(tree, up, modules) -> set[str]:
+    """The names a tree binds only to what is never a scanned module (ninth review on #2587): an
+    ``except … as`` exception, or an absolute import from a package outside ``modules``. Any
+    other binding (an assignment, a parameter, an alias of ``sys.modules[…]``) might be one."""
+    kinds: dict[str, set[bool]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.level or (node.module or '').partition(
-                '.')[0] in modules):
-            found.update(alias.asname or alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            found.update(alias.asname or alias.name.partition('.')[0] for alias in node.names
-                         if alias.name.partition('.')[0] in modules)
-    return found
+        imported = up.get(node)
+        safe = isinstance(node, ast.ExceptHandler) or (
+            isinstance(node, ast.alias) and not getattr(imported, 'level', 0)
+            and (getattr(imported, 'module', None) or node.name).partition('.')[0] not in modules)
+        for name in _bound(node):
+            kinds.setdefault(name, set()).add(safe)
+    return {name for name, seen in kinds.items() if seen == {True}}
 
 
 def module_bindings(trees, modules=frozenset()) -> Counter:
     """Every binding of every name anywhere in ``trees``, inside functions too, plus each
     attribute store or ``setattr`` of a literal name (``mod.NAME = …``), which may rebind a
     module's constant from elsewhere (seventh review on #2587), and each write to a namespace
-    dict (eighth). A write whose name the guard cannot read (``globals().update(…)``,
-    ``setattr(module, name, …)`` on a module of ``modules`` or ``sys.modules``) counts under
-    ``ANY``."""
+    dict (eighth). A write whose name the guard cannot read (``globals().update(…)``, a
+    ``setattr`` of a computed name on anything not shown never to be a scanned module: ninth)
+    counts under ``ANY``."""
     found = Counter()
     for tree in trees:
         up = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-        ours = _package_modules(tree, modules)
+        never = _never_modules(tree, up, modules)
         for node in ast.walk(tree):
             found.update(_bound(node))
             if _namespace(node) and (name := _namespace_writes(node, up)) is not None:
@@ -111,8 +113,7 @@ def module_bindings(trees, modules=frozenset()) -> Counter:
                   and len(node.args) > 1):
                 if isinstance(node.args[1], ast.Constant):
                     found[str(node.args[1].value)] += 1
-                elif (isinstance(node.args[0], ast.Subscript)
-                      or getattr(node.args[0], 'id', None) in ours):
+                elif getattr(node.args[0], 'id', None) not in never:
                     found[ANY] += 1
     return found
 
