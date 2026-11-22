@@ -128,6 +128,38 @@ class Ready(Ledger, tmc.KindsBase):
         self.assertEqual(state, merge_check.PENDING)
         self.assertIn("resumes 11:31", summary)
 
+    def test_a_turn_a_failed_claim_read_ended_says_how_to_re_arm_it(self):
+        # Review of #2613, F6: the reviews a spent rate limit failed on 2026-11-22 waited for no
+        # one; ready names the re-arm. Not for another failure, a turn that may have written, or
+        # an older failure under a newer turn.
+        read_failed = (f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}: "
+                       "PR unreadable (GitHub read failed)")
+        rearm = "re-arm: hermes dk retry --loop w --pr 7 --seat reviewer"
+        row = self.add("reviewer", "failed", read_failed)
+        self.assertIn(rearm, self.kinds(reviews=[])[-1][1])
+        with closing(sqlite3.connect(self.db)) as con, con:   # it may have written
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created)"
+                        " VALUES(?, 'confirmed', 'g', 1, 0)", (row["id"],))
+        said = " ".join(text for _, text in self.kinds(reviews=[]))
+        self.assertTrue(said.endswith("PR unreadable (GitHub read failed)"), said)  # nothing added
+        now = time.time()
+        for case, rows in (("another failure", [("failed", "turn exited with status 3", None)]),
+                           ("re-armed since", [("failed", read_failed, now - 100),
+                                               ("pending", None, now - 50)]),
+                           ("a newer turn", [("failed", read_failed, now - 100)])):
+            with self.subTest(case=case):
+                self.make_ledger()
+                for state, error, created in rows:
+                    self.add("reviewer", state, error, created=created)
+                if case == "a newer turn":     # another turn key at this head, queued since
+                    self.sup.submit("again", "acme/widgets", 7, HEAD, "reviewer",
+                                    turn_key="reconsider:1")
+                with mock.patch.object(run_supervisor, "production_ledger", return_value=self.db):
+                    said = " ".join(text for _, text in self.kinds(reviews=[]))
+                self.assertIn("reviewer turn", said)
+                self.assertNotIn("re-arm", said)
+                self.assertNotIn("; ", said.split("reviewer turn", 1)[1])
+
     def test_a_change_request_names_the_fixers_turn(self):
         self.add("fixer", "running")
         self.assertEqual(self.kind_of("changes requested at head aaaaaaa (1 of 3 verdicts) — "

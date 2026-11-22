@@ -41,7 +41,9 @@ OUTCOMES = ("spent", "free", "limited", "unsent", "error")
 
 _counts: Counter = Counter()   # (hour, login, method, shape, outcome) -> calls
 _limits: dict = {}             # login -> the newest rate-limit headers seen, with when
-_spent: dict = {}              # login -> the reset of a limit seen spent (#2608), in any process
+_limited: list = []            # (when, login, reset) of each limited answer (#2608), this process
+_seen: dict = {}               # login -> its newest remaining and reset, this process (#2608)
+LIMITED_KEPT = 200             # the limited answers kept: a claim needs only its own few
 _pending = 0
 _name = ""
 _registered = False
@@ -114,7 +116,7 @@ def record(login: str, method: str, path: str, result: str, headers: dict | None
     global _pending
     try:
         seen = {k: (headers or {}).get(f"x-ratelimit-{k}") for k in LIMIT_HEADERS}
-        _note_spent(login, seen)
+        _note_spent(login, seen, result)
         if not _writable():
             return
         if seen["used"] is not None:
@@ -129,29 +131,57 @@ def record(login: str, method: str, path: str, result: str, headers: dict | None
         return
 
 
-def _note_spent(login: str, seen: dict) -> None:
-    """Keep, per login, the reset of a limit GitHub says is spent; forget it once GitHub
-    answers with calls left. Kept even where nothing is counted (a worker): ``limited_until``."""
-    if seen["remaining"] is None:
-        return
+def _note_spent(login: str, seen: dict, result: str) -> None:
+    """Keep what ``limited_until`` reads, even where nothing is counted (a worker): each limited
+    answer, never erased by a later one, and the newest rate-limit headers, per login."""
+    now = time.time()
     try:
-        if str(seen["remaining"]) == "0":
-            _spent[login] = float(seen["reset"])
-        else:
-            _spent.pop(login, None)
+        reset = float(seen["reset"]) if seen.get("reset") is not None else None
     except (TypeError, ValueError):
-        _spent.pop(login, None)
+        reset = None
+    if result == "limited" and reset is not None:
+        _limited.append((now, login, reset))
+        del _limited[:-LIMITED_KEPT]
+    if seen.get("remaining") is not None:
+        _seen[login] = {"remaining": str(seen["remaining"]), "reset": reset, "at": now}
 
 
-def limited_until(now: float | None = None) -> float | None:
-    """When the rate limit this process last saw spent resets (epoch seconds), or None.
+def limited_until(login: str, since: float, now: float | None = None) -> float | None:
+    """When ``login``'s spent rate limit resets (epoch seconds), or None when it isn't spent
+    (#2608). It is spent when either holds:
 
-    A login whose newest answer had no calls left (``remaining`` 0) and a reset still ahead names
-    that reset. With several, the latest: a read that failed while any of them was spent waits
-    for all of them (#2608)."""
+    * this process counted a limited answer for ``login`` at or after ``since`` (a claim's start),
+      whatever later answers said: one read of a claim may be refused and the next answered;
+    * the newest rate-limit headers recorded for ``login`` say no calls are left and the reset is
+      still ahead: this process's own, or another process's count file written within the hour
+      (a new worker whose failed read carried no headers still sees the limit a sibling hit).
+
+    Another login's limit never counts: its quota is not the one this read spends."""
     now = time.time() if now is None else now
-    resets = [reset for reset in _spent.values() if reset > now]
+    resets = [reset for at, who, reset in _limited if who == login and at >= since and reset > now]
+    newest = _newest_seen(login, now)
+    if newest and newest.get("remaining") == "0" and float(newest.get("reset") or 0) > now:
+        resets.append(float(newest["reset"]))
     return max(resets) if resets else None
+
+
+def _newest_seen(login: str, now: float) -> dict | None:
+    """The newest headers recorded for ``login``: this process's, or any count file's that was
+    written within the hour. Unreadable files are skipped."""
+    found = [dict(_seen[login])] if login in _seen else []
+    try:
+        files = [f for f in directory().glob("*.json") if f.stat().st_mtime >= now - 3600]
+    except OSError:
+        files = []
+    for file in files:
+        try:
+            seen = (json.loads(file.read_text()).get("limits") or {}).get(login)
+            if isinstance(seen, dict) and seen.get("remaining") is not None:
+                found.append({"remaining": str(seen["remaining"]), "reset": seen.get("reset"),
+                              "at": float(seen.get("at") or 0)})
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return max(found, key=lambda seen: seen["at"]) if found else None
 
 
 def _writable() -> bool:

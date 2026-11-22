@@ -182,6 +182,30 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dic
         return None
 
 
+def rearm_note(db: str | Path, repo: str, pr: int, head: str, seat: str, loop_id: str) -> str:
+    """The re-arm command for this head's newest ``seat`` turn when it failed on a claim-time
+    read with no write (#2608: such a turn, ended by a spent rate limit, waits for no one), as
+    ``next_step`` gives it; "" for any other turn, or an unreadable ledger. Newest: a head can
+    hold several turns of a seat, one per turn key (a reconsidered review, #1334)."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return ''
+        try:
+            newest = con.execute("SELECT id FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                                 "ORDER BY created DESC LIMIT 1", (repo, pr, head, seat)).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return ''
+    row = next((row for row in read_only_view(db, repo, pr) or []
+                if newest is not None and row['id'] == newest[0]), None)
+    if (row is None or row['state'] != 'failed' or row.get('write') is not None
+            or run_supervisor.CLAIM_READ_FAILED not in str(row['error'] or '')):
+        return ''
+    return next_step(row, loop_id)
+
+
 def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str | None:
     """The newest ledger state of ``seat``'s turn on this PR head, read-only (#98).
 
@@ -547,6 +571,13 @@ def _held_step(row: dict, loop_id: str) -> str:
     return step
 
 
+def _limit_step(due: int) -> str:
+    """A claim read waiting for GitHub's rate limit to reset (#2608): no attempt is spent."""
+    return (f"read again in {due}s, after GitHub's rate limit resets (no attempt spent; a "
+            "lingering worker starts it when it falls due within its wait, otherwise the next "
+            "event or armed watchdog sweep does; a start still depends on host eligibility)")
+
+
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     """What moves a failed, waiting, uncertain or push-policy-cancelled ``runs_view`` row on
     (#53)."""
@@ -561,9 +592,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         if run_supervisor.LIMIT_WAIT in str(row.get('error') or ''):
-            # #2608: the wait for GitHub's reset spends none of the retry limit's attempts.
-            return (f"read again in {due}s, after GitHub's rate limit resets (no attempt spent; "
-                    "a start still depends on host eligibility)")
+            return _limit_step(due)
         return (f"attempt {(row['retries'] or 0) + 1} of {run_supervisor.MAX_RETRIES} due in {due}s "
                 "(recorded earliest recheck on the next event or armed watchdog sweep; "
                 "a start still depends on host eligibility)")

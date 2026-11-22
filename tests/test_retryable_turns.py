@@ -435,15 +435,22 @@ class ClaimTimeReads(Base):
         self.assertIsNone(view['write'])                              # pre-write: re-armable
         self.assertEqual(self.s.retry(row['id']), 'pending')          # the operator re-arms it
 
-    def spent_limit(self, remaining='0', reset_in=1800.0):
-        """GitHub's headers on the claim's last answer, as ``gh`` hands them to ``gh_calls``."""
+    def spent_limit(self, remaining='0', reset_in=1800.0, login='read'):
+        """GitHub's headers for ``login`` as an earlier read recorded them (``gh_calls``); the
+        claim's reader is the loop's ``read_token``, 'read'."""
         from diaktoros import gh_calls
-        reset = time.time() + reset_in
-        patcher = patch.dict(gh_calls._spent, {}, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        gh_calls._note_spent('reader[bot]', {'remaining': remaining, 'reset': str(int(reset))})
-        return int(reset)
+        for kept in (patch.dict(gh_calls._seen, {}, clear=True),
+                     patch.object(gh_calls, '_limited', [])):
+            kept.start()
+            self.addCleanup(kept.stop)
+        reset = int(time.time() + reset_in)
+        gh_calls._note_spent(login, {'remaining': remaining, 'reset': str(reset)}, 'spent')
+        return reset
+
+    def limited_read(self, reset):
+        """A claim read GitHub refuses because the reader's limit is spent, as ``gh`` counts it."""
+        from diaktoros import gh_calls
+        gh_calls._note_spent('read', {'remaining': '0', 'reset': str(reset)}, 'limited')
 
     def test_a_read_refused_by_the_spent_rate_limit_waits_for_the_reset(self):
         # #2608: GitHub's limit ran out for 35 minutes; each failed claim read spent an attempt
@@ -457,6 +464,7 @@ class ClaimTimeReads(Base):
             self.assertIn('claim-time read failed: PR unreadable', row['error'])
             self.assertIn(f'{run_supervisor.LIMIT_WAIT} at '
                           f'{time.strftime("%H:%MZ", time.gmtime(row["retry_at"]))}', row['error'])
+            self.assertTrue(self.s.held_for_ci)   # this worker stays if the reset is near
             [view] = views.read_only_view(self.db, 'o/r', 1)
             self.assertIn("after GitHub's rate limit resets (no attempt spent",
                           views.describe_run(view, 'widgets'))
@@ -467,10 +475,64 @@ class ClaimTimeReads(Base):
         self.assertIsNotNone(self.claim(self.pull()))
         self.assertEqual(self.s.get('review')['state'], 'claimed')
 
-    def test_a_failed_read_with_calls_left_still_spends_an_attempt(self):
-        for left, reset_in in (('12', 1800.0), ('0', -60.0)):   # calls left, or a reset past
-            with self.subTest(remaining=left, reset_in=reset_in):
-                self.spent_limit(remaining=left, reset_in=reset_in)
+    def test_a_limited_read_counts_whatever_a_later_read_of_the_claim_says(self):
+        # Review of #2613, F1: the claim reads on after a refusal; a later answer with calls
+        # left must not erase the refusal this claim was given.
+        reset = int(time.time() + 900)
+        answers = iter([None, None, None, None])
+
+        def api(*args, **kwargs):
+            from diaktoros import gh_calls
+            if not getattr(api, 'refused', False):
+                api.refused = True
+                self.limited_read(reset)          # the PR read: refused
+            else:
+                gh_calls._note_spent('read', {'remaining': '4999', 'reset': str(reset)}, 'spent')
+            return next(answers, None)
+        self.spent_limit(remaining='4999')        # nothing spent before this claim
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', side_effect=api), \
+             patch('diaktoros.gh.reviews', return_value=[]):
+            self.assertIsNone(self.s._claim())
+        row = self.s.get('review')
+        self.assertEqual((row['state'], row['retries']), ('waiting', 0))
+        self.assertEqual(row['retry_at'], reset + run_supervisor.LIMIT_MARGIN_S)
+
+    def test_another_process_recorded_limit_is_seen_by_a_new_worker(self):
+        # Review of #2613, F2: a worker whose failed read carried no headers still sees the
+        # limit a sibling recorded in its count file within the hour; never another login's,
+        # nor a stale file's.
+        import json
+        import os
+        from diaktoros import gh_calls
+        self.spent_limit(remaining='4999', reset_in=-1)   # this process: nothing spent
+        gh_calls._seen.clear()
+        reset = int(time.time() + 1200)
+        gh_calls.directory().mkdir(parents=True, exist_ok=True)
+        sibling = gh_calls.directory() / '1-2-sibling.json'
+        self.addCleanup(sibling.unlink, missing_ok=True)
+        for case, login, age, waits in (('another login', 'other[bot]', 0, False),
+                                        ('a stale file', 'read', 2 * 3600, False),
+                                        ('the reader, now', 'read', 0, True)):
+            with self.subTest(case=case):
+                sibling.write_text(json.dumps({'counts': [], 'limits': {login: {
+                    'remaining': '0', 'reset': str(reset), 'used': '5000',
+                    'at': time.time() - age}}}))
+                os.utime(sibling, (time.time() - age,) * 2)
+                self.assertIsNone(self.claim(None))
+                row = self.s.get('review')
+                self.assertEqual(run_supervisor.LIMIT_WAIT in row['error'], waits, row['error'])
+                self.assertEqual(row['retries'], 0 if waits else 1)
+                with ledger.connect(self.db) as con:
+                    con.execute("UPDATE runs SET state='pending', retries=0, retry_at=NULL, "
+                                "error=NULL")
+
+    def test_a_failed_read_the_readers_limit_does_not_explain_spends_an_attempt(self):
+        # Review of #2613, F3: calls left, a reset already past, or only another login spent.
+        for left, reset_in, login in (('12', 1800.0, 'read'), ('0', -60.0, 'read'),
+                                      ('0', 1800.0, 'fixer[bot]')):
+            with self.subTest(remaining=left, reset_in=reset_in, login=login):
+                self.spent_limit(remaining=left, reset_in=reset_in, login=login)
                 self.assertIsNone(self.claim(None))
                 row = self.s.get('review')
                 self.assertEqual((row['state'], row['retries']), ('waiting', 1))
@@ -478,17 +540,42 @@ class ClaimTimeReads(Base):
                 with ledger.connect(self.db) as con:
                     con.execute("UPDATE runs SET state='pending', retries=0, retry_at=NULL")
 
-    def test_the_wait_for_a_limit_is_bounded(self):
-        # A limit that never comes back can't hold a row forever: past LIMIT_WAIT_MAX since it
-        # was queued, a failed read counts as before and the retry limit ends the row.
-        self.spent_limit()
+    def test_the_limit_wait_is_bounded_from_its_start_to_a_final_failure(self):
+        # Review of #2613, F4: a row queued long ago still waits on its first limited read; a
+        # reset past the bound is read again at the bound; past it, attempts are spent until the
+        # retry limit ends the row.
         with ledger.connect(self.db) as con:
-            con.execute("UPDATE runs SET created=?",
-                        (time.time() - run_supervisor.LIMIT_WAIT_MAX - 60,))
+            con.execute("UPDATE runs SET created=?", (time.time() - 7 * 3600,))
+        self.spent_limit(reset_in=10 * 3600)
         self.assertIsNone(self.claim(None))
         row = self.s.get('review')
-        self.assertEqual((row['state'], row['retries']), ('waiting', 1))
-        self.assertNotIn(run_supervisor.LIMIT_WAIT, row['error'])
+        self.assertEqual((row['state'], row['retries']), ('waiting', 0))
+        self.assertAlmostEqual(row['retry_at'] - time.time(), run_supervisor.LIMIT_WAIT_MAX,
+                               delta=5)
+        began = time.time() - run_supervisor.LIMIT_WAIT_MAX - 60     # the wait is that old now
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(began))
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET error=? WHERE delivery='review'",
+                        (f"{row['error'].rsplit(run_supervisor.LIMIT_SINCE, 1)[0]}"
+                         f"{run_supervisor.LIMIT_SINCE} {stamp}",))
+        for attempt in range(1, MAX_RETRIES + 1):
+            self.elapse()
+            self.s.recover()
+            self.assertIsNone(self.claim(None))
+            row = self.s.get('review')
+            self.assertEqual(row['retries'], attempt)
+        self.assertEqual(row['state'], 'failed')
+        self.assertIn(f'retry limit ({MAX_RETRIES} attempts)', row['error'])
+
+    def test_a_near_reset_is_waited_for_by_the_worker_that_saw_it(self):
+        # Review of #2613, F5: with the reset inside the worker's wait, it schedules the read
+        # itself, as for a backed-off read (#1302), with no event or sweep.
+        self.spent_limit(reset_in=39)
+        sleeps = []
+        self.worker(sleeps, self.clock())
+        self.assertTrue(sleeps)
+        row = self.s.get('review')
+        self.assertEqual((row['state'], row['retries']), ('pending', 0))
 
     def test_a_raising_claim_read_names_the_exception(self):
         with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
