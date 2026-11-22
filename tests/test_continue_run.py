@@ -575,10 +575,10 @@ class Continue(Base):
                     fix_hold.check_ask(st, 12)                 # the seat may ask again
                     self.assertEqual(self.writes, ["plan_comment"])   # nothing posted again
 
-    def test_a_pending_plan_is_adopted_after_the_branch_moves(self):
-        """#2381: the POST's response is lost, then the branch moves (a conflict). `--post-plan`
-        refuses, but adopts the run's comment if GitHub has it, so a maintainer's approve
-        resolves it, and drops the reservation (uncounted) if it does not."""
+    def test_a_pending_plan_is_dropped_after_the_branch_moves(self):
+        """#2381, #2367, #2370: the POST's response is lost, then the branch moves (a conflict).
+        `--post-plan` refuses and drops the reservation, never adopts it: counted when the run's
+        comment is on the issue, uncounted when not; the seat may ask again either way."""
         from diaktoros import fix_hold
         labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
         for landed in (True, False):
@@ -589,12 +589,8 @@ class Continue(Base):
                 on_issue = [{"id": 500, "user": {"login": "fix"}, "body": self.posted}] \
                     if landed else []
                 self.assertEqual(self.post_plan_with(labelled, on_issue), 2)
-                if landed:
-                    self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
-                    self.assertNotIn("pending", st.fix_ask_open()[12])
-                    self.assertEqual(st.fix_ask_count(12), 1)
-                else:
-                    self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 0))
+                self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, int(landed)))
+                fix_hold.check_ask(st, 12)
                 self.assertEqual(self.writes, ["plan_comment"])
 
     def test_continue_closes_the_runs_plan_ask_when_it_opens_the_pr(self):
@@ -646,7 +642,7 @@ class Continue(Base):
     def test_unreadable_comments_and_confirmed_asks_are_settled_as_documented(self):
         """#2382 review F4: (a) no conflict, plan no longer needed, comments unreadable: the
         pending ask is closed but stays counted (its comment may be on the issue); (b) the same
-        with a branch conflict while the issue still needs a plan: it stays pending for a retry;
+        with a branch conflict while the issue still needs a plan: dropped, still counted (#2370);
         (c) a confirmed ask of the run, plan no longer needed: closed, still counted."""
         from diaktoros import fix_hold
         labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
@@ -656,13 +652,12 @@ class Continue(Base):
         st = self.lost_plan(labelled)
         self.branch_sha = "e" * 40
         self.assertEqual(self.post_plan_unreadable(labelled), 2)                    # (b)
-        self.assertTrue(st.fix_ask_open()[12]["pending"])
-        self.assertEqual(st.fix_ask_count(12), 1)
+        self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 1))
         self.branch_sha = NEW
         self.assertEqual(self.post_plan_with(labelled, [], post=Continue.plan_comment), 0)
         self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
         self.assertEqual(self.post_plan_unreadable(issue()), 2)                     # (c)
-        self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 1))
+        self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 2))
         self.assertEqual(self.writes, ["plan_comment", "plan_comment"])
 
     def test_release_never_touches_another_runs_ask(self):
