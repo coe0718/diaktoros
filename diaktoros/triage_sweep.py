@@ -91,6 +91,32 @@ def resume_page(st) -> int:
     return page if ok else 1
 
 
+RESUME_NOTE = {"saved": ", the next sweep reads on from there",
+               "cleared": "; where it stopped could not be saved, so the next sweep starts "
+                          "again from page 1",
+               "stale": "; where it stopped could not be saved, and an older saved page could "
+                        "not be cleared"}
+
+
+def keep_resume(st, progress: dict) -> str:
+    """Keep where the next sweep starts: the page a budget cut stopped at, or page 1 for a whole
+    listing (review on #2578). ``saved``; else ``cleared`` when the write failed but the old file
+    is gone, so the next sweep starts from page 1; else ``stale``. A failed write is never told
+    as a kept one (F3): ``kv_set`` would log and swallow it."""
+    path = st.dir / RESUME_FILE
+    try:
+        st.kv_set_strict(path, {"next": progress["next"]} if "next" in progress else {})
+        return "saved"
+    except Exception as exc:
+        log(f"triage sweep: where the listing stopped not saved: {type(exc).__name__}: {exc}")
+    try:
+        path.unlink(missing_ok=True)
+        return "cleared"
+    except OSError as exc:
+        log(f"triage sweep: old resume point not cleared: {type(exc).__name__}: {exc}")
+        return "stale"
+
+
 def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     """Queue the triage turn of each issue whose delivery was missed; return the alert lines."""
     ledger_down = resolve_late(loop, st)
@@ -103,9 +129,7 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     if issues is None:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
-    # A listing the budget cut resumes where it stopped next sweep, so a page the budget never
-    # reaches from page 1 is still read (review on #2578); a whole one starts over from page 1.
-    st.kv_set(st.dir / RESUME_FILE, {"next": progress["next"]} if "next" in progress else {})
+    kept = keep_resume(st, progress)
     lines: list[str] = []
     if error:                             # not proven whole: the newest were read, older not
         log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
@@ -113,8 +137,11 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
                  f"{len(issues)} (from page {start}, the newer ones last sweep)")
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only {which} "
                      f"open issues/PRs ({gh.one_line(error)}); older issues inside the sweep "
-                     "window were not checked" + (", the next sweep reads on from there"
-                                                  if "next" in progress else ""))
+                     "window were not checked" + (RESUME_NOTE[kept] if "next" in progress
+                                                  else ""))
+    if kept == "stale" and "next" not in progress:
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep could not reset where "
+                     "its listing starts: the next sweep may skip the newest open issues")
     if ledger_down:                       # the cleanup just logged why: one line per cause
         return lines
     try:
