@@ -98,6 +98,8 @@ class Handler(unittest.TestCase):
                                self.kicks.append((p["number"], h, sender, tag)) or True):
             if payload is None:                       # the watchdog's sweep, as its last step
                 return ci_event.drain(loop or LOOP, self.st)
+            if payload == "handoff":                  # ... and once it let the lock go
+                return ci_event.handoff(loop or LOOP, self.st)
             with self.assertRaises(Silenced) as ended:
                 ci_event.gate(loop or LOOP, self.st, payload)
         return ended.exception.reason, ended.exception.decision
@@ -264,24 +266,6 @@ class Handler(unittest.TestCase):
             acted = self.deliver(None)
         self.assertEqual(sorted(a[2] for a, _ in self.queued), [7, 9])
         self.assertEqual(acted, ["CI read for #7", "CI read for #9"])
-        self.assertEqual(self.st.kv_get(self.st.dir / ci_event.NUDGES, None), [])
-
-    def test_a_drain_takes_notes_until_none_is_left(self):
-        """#1996: a suite noted during what was the drain's last pass (5) is taken by that drain:
-        its handler, having stopped waiting for the lock, said this drain acts on it."""
-        heads = [f"{i:x}" * 40 for i in range(1, 8)]
-        self.prs = {n: pr(number=n, head=h) for n, h in enumerate(heads, start=10)}
-        act = ci_event.act
-
-        def acting(loop, st, head, numbers):     # each act notes the next commit's suite
-            later = heads.index(head) + 1
-            if later < len(heads):
-                ci_event.note(st, heads[later], [10 + later])
-            return act(loop, st, head, numbers)
-        ci_event.note(self.st, heads[0], [10])
-        with mock.patch.object(ci_event, "act", side_effect=acting):
-            acted = self.deliver(None)
-        self.assertEqual(acted, [f"CI read for #{n}" for n in range(10, 17)])
         self.assertEqual(self.st.kv_get(self.st.dir / ci_event.NUDGES, None), [])
 
     def test_a_matching_head_with_no_ledger_yet_is_acted_on_not_declined(self):
