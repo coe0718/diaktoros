@@ -539,6 +539,8 @@ class ClaimAndLaunch:
             # Before launch, no model ran (#723): a cancellation, not a failure; never re-armed.
             # A review's moved head is delivered to the new head by the watchdog (#2468).
             turn.error, turn.cancel, turn.retry = str(exc)[:600], True, False
+            from .. import fix_settle
+            fix_settle.dropped_before_launch(turn.row, turn.error)     # #2248: logged only
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
             # (no credential is ever formatted into one), and bounded.
