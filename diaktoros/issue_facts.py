@@ -250,9 +250,33 @@ def referenced_section(loop: dict, number: int, texts: list[str], closing,
             "words.\n\n" + "\n".join(rows))
 
 
+_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+
+
+def _unfenced(lines: list[str]) -> list[str]:
+    """``lines`` with each fenced code block (its fences too) blanked, as Markdown renders it:
+    code, not items, statuses or headings (seventh review on #2573: a ``diff`` given as evidence
+    read as unmarked items). A block runs to a closing fence of its character at least as long,
+    or to the end, as an unclosed one does."""
+    out, fence = [], None
+    for line in lines:
+        found = _FENCE.match(line)
+        if fence is None and found and not (found.group(1)[0] == "`" and "`" in found.group(2)):
+            fence = found.group(1)
+        elif fence is not None and found and found.group(1)[0] == fence[0] \
+                and len(found.group(1)) >= len(fence) and not found.group(2).strip():
+            fence = None
+        elif fence is None:
+            out.append(line)
+            continue
+        out.append("")
+    return out
+
+
 def _section(body: str) -> list[str] | None:
-    """The ``Requirements`` section's lines, blank ones kept, or None when there is none."""
-    lines = body.splitlines()
+    """The ``Requirements`` section's lines, blank ones kept and fenced code blanked
+    (``_unfenced``), or None when there is none."""
+    lines = _unfenced(body.splitlines())
     for i, line in enumerate(lines):
         if HEADING.match(line):
             out = []
