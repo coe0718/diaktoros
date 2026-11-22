@@ -25,13 +25,17 @@ LABELS_MAX = 10
 
 _CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d{1,10})\b", re.IGNORECASE)
 # The heading may carry a note after it, ``## Requirements (all met)``, ``— met`` or ``: met``
-# (#2199: a refused heading cost shadow turns their last steps); a sentence never matches.
+# (#2199: a refused heading cost shadow turns their last steps), or several, ``(all met) — see
+# below`` (#2276); a sentence never matches.
 HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)?\s*Requirements\b\**"
-                     r"(?:\s*\([^)]*\)|\s+[-–—]\s.*|\s*:.*)?[\s:*]*$", re.IGNORECASE)
+                     r"(?:\s*\([^)]*\)|\s+[-–—]\s.*|\s*:.*)*[\s:*]*$", re.IGNORECASE)
 _ANY_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*:?\s*$)")
 # An issue number is at most 10 digits: a longer run is no reference, so ``int`` never meets
 # one (past 4300 digits it raises: review on #1948).
 _STATUS = re.compile(r"\b(not met|met|deferred to #(\d{1,10}))\b", re.IGNORECASE)
+# A requirement item: a top-level list line (``- x``, ``* x``, ``1. x``). A line indented two or
+# more spaces is a nested note (evidence) and a line with no marker is prose: neither needs a status.
+_ITEM = re.compile(r"^ ?(?:[-*+]|\d{1,9}[.)])\s+\S")
 # ``#N`` on its own: not ``owner/repo#N`` (another repository), ``&#N;`` (an HTML entity) or ``##``.
 _REFERENCE = re.compile(r"(?<![\w/&#])#(\d{1,10})\b")
 _DEFERRED = re.compile(r"\bdeferred to #(\d{1,10})\b", re.IGNORECASE)
@@ -68,7 +72,7 @@ def closing_numbers(loop: dict, number: int, body: str | None = None) -> list[in
 
 
 def cited_own_work(loop: dict, number: int, pr_body: object, head_ref: object,
-                   review_body: object) -> list[int]:
+                   review_body: object, known=()) -> list[int]:
     """#754: the PR's own numbers that a blocking finding names, in order of first mention.
 
     The PR's own numbers are the PR itself, the issues its body closes (``closing_numbers`` on
@@ -79,15 +83,18 @@ def cited_own_work(loop: dict, number: int, pr_body: object, head_ref: object,
     Requirements section or a summary does not count. A number counts only as a literal
     same-repo ``#N`` (``_REFERENCE``, as ``referenced_numbers`` reads it): ``#123`` is not in
     ``#1234``, and ``other/repo#123`` is another repository's. Literal on purpose: no model
-    judges whether the finding asks for that work."""
+    judges whether the finding asks for that work.
+
+    ``known``: the finding ids the host has recorded for the PR, read as the broker reads them
+    (#2548: without them ``F2: fixed in #12`` reads as a new finding)."""
     from . import config, findings
     own = {number, *(closing_numbers(loop, number, pr_body if isinstance(pr_body, str) else "")
                      or [])}
     branch = re.fullmatch(config.ISSUE_FIX_BRANCH_RE, head_ref if isinstance(head_ref, str) else "")
     if branch:
         own.add(int(branch.group(1)))
-    blocking = [rest for _, kind, rest in findings.parse(review_body if isinstance(review_body, str)
-                                                         else "")
+    body = review_body if isinstance(review_body, str) else ""
+    blocking = [rest for _, kind, rest in findings.parse(body, known or ())
                 if kind in ("new", "open")]
     return [value for value in referenced_numbers(blocking, ()) if value in own]
 
@@ -271,7 +278,9 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
                 "needs a `Requirements` section (a heading line such as `## Requirements`, then one "
                 "line per requirement) giving each requirement `met` (with evidence), "
                 "`not met` or `deferred to #N`; nothing was written, resubmit")
-    statuses = [found for found in (_STATUS.search(line) for line in items) if found]
+    # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
+    marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
+    statuses = [found for _, found in marked if found]
     if not statuses:
         return ("the Requirements section has no item marked `met`, `not met` or "
                 "`deferred to #N`; nothing was written, resubmit")
@@ -287,4 +296,9 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
         return ("an APPROVE cannot have a `not met` requirement: it is a blocking finding "
                 "(number it F<n>) and the verdict is REQUEST_CHANGES; nothing was written, "
                 "resubmit")
+    unmarked = next((line for line, found in marked if not found and _ITEM.match(line)), None)
+    if verdict == "APPROVE" and unmarked is not None:
+        return (f"the Requirements item {json.dumps(_clip(unmarked.strip(), 120))} has no status: "
+                "an APPROVE marks every requirement `met` (with evidence), `not met` or "
+                "`deferred to #N`; nothing was written, resubmit")
     return ""

@@ -91,6 +91,34 @@ class IssueFacts(unittest.TestCase):
                 body = f"{heading}\n- one: met (a.py:3)\n"
                 self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
 
+    def test_a_heading_with_two_notes_is_accepted(self):
+        # #2276: a parenthetical plus a dash or colon note.
+        for heading in ("## Requirements (all met) — evidence below",
+                        "## Requirements (all met): see below", "**Requirements** (2) - met"):
+            with self.subTest(heading):
+                body = f"{heading}\n- one: met (a.py:3)\n"
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_an_unmarked_item_on_an_approve_is_refused(self):
+        # #2309 (3a): one met line no longer carries a bare item line through.
+        body = "## Requirements\n- one: met (a.py:3)\n- two: the export flag\n"
+        reason = issue_facts.check(LOOP, 7, "APPROVE", body)
+        self.assertIn("- two: the export flag", reason)
+        self.assertIn("nothing was written", reason)
+        for verdict in ("REQUEST_CHANGES", "COMMENT"):
+            self.assertEqual(issue_facts.check(LOOP, 7, verdict, body), "")
+
+    def test_the_last_status_on_a_line_counts(self):
+        # #2309 (3b): `met? no — not met` is `not met`.
+        body = "## Requirements\n- one: met (a.py:3)\n- two: met? no — not met\n"
+        self.assertIn("`not met` requirement", issue_facts.check(LOOP, 7, "APPROVE", body))
+
+    def test_a_fully_marked_section_with_prose_and_evidence_passes(self):
+        # Guard: an intro line, nested evidence and a closing remark are not requirement items.
+        body = ("## Requirements (all met)\nChecked against the issue:\n- one: met\n"
+                "  - evidence: tests/a.py::t\n1. two: deferred to #9\n\nLooks good overall.\n")
+        self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
     def test_a_sentence_is_still_not_a_heading(self):
         for line in ("Requirements are met.", "Requirements-based tests pass", "The Requirements",
                      "- Requirements: met"):

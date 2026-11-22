@@ -73,8 +73,11 @@ def _escalate_instead(loop: dict, st, number: int, pr_head: str, prior: int, pr:
     pending = escalate_pending.get(st, number)
     if pending:
         _take_pending_escalation(loop, st, number, pr_head, prior, pending)
+    # #2548: the recorded finding ids, so a state line reads as the broker reads it.
+    known = st.findings_get(number).get("findings")
     cited = issue_facts.cited_own_work(loop, number, pr.get("body"),
-                                       (pr.get("head") or {}).get("ref"), review.get("body"))
+                                       (pr.get("head") or {}).get("ref"), review.get("body"),
+                                       known if isinstance(known, dict) else {})
     if not cited:
         return
     import secrets

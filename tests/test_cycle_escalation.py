@@ -84,6 +84,15 @@ class Cycle(te.Base):
         self.assert_to_the_fixer("## Requirements\n- #12 item: not met\n\nF1: src/a.py:3: off by one\n",
                                  self.pr("Closes #12"))
 
+    def test_2548_a_recorded_findings_state_line_naming_the_closing_issue_goes_to_the_fixer(self):
+        # A state line with a plain-space reason is a state of a recorded id, as the broker reads
+        # it, not a new finding: the real new finding goes to the fixer.
+        for state in ("F2: fixed in #12", "F2: withdrawn pending #12"):
+            with self.subTest(state):
+                self.st.findings_put(7, {"findings": {"F2": {"state": "open", "text": "x"}}})
+                self.assert_to_the_fixer(f"F1 [correctness]: src/a.py:1: real problem\n{state}\n",
+                                         self.pr("Closes #12"))
+
     # -- once per head, and explained --------------------------------------------------------
 
     def test_it_escalates_once_per_head(self):
@@ -126,6 +135,14 @@ class Matcher(unittest.TestCase):
         self.assertEqual(self.cited("F1: open — still needs #12", ), [12])
         self.assertEqual(self.cited("F1: fixed — #12 landed"), [])
         self.assertEqual(self.cited("F1: withdrawn — #12"), [])
+
+    def test_2548_known_ids_read_state_lines_as_states(self):
+        known = {"F2": {"state": "open"}}
+        review = "F1: src/a.py:1: real problem\nF2: fixed in #12\n"
+        self.assertEqual(issue_facts.cited_own_work(self.loop, 7, "Closes #12", "fix", review,
+                                                    known), [])
+        self.assertEqual(issue_facts.cited_own_work(self.loop, 7, "Closes #12", "fix",
+                                                    "F2: open until #12\n", known), [12])
 
     def test_unreadable_inputs_read_as_nothing(self):
         self.assertEqual(issue_facts.cited_own_work(self.loop, 7, None, None, None), [])
