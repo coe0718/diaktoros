@@ -127,6 +127,18 @@ class IssueFacts(unittest.TestCase):
             with self.subTest(body):
                 self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
 
+    def test_nesting_is_read_from_each_items_own_content_column(self):
+        # Third review on #2573 (F2): a bullet two spaces under `1. item` is not nested (that
+        # item's content starts at column 3), so it is a separate list's unmarked item.
+        body = "## Requirements\n1. first: met\n  - second: export flag\n"
+        self.assertIn("- second: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
+        # F4: an item that dedents is the new level, so evidence under it is nested.
+        for body in ("## Requirements\n  - first: met\n- second: met\n  - evidence: tests/a.py\n",
+                     "## Requirements\n1. first: met\n   - evidence: tests/a.py\n2. two: met\n",
+                     "## Requirements\n-   first: met\n    - evidence: tests/a.py\n"):
+            with self.subTest(body):
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
     def test_a_section_with_no_status_names_its_unmarked_item(self):
         # Review on #2573 (F3): #2309 asks which line, also when no item has a status.
         for verdict in ("APPROVE", "REQUEST_CHANGES"):

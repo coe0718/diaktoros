@@ -33,10 +33,11 @@ _ANY_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*:?\s*$)")
 # An issue number is at most 10 digits: a longer run is no reference, so ``int`` never meets
 # one (past 4300 digits it raises: review on #1948).
 _STATUS = re.compile(r"\b(not met|met|deferred to #(\d{1,10}))\b", re.IGNORECASE)
-# A list line (``- x``, ``* x``, ``1. x``) and its indent. A requirement item is a top-level one:
-# a line indented two or more past the list's first item is a nested note (evidence), and a line
-# with no marker is prose; neither needs a status (``_top_items``).
-_MARKER = re.compile(r"^([ \t]*)(?:[-*+]|\d{1,9}[.)])\s+\S")
+# A list line (``- x``, ``* x``, ``1. x``): its indent, its marker and the spaces after it, which
+# say where the item's content starts. A requirement item is a top-level one: a line indented
+# into an open item is a nested note (evidence), and a line with no marker is prose; neither
+# needs a status (``_top_items``).
+_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\S")
 # ``#N`` on its own: not ``owner/repo#N`` (another repository), ``&#N;`` (an HTML entity) or ``##``.
 _REFERENCE = re.compile(r"(?<![\w/&#])#(\d{1,10})\b")
 _DEFERRED = re.compile(r"\bdeferred to #(\d{1,10})\b", re.IGNORECASE)
@@ -270,24 +271,28 @@ def requirements(body: str) -> list[str] | None:
 
 
 def _top_items(lines: list[str]) -> list[str]:
-    """The section's top-level list items. Nesting is read against the list's first item, not
-    from column 0, so a list indented as a whole is still top level (review on #2573). A line of
-    prose after a blank line, not indented into the item, ends that list as Markdown does, so the
-    next list is read from its own first item (second review on #2573)."""
-    base, blank, out = None, False, []
+    """The section's top-level list items, read as Markdown nests them (reviews on #2573): each
+    open item's content starts past its marker and the spaces after it, and a later item indented
+    at least that far is nested in it (evidence), any other ends it. So a list indented as a whole
+    is still top level, a bullet under ``1. item`` needs three spaces to nest, and an item that
+    dedents is the new level. Prose after a blank line, not indented into the open item, ends it
+    too; prose with no blank line before it is the item's own text."""
+    open_items, blank, out = [], False, []
     for line in lines:
         if not line.strip():
             blank = True
             continue
-        found = _MARKER.match(line)
+        found = _ITEM.match(line)
         indent = len((found.group(1) if found else line[:len(line) - len(line.lstrip())])
                      .expandtabs(4))
+        if found or blank:
+            while open_items and indent < open_items[-1]:
+                open_items.pop()
         if found:
-            base = indent if base is None else base
-            if indent < base + 2:
+            if not open_items:
                 out.append(line)
-        elif blank and base is not None and indent < base + 2:
-            base = None
+            gap = len(found.group(3).expandtabs(4))
+            open_items.append(indent + len(found.group(2)) + (gap if gap <= 4 else 1))
         blank = False
     return out
 
