@@ -296,6 +296,17 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
     return entry
 
 
+def recorded_before(entry: dict, body: str) -> dict:
+    """The ids ``entry`` records, less those this review's own body first recorded (review on
+    #2573): the broker records a review before the gate reads it, so its new ``F1: fixed-size
+    buffer`` is recorded with that very text and must still read as new, not as ``fixed``."""
+    found = entry.get("findings") if isinstance(entry, dict) else None
+    found = found if isinstance(found, dict) else {}
+    mine = {fid: rest[:300] for fid, _, rest in parse(body if isinstance(body, str) else "")}
+    return {fid: item for fid, item in found.items()
+            if not (fid in mine and isinstance(item, dict) and item.get("text") == mine[fid])}
+
+
 def record(loop: dict, number: int, head: str, body: str) -> None:
     from . import state as state_mod
     st = state_mod.state_for(loop)

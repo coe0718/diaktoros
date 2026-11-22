@@ -108,6 +108,21 @@ class IssueFacts(unittest.TestCase):
         for verdict in ("REQUEST_CHANGES", "COMMENT"):
             self.assertEqual(issue_facts.check(LOOP, 7, verdict, body), "")
 
+    def test_an_indented_list_is_read_from_its_own_first_item(self):
+        # Review on #2573 (F2): a list indented as a whole is still top level; nested evidence
+        # under it still needs no status.
+        body = "## Requirements\n  - one: met\n  - two: export flag\n"
+        self.assertIn("- two: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
+        body = "## Requirements\n  - one: met\n      - evidence: tests/a.py\n"
+        self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_a_section_with_no_status_names_its_unmarked_item(self):
+        # Review on #2573 (F3): #2309 asks which line, also when no item has a status.
+        for verdict in ("APPROVE", "REQUEST_CHANGES"):
+            reason = issue_facts.check(LOOP, 7, verdict, "## Requirements\n- export flag\n")
+            self.assertIn("- export flag", reason)
+            self.assertIn("no item marked", reason)
+
     def test_the_last_status_on_a_line_counts(self):
         # #2309 (3b): `met? no — not met` is `not met`.
         body = "## Requirements\n- one: met (a.py:3)\n- two: met? no — not met\n"

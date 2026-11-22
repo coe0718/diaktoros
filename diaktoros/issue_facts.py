@@ -33,9 +33,10 @@ _ANY_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*:?\s*$)")
 # An issue number is at most 10 digits: a longer run is no reference, so ``int`` never meets
 # one (past 4300 digits it raises: review on #1948).
 _STATUS = re.compile(r"\b(not met|met|deferred to #(\d{1,10}))\b", re.IGNORECASE)
-# A requirement item: a top-level list line (``- x``, ``* x``, ``1. x``). A line indented two or
-# more spaces is a nested note (evidence) and a line with no marker is prose: neither needs a status.
-_ITEM = re.compile(r"^ ?(?:[-*+]|\d{1,9}[.)])\s+\S")
+# A list line (``- x``, ``* x``, ``1. x``) and its indent. A requirement item is a top-level one:
+# a line indented two or more past the list's first item is a nested note (evidence), and a line
+# with no marker is prose; neither needs a status (``_top_items``).
+_MARKER = re.compile(r"^([ \t]*)(?:[-*+]|\d{1,9}[.)])\s+\S")
 # ``#N`` on its own: not ``owner/repo#N`` (another repository), ``&#N;`` (an HTML entity) or ``##``.
 _REFERENCE = re.compile(r"(?<![\w/&#])#(\d{1,10})\b")
 _DEFERRED = re.compile(r"\bdeferred to #(\d{1,10})\b", re.IGNORECASE)
@@ -263,6 +264,20 @@ def requirements(body: str) -> list[str] | None:
     return None
 
 
+def _top_items(lines: list[str]) -> list[str]:
+    """The section's top-level list items. Nesting is read against the first item's indent, not
+    from column 0, so a list indented as a whole is still top level (review on #2573)."""
+    base, out = None, []
+    for line in lines:
+        found = _MARKER.match(line)
+        if found:
+            indent = len(found.group(1).expandtabs(4))
+            base = indent if base is None else base
+            if indent < base + 2:
+                out.append(line)
+    return out
+
+
 def check(loop: dict, number: int, verdict: str, body: str) -> str:
     """Why this review must be refused, or ''. A PR that closes no issue is unaffected."""
     from . import gh
@@ -281,9 +296,12 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
     # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
     marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
     statuses = [found for _, found in marked if found]
+    tops = set(_top_items(items))
+    top = [line for line, found in marked if not found and line in tops]
     if not statuses:
+        named = f" ({json.dumps(_clip(top[0].strip(), 120))} has none)" if top else ""
         return ("the Requirements section has no item marked `met`, `not met` or "
-                "`deferred to #N`; nothing was written, resubmit")
+                f"`deferred to #N`{named}; nothing was written, resubmit")
     for found in statuses:
         if found.group(2):
             n = int(found.group(2))
@@ -296,9 +314,8 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
         return ("an APPROVE cannot have a `not met` requirement: it is a blocking finding "
                 "(number it F<n>) and the verdict is REQUEST_CHANGES; nothing was written, "
                 "resubmit")
-    unmarked = next((line for line, found in marked if not found and _ITEM.match(line)), None)
-    if verdict == "APPROVE" and unmarked is not None:
-        return (f"the Requirements item {json.dumps(_clip(unmarked.strip(), 120))} has no status: "
+    if verdict == "APPROVE" and top:
+        return (f"the Requirements item {json.dumps(_clip(top[0].strip(), 120))} has no status: "
                 "an APPROVE marks every requirement `met` (with evidence), `not met` or "
                 "`deferred to #N`; nothing was written, resubmit")
     return ""

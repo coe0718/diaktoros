@@ -16,7 +16,7 @@ from unittest import mock
 
 import test_escalate as te
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import explain, gate, issue_facts  # noqa: E402
+from diaktoros import explain, findings, gate, issue_facts  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 HEAD = fg.HEAD
@@ -93,6 +93,15 @@ class Cycle(te.Base):
                 self.assert_to_the_fixer(f"F1 [correctness]: src/a.py:1: real problem\n{state}\n",
                                          self.pr("Closes #12"))
 
+    def test_2573_a_new_finding_the_broker_already_recorded_still_escalates(self):
+        # The broker records a review before the gate reads it: F1's own text must not make its
+        # ``fixed-size`` read as the state ``fixed`` (review on #2573).
+        review = "F1 [correctness]: fixed-size buffer breaks #12\nF2: fixed in #12\n"
+        earlier = {"findings": {"F2": {"state": "open", "text": "src/a.py:1: x"}}}
+        self.st.findings_put(7, findings.apply(earlier, HEAD, review))
+        self.assertEqual(self.st.findings_get(7)["findings"]["F1"]["state"], "open")
+        self.assert_escalated(review, self.pr("Closes #12"), "#12")
+
     # -- once per head, and explained --------------------------------------------------------
 
     def test_it_escalates_once_per_head(self):
@@ -143,6 +152,13 @@ class Matcher(unittest.TestCase):
                                                     known), [])
         self.assertEqual(issue_facts.cited_own_work(self.loop, 7, "Closes #12", "fix",
                                                     "F2: open until #12\n", known), [12])
+
+    def test_2573_recorded_before_drops_only_this_reviews_own_new_ids(self):
+        review = "F1: fixed-size buffer\nF2: fixed in #12\n"
+        entry = findings.apply({"findings": {"F2": {"state": "open", "text": "x"}}}, "h", review)
+        self.assertEqual(sorted(findings.recorded_before(entry, review)), ["F2"])
+        self.assertEqual(sorted(findings.recorded_before(entry, "F1: fixed\n")), ["F1", "F2"])
+        self.assertEqual(findings.recorded_before({}, None), {})
 
     def test_unreadable_inputs_read_as_nothing(self):
         self.assertEqual(issue_facts.cited_own_work(self.loop, 7, None, None, None), [])
