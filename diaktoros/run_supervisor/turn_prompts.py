@@ -357,7 +357,35 @@ def shadow_review_section(loop: dict, row, found=_READ) -> str:
     body = str(found[3] or '')
     if len(body) > SHADOW_BODY_MAX:
         body = body[:SHADOW_BODY_MAX] + '\n\n(truncated)'
-    return head + f"Model `{found[1]}`, verdict **{found[2]}** at `{row['head'][:12]}`:\n\n{body}"
+    return (head + f"Model `{found[1]}`, verdict **{found[2]}** at `{row['head'][:12]}`:\n\n{body}"
+            + shadow_requests_section(loop, row, found[0]))
+
+
+def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
+    """The issues the ruled shadow review asked to file (#2209), where the loop files both a
+    shadow's and the adjudicator's: the host files them, so the ruling asks only for others."""
+    import sqlite3
+    from .. import config
+    if not (config.shadow_file_issues(loop) and config.adjudicator_file_issues(loop)):
+        return ''
+    try:
+        con = views.read_only_connect(run_supervisor.production_ledger())
+        if con is None:
+            return ''
+        try:
+            titles = [r[0] for r in con.execute(
+                "SELECT title FROM shadow_issues WHERE run_id=? AND repo=? AND pr=? AND head=? "
+                "AND state!='denied' ORDER BY seq", (shadow_run, row['repo'], row['pr'],
+                                                     row['head']))]
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return ''
+    if not titles:
+        return ''
+    return ('\n\nThe shadow review asked to file these issues, and the host files them from this '
+            'PR: do not ask for them again, only for findings beyond them.\n'
+            + ''.join(f'\n- {title}' for title in titles))
 
 
 def upheld_shadow_section(row, ruled: float, found=_READ) -> str:

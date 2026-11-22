@@ -9,7 +9,10 @@ the PR it follows up and the ruling. Its ``filed_issues`` row makes ``fix_hold``
 to merge, and counts its lineage, exactly as for the reviewer's and the shadow's.
 
 Not filed: a title the reviewer or a shadow review already filed from the PR (or one close to it:
-``duplicate``); one whose run ended without a ruling (``denied``); any past
+``duplicate``); one the shadow review it ruled over already asked for at that PR and head, where
+the loop files a shadow's requests: a title close to it, or a body whose first ``path:line`` (or
+``path:line-line``) is in the same file with overlapping lines (``duplicate``, #2209); one whose run
+ended without a ruling (``denied``); any past
 ``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep (a full bound stops only the
 POSTs: the sweep still rules out the rest, #1982). A POST refused with nothing
 written is retried, up to ``shadow_issues.MAX_ATTEMPTS``; any other failure is ``uncertain`` and
@@ -19,10 +22,46 @@ never replayed (the same rules as the shadow's, #1732). Each one that ends ``unc
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from . import config, shadow_issues
 from .broker import filing as broker_filing
+
+# The first `path:line` or `path:line-line` a body cites; never one inside a URL (#2209).
+_CITE = re.compile(r"(?<![\w./:-])((?:[\w.-]+/)*[\w-][\w.-]*\.\w+):(\d+)(?:-(\d+))?(?!\d)")
+
+
+def _cited(body) -> tuple[str, int, int] | None:
+    match = _CITE.search(str(body or ""))
+    if match is None:
+        return None
+    first, last = int(match.group(2)), int(match.group(3) or match.group(2))
+    return match.group(1), min(first, last), max(first, last)
+
+
+def _same_place(one, other) -> bool:
+    """The same file (one path may name it from deeper in the tree) and overlapping lines."""
+    if one is None or other is None:
+        return False
+    (a, a1, a2), (b, b1, b2) = one, other
+    return ((a == b or a.endswith("/" + b) or b.endswith("/" + a))
+            and a1 <= b2 and b1 <= a2)
+
+
+def _shadow_asked(loop: dict, sup, row) -> bool:
+    """Whether the shadow review this ruling was over asked, at its PR and head, for the same
+    finding (#2209): a close title, or the same place cited first in both bodies. Only where the
+    loop files a shadow's requests, since otherwise they are never filed."""
+    shadow = row["shadow_run"]
+    if not shadow or not config.shadow_file_issues(loop):
+        return False
+    place = _cited(row["body"])
+    return any(shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
+               or _same_place(place, _cited(body))
+               for title, body in sup.shadow_requests(shadow, loop["repo"], int(row["pr"]),
+                                                      str(row["head"])))
+
 
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
     return broker_filing.file_ruling_issue(
@@ -53,7 +92,8 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                                     "the adjudicator's run ended without a ruling", log,
                                     what="adjudicator-found", expect="recorded")
             continue                                  # still ruling: filed once it has
-        if shadow_issues._same(row["title"], sup.filed_titles(loop["repo"], number)):
+        if (shadow_issues._same(row["title"], sup.filed_titles(loop["repo"], number))
+                or _shadow_asked(loop, sup, row)):
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
         if room <= 0:

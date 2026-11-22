@@ -137,7 +137,7 @@ def _post(loop: dict, sup, row, filing, depth: int, log, send=_send_shadow,
         # Each refusal is counted: at MAX_ATTEMPTS the issue is dropped, not retried for ever.
         sup.release_shadow_filing(row["run_id"], filing)
         state = sup.shadow_issue_refused(row["run_id"], row["seq"], str(exc), MAX_ATTEMPTS)
-        log(f"{what} issue for #{number} not filed, "
+        log(f"{what} issue for #{number} ({row['title']!r}) not filed, "
             + ("dropped" if state == "denied" else "retried next sweep") + f": {exc}")
         return None, False
     except Exception as exc:

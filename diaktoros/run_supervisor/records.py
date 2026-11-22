@@ -334,13 +334,22 @@ class LedgerRecords:
     def shadow_issues_waiting(self, repo: str, seat: str = 'shadow') -> list:
         """The issues runs of ``seat`` asked for, recorded and not yet filed or ruled out (#914,
         #1864), oldest first; an adjudicator's with its run's ruling (``verdict``, NULL for none
-        yet) and run state (``run_state``)."""
+        yet), run state (``run_state``) and the shadow review it ruled on (``shadow_run``)."""
         with self._connect() as con:
             return con.execute(
-                "SELECT i.*, g.verdict AS verdict, r.state AS run_state FROM shadow_issues i "
+                "SELECT i.*, g.verdict AS verdict, r.state AS run_state, g.shadow_run AS "
+                "shadow_run FROM shadow_issues i "
                 "JOIN runs r ON r.id=i.run_id LEFT JOIN rulings g ON g.run_id=i.run_id "
                 "WHERE i.repo=? AND i.state='recorded' AND r.seat=? "
                 "ORDER BY i.created, i.run_id, i.seq", (repo, seat)).fetchall()
+
+    def shadow_requests(self, run_id: str, repo: str, number: int, head: str) -> list:
+        """``(title, body)`` of each issue one shadow run asked to file at this PR and head, but
+        any that never will be (``denied``): what a ruling over it need not ask again (#2209)."""
+        with self._connect() as con:
+            return con.execute("SELECT title, body FROM shadow_issues WHERE run_id=? AND repo=? "
+                               "AND pr=? AND head=? AND state!='denied' ORDER BY seq",
+                               (run_id, repo, number, head)).fetchall()
 
     def record_shadow_filing(self, run_id: str, repo: str, number: int, head: str, title: str,
                              depth: int) -> int:
@@ -373,7 +382,8 @@ class LedgerRecords:
                         (run_id, seq))
 
     def filed_titles(self, repo: str, number: int) -> list[str]:
-        """The normalized titles of the issues the reviewer filed (or is filing) from a PR."""
+        """The normalized titles of every issue filed (or being filed) from a PR, whoever filed
+        it: the reviewer, a shadow review or the adjudicator (#1978)."""
         with self._connect() as con:
             return [r[0] for r in con.execute('SELECT title_key FROM filed_issues WHERE repo=? '
                                               'AND pr=?', (repo, number)).fetchall()]
