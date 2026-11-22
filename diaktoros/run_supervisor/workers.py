@@ -689,14 +689,21 @@ class WorkerLifecycle:
             return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
                                "LIMIT 1", (repo, pr, head, seat)).fetchone() is not None
 
+    def settling(self) -> bool:
+        """Whether a run waits out a reply's settle window (``SETTLE_HOLD``, #2248)."""
+        with self._connect() as con:
+            return con.execute("SELECT 1 FROM runs WHERE state='waiting' AND error=? LIMIT 1",
+                               (run_supervisor.SETTLE_HOLD,)).fetchone() is not None
+
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, or backing a claim off after a failed GitHub read,
         stay (no seat, no turn) until the next read is due, then schedule it: GitHub sends this
         route no event when CI finishes (#241), and nothing but the watchdog sweep, up to a
         sweep interval later, would otherwise start a row waiting out a backoff (#1302). Only a
         row due within this linger's window is waited for: the second and later read-failure
-        backoffs (4 min and up) are the watchdog sweep's, as before."""
-        if not self.held_for_ci:
+        backoffs (4 min and up) are the watchdog sweep's, as before. A fix turn settling after a
+        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by any worker."""
+        if not self.held_for_ci and not self.settling():
             return
         def marked_sleep(seconds):
             # Marked only while asleep (#1811): a worker in its database reads or in recover()
@@ -710,7 +717,7 @@ class WorkerLifecycle:
         and ``recover()`` it, until the window closes or nothing falls due in it."""
         deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
-                  run_supervisor.CLAIM_READ_FAILED)
+                  run_supervisor.CLAIM_READ_FAILED, run_supervisor.SETTLE_HOLD)
         recovered = None
         while time.time() < deadline:
             with self._connect() as con:

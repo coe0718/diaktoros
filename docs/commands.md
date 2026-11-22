@@ -554,6 +554,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
+| `--reply-settle-seconds` | `N` |  | seconds a fix turn a maintainer's reply woke waits before it starts, 0-3600, 0 = at once (default: the plugin setting, else 120) |
 | `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20, 0 = off (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
@@ -706,6 +707,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--grace-min` | `GRACE_MIN` | `35` | minutes a PR may sit quiet before the watchdog reports a stall |
 | `--ttl-min` | `TTL_MIN` | `45` | how long a run may hold its seat slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` | `10` | how long an in-flight mark blocks a second run at the same head |
+| `--reply-settle-seconds` | `N` | `120` | seconds a fix turn a maintainer's reply woke waits before it starts, 0-3600, 0 = at once (default: the plugin setting, else 120) |
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
@@ -819,6 +821,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--ttl-min` | `TTL_MIN` |  | how long a run may hold its slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` |  | minutes an in-flight mark blocks a second run at the same head |
 | `--turn-budget` | `TURN_BUDGET` |  | seconds one isolated seat turn may run (loop default) |
+| `--reply-settle-seconds` | `N` |  | seconds a fix turn a maintainer's reply woke waits first (0 = at once) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by Diaktoros'); off stops it |
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only); off stops it; turning it on needs --acknowledge-branch-push |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour); off starts it at once |

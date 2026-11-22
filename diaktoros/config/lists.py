@@ -2,7 +2,7 @@
 checks, CI coverage, human paths, generated files and the fixer check, with the parsers and
 readers of the first four, and the login lists and per-PR limits (``review_only``,
 ``operator_agents``, ``review_only_cap`` / ``review_only_daily``, ``ci_fix_cap``, ``change_proof_max``,
-``provider_breaker_failures``). Each reaches
+``provider_breaker_failures``, ``reply_settle_seconds``). Each reaches
 the core through ``config`` (``from .. import config``), so a patch on a core rule reaches it
 too; callers use ``lists.<name>``.
 """
@@ -341,6 +341,25 @@ def check_provider_breaker_failures(value, where: str) -> int | None:
         raise config.ConfigError(f"{where}: provider_breaker_failures must be a whole number, "
                                  f"0-{top} (0 = off; leave it empty for "
                                  f"{config.PROVIDER_BREAKER_DEFAULT}), got {value!r}")
+    return value
+
+
+REPLY_SETTLE_MAX = 3600    # one hour: past that a reply's fix turn reads as forgotten
+
+
+def check_reply_settle_seconds(value, where: str) -> int:
+    """``reply_settle_seconds`` (#2248): how long a fix turn a maintainer's reply woke waits
+    before it starts, a whole number of seconds 0-``REPLY_SETTLE_MAX``; 0 = it starts at once,
+    empty = the default (120)."""
+    default = config.DEFAULTS["reply_settle_seconds"]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    if isinstance(value, str):
+        value = config.form_int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= REPLY_SETTLE_MAX:
+        raise config.ConfigError(f"{where}: reply_settle_seconds must be a whole number of "
+                                 f"seconds, 0-{REPLY_SETTLE_MAX} (0 = start at once; leave it "
+                                 f"empty for {default}), got {value!r}")
     return value
 
 

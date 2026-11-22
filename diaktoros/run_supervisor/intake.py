@@ -81,24 +81,25 @@ class RunIntake:
 
     def submit(self, delivery: str, repo: str, pr: int, head: str, seat: str,
                *, turn_key: str = '', require_push_admission: bool = False,
-               budget: float | None = None, shadow: tuple[str, float] | None = None) -> str:
+               budget: float | None = None, shadow: tuple[str, float] | None = None,
+               settle: float = 0.0) -> str:
         """``enqueue``, reporting what it did (issue #73): ``enqueued`` (new row),
         ``rearmed`` (a failed/cancelled pre-write run is pending again), ``pending``
         (an unclaimed row, worker re-armed), or ``duplicate <state>[: why]`` — nothing
-        was scheduled, and the caller must not report a fresh enqueue.
+        was scheduled: never report it as a fresh enqueue.
 
-        ``require_push_admission`` (the fixer gate's path): a production fixer turn that the
-        host policy would not admit is refused with ``FixerPushDisabled`` *before* any row is
-        written, under the same policy lock as the admission snapshot. The verdict is then
-        held by the gate, and a later opt-in admits a fresh row instead of an old one.
+        ``require_push_admission`` (the fixer gate's path): a production fixer turn the host
+        policy would not admit is refused with ``FixerPushDisabled`` *before* any row is
+        written, under the same policy lock as the admission snapshot. The gate then holds the
+        verdict, and a later opt-in admits a fresh row, never an old one.
 
         ``budget`` is this turn's wall clock in seconds (the loop's per-seat ``turn_budget_s``,
-        #49), recorded on the row so whichever worker claims it runs it on the loop's terms;
+        #49), on the row so whichever worker claims it runs it on the loop's terms;
         ``None`` means this supervisor's ``child_timeout``. A re-arm by a new event takes the
-        budget the loop has *now*: a turn killed at its budget reruns on the raised one.
+        loop's budget *now*: a turn killed at its budget reruns on the raised one.
 
         ``shadow`` (a sampled reviewer turn's ``(delivery, budget)``, #1682): its shadow's row,
-        written with this one (``_insert_runs``).
+        written with this one. ``settle`` seconds: a new row waits (``_insert_runs``, #2248).
         """
         requested = budget
         if budget is None:
@@ -135,7 +136,7 @@ class RunIntake:
                     raise run_supervisor.FixerPushDisabled(repo)
                 if not prior:
                     self._insert_runs(con, [(delivery, seat, admitted, budget)], shadow,
-                                      (repo, pr, head, turn_key), now)
+                                      (repo, pr, head, turn_key), now, settle)
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
             if prior and prior['state'] in run_supervisor.REARMABLE and (self.fixture_mode or self.production_config):
@@ -146,24 +147,39 @@ class RunIntake:
                 if refused is not None:
                     outcome += f": {refused}"
                 else:
-                    self._rearm(con, prior['id'], reset=False, budget=requested)
+                    self._rearm(con, prior['id'], reset=False, budget=requested, settle=settle)
                     outcome = 'rearmed'
             elif prior and prior['state'] == 'waiting' and prior['retry_at']:
                 outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
             con.execute("COMMIT")
         # A redelivery of an unclaimed run must rearm the worker after a
         # transient generation/read outage; active or completed runs stay deduped.
-        if (self.fixture_mode or self.production_config) and outcome in ('enqueued', 'pending', 'rearmed'):
+        if self._wants_worker(prior, outcome):
             self._spawn()
         return outcome
 
-    def _insert_runs(self, con, rows: list, shadow, identity: tuple, now: float) -> None:
+    def _wants_worker(self, prior, outcome: str) -> bool:
+        """Whether ``submit`` spawns a worker: for a run it made runnable, and for a redelivery
+        of a reply's row still settling (#2248 review F2), so a lost spawn is not left to an
+        unrelated recover to start once due. A worker lingers until that row is due."""
+        if not (self.fixture_mode or self.production_config):
+            return False
+        return outcome in ('enqueued', 'pending', 'rearmed') or (
+            prior is not None and prior['state'] == 'waiting'
+            and prior['error'] == run_supervisor.SETTLE_HOLD)
+
+    def _insert_runs(self, con, rows: list, shadow, identity: tuple, now: float,
+                     settle: float = 0.0) -> None:
         """Insert new run rows, ``(delivery, seat, push_admitted, budget)`` each, in the caller's
         transaction. With ``shadow``, a reviewer turn's shadow row goes in with it (#1682): no
         reviewer row is ever visible without the shadow it owes, so neither an APPROVE posted
         before a second submit nor that submit failing can leave ``shadow.escalate`` with
         nothing to wait for. A failure rolls both back. A shadow row already at the identity
-        is left as it is, for ``gate.shadows.enqueue_shadow`` to re-arm or refuse."""
+        is left as it is, for ``gate.shadows.enqueue_shadow`` to re-arm or refuse.
+
+        ``settle`` seconds (#2248): the turn's own row is written ``waiting`` on ``SETTLE_HOLD``
+        until then, not runnable now; ``recover`` makes it pending once due, and its claim and
+        pre-launch reads decide it as any pending row's."""
         repo, pr, head, turn_key = identity
         if shadow is not None and not con.execute(
                 "SELECT 1 FROM runs WHERE delivery=? OR (repo=? AND pr=? AND head=? AND "
@@ -173,25 +189,35 @@ class RunIntake:
                 raise ValueError("a shadow row needs the shadow seat and a positive budget")
             rows = [*rows, (shadow[0], run_supervisor.SHADOW, 0, shadow[1])]
         state = "pending" if self.fixture_mode or self.production_config else "blocked"
-        for delivery, seat, admitted, budget in rows:
+        for index, (delivery, seat, admitted, budget) in enumerate(rows):
+            held = index == 0 and settle > 0 and state == "pending"
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,"
-                        "updated,push_admitted,budget) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (uuid.uuid4().hex, delivery, repo, pr, head, seat, turn_key, state, now,
-                         now, admitted, float(budget)))
+                        "updated,push_admitted,budget,retry_at,error) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (uuid.uuid4().hex, delivery, repo, pr, head, seat, turn_key,
+                         "waiting" if held else state, now, now, admitted, float(budget),
+                         now + settle if held else None,
+                         run_supervisor.SETTLE_HOLD if held else None))
 
     @staticmethod
-    def _rearm(con, run_id: str, *, reset: bool, budget: float | None = None) -> None:
+    def _rearm(con, run_id: str, *, reset: bool, budget: float | None = None,
+               settle: float = 0.0) -> None:
         """Make a pre-write run pending again, inside the caller's transaction. Admission,
         generation terms and history stay; claim attempts restart; its notice is resolved
         so a later failure is reported afresh. ``budget`` (the loop's current seat budget,
-        #49) replaces the row's, so a turn killed at its budget reruns on the raised one."""
+        #49) replaces the row's, so a turn killed at its budget reruns on the raised one.
+        ``settle`` seconds (a reply's redelivery, #2248 review F3): it waits on ``SETTLE_HOLD``
+        as a new row would, not pending at once."""
         if budget is not None:
             con.execute("UPDATE runs SET budget=? WHERE id=?", (float(budget), run_id))
-        con.execute("UPDATE runs SET state='pending', owner=NULL, lease=NULL, pid=NULL, "
-                    "launch_intent=NULL, outcome=NULL, attempts=0, retry_at=NULL, "
-                    "cancel_requested=NULL, "
+        now, held = time.time(), settle > 0
+        con.execute("UPDATE runs SET state=?, owner=NULL, lease=NULL, pid=NULL, "
+                    "launch_intent=NULL, outcome=NULL, attempts=0, retry_at=?, "
+                    "cancel_requested=NULL, error=CASE WHEN ? THEN ? ELSE error END, "
                     "retries=CASE WHEN ? THEN 0 ELSE retries END, updated=? WHERE id=?",
-                    (1 if reset else 0, time.time(), run_id))
+                    ("waiting" if held else "pending", now + settle if held else None,
+                     1 if held else 0, run_supervisor.SETTLE_HOLD, 1 if reset else 0, now,
+                     run_id))
         con.execute("DELETE FROM operator_notices WHERE run_id=?", (run_id,))
 
     def retry(self, run_id: str, budget: float | None = None) -> str:
