@@ -9,18 +9,19 @@ the PR it follows up and the ruling. Its ``filed_issues`` row makes ``fix_hold``
 to merge, and counts its lineage, exactly as for the reviewer's and the shadow's.
 
 Not filed: a title the reviewer or a shadow review already filed from the PR (or one close to it:
-``duplicate``); one the shadow review it ruled over already asked for at that PR and head: a
-title close to it, or a body whose first ``path:line`` (or ``path:line-line``) is in the same file
-with overlapping lines (``duplicate``, #2209) once that request was filed or may have been,
-whatever the loop's settings now, while one still to be filed holds the ruling's copy until it is
-(a denied one, refused or expired, or one recorded while the loop no longer files a shadow's
-requests, lets the ruling's be filed; a claim stopped mid-POST is ended by
-``shadow_issues.settle_stale``); one whose run ended without a ruling (``denied``); any past
-``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep (a full bound stops only the
-POSTs: the sweep still rules out the rest, #1982). A POST refused with nothing
-written is retried, up to ``shadow_issues.MAX_ATTEMPTS``; any other failure is ``uncertain`` and
-never replayed (the same rules as the shadow's, #1732). Each one that ends ``uncertain`` or
-``denied`` is said in the sweep's log (#1359).
+``duplicate``; while a shadow's or an adjudicator's such POST is still under way it is waited on,
+since it may yet be refused: review of #2585, F1); one the shadow review it ruled over already
+asked for at that PR and head: a title close to it, or a body whose first ``path:line`` (or
+``path:line-line``) is in the same file with overlapping lines (``duplicate``, #2209) once that
+request was filed or may have been, whatever the loop's settings now, while one still to be filed
+holds the ruling's copy until it is (a denied one, refused or expired, or one recorded while the
+loop no longer files a shadow's requests, lets the ruling's be filed; a claim stopped mid-POST is
+ended by ``shadow_issues.settle_stale``); one whose run ended without a ruling (``denied``); any
+past ``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep (a full bound stops
+only the POSTs: the sweep still rules out the rest, #1982). A POST refused with nothing written is
+retried, up to ``shadow_issues.MAX_ATTEMPTS``; any other failure is ``uncertain`` and never
+replayed (the same rules as the shadow's, #1732). Each one that ends ``uncertain`` or ``denied`` is
+said in the sweep's log (#1359).
 """
 from __future__ import annotations
 
@@ -124,27 +125,22 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                                     "the adjudicator's run ended without a ruling", log,
                                     what="adjudicator-found", expect="recorded")
             continue                                  # still ruling: filed once it has
+        # Dropped only on a copy that was filed (or may have been); one still to be filed or under
+        # way may yet be refused, so this one waits for it (review of #2585, F1).
         asked = _shadow_asked(loop, sup, row)
-        if (shadow_issues._same(row["title"], sup.filed_titles(loop["repo"], number))
-                or asked == "filed"):
+        filed_as = shadow_issues._filed(sup, loop["repo"], number, row["title"])
+        if "filed" in (asked, filed_as):
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
-        if asked == "waiting":
+        if asked == "waiting" or filed_as == "flying":
             continue          # filed only if the shadow's copy never is (denied, filing off)
         if room <= 0:
             continue                                  # no room: later rows may still be lost
         depth = shadow_issues._lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
-        # Claimed before the POST, so a second sweep never files it twice; then its filed_issues
-        # row, so the origin-PR hold (#324) and the lineage bound see it (#487).
-        if not sup.shadow_issue_status(row["run_id"], row["seq"], "posting", expect="recorded"):
-            continue
-        try:
-            filing = sup.record_shadow_filing(row["run_id"], loop["repo"], number, head,
-                                              row["title"], depth)
-        except ValueError:
-            sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate")
+        filing = shadow_issues._claim(sup, row, number, head, depth, log, "adjudicator-found")
+        if filing is None:
             continue
         issue, sent = shadow_issues._post(loop, sup, row, filing, depth, log, send=_send,
                                           what="adjudicator-found")

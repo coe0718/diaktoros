@@ -38,6 +38,36 @@ def _same(title: str, filed: list[str]) -> bool:
                for other in filed)
 
 
+def _filed(sup, repo: str, number: int, title: str) -> str | None:
+    """``"filed"`` when an issue this PR filed (or may have) has the title or one close to it;
+    ``"flying"`` when the only such one is a shadow's or an adjudicator's POST still under way,
+    which may yet be refused and released, so a copy waits for it rather than being dropped on
+    its strength (review of #2585, F1); otherwise None."""
+    if _same(title, sup.filed_titles(repo, number, in_flight=False)):
+        return "filed"
+    return "flying" if _same(title, sup.filed_titles(repo, number, in_flight=True)) else None
+
+
+def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int | None:
+    """Claim one recorded issue (``posting``) and commit its ``filed_issues`` row before the
+    POST, so a second sweep never files it twice and the origin-PR hold (#324) and lineage bound
+    (#487) see it. Both fenced by the attempts the row was read with (review of #2585, F7): a
+    sweep whose claim ``settle_stale`` ended meanwhile (it counts an attempt) writes no row, so it
+    never POSTs. The row's sequence, or None: not claimed, the claim lost, or a ``duplicate``."""
+    run_id, seq, attempts = row["run_id"], row["seq"], int(row["attempts"])
+    if not sup.shadow_issue_status(run_id, seq, "posting", expect="recorded", attempts=attempts):
+        return None
+    try:
+        filing = sup.record_shadow_filing(run_id, row["repo"], number, head, row["title"],
+                                          depth, claim=(seq, attempts))
+    except ValueError:
+        sup.shadow_issue_status(run_id, seq, "duplicate", expect="posting", attempts=attempts)
+        return None
+    if filing is None:
+        log(f"{what} issue for #{number} ({row['title']!r}) not sent: its claim was ended")
+    return filing
+
+
 def file_pending(loop: dict, db=None, now: float | None = None,
                  log=lambda _msg: None) -> list[int]:
     """File what is due; the numbers of the issues filed this call. An issue GitHub filed
@@ -69,25 +99,20 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                 _lost(sup, row, "denied", "the real review never reached its head", log,
                       expect="recorded")
             continue                                  # the real review has not landed yet
-        if _same(row["title"], sup.filed_titles(loop["repo"], number)):
+        filed_as = _filed(sup, loop["repo"], number, row["title"])
+        if filed_as == "filed":
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
+        if filed_as == "flying":
+            continue                                  # dropped only once that one is filed
         if room <= 0 and not uncapped:
             continue                                  # no room: later rows may still be lost
         depth = _lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
-        # Claimed before the POST: a second sweep never files it twice; a crash after this
-        # leaves it `posting`, which is never replayed, only ended by `settle_stale`.
-        if not sup.shadow_issue_status(row["run_id"], row["seq"], "posting", expect="recorded"):
-            continue
-        # Its filed_issues row too, before the POST, so the origin-PR hold (#324) and the
-        # lineage bound see a shadow-found issue exactly as they see the reviewer's.
-        try:
-            filing = sup.record_shadow_filing(row["run_id"], loop["repo"], number, head,
-                                              row["title"], depth)
-        except ValueError:
-            sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate")
+        # A crash after the claim leaves it `posting`, never replayed, only ended by `settle_stale`.
+        filing = _claim(sup, row, number, head, depth, log, "shadow-found")
+        if filing is None:
             continue
         issue, sent = _post(loop, sup, row, filing, depth, log)
         if sent:
@@ -106,14 +131,17 @@ def settle_stale(sup, repo: str, now: float, log) -> None:
     that row ``posted``, it was filed (its labels unconfirmed: ``unlabelled``); otherwise the POST
     may have been sent, so it is ``uncertain``, never replayed, as ``ruled_approval`` does for a
     stale write (``POSTING_STALE_S``). Only a claim no POST can have left is retried, and the
-    retry takes a fresh ``filed_issues`` row, whose unique title holds it to one POST."""
+    retry takes a fresh ``filed_issues`` row, whose unique title holds it to one POST. A sweep
+    merely delayed, not stopped, finds its claim ended (an attempt counted) when it resumes and
+    writes no row, so never POSTs (``_claim``: F7). The row is found by its exact title, which
+    the filing copies, since an adjudicator's fallback has a title key of its own (F1)."""
     with sup._connect() as con:
         con.execute("BEGIN IMMEDIATE")
         rows = con.execute(
             "SELECT i.run_id, i.seq, i.pr, i.title, i.attempts, r.seat, f.seq AS filing, "
             "f.state AS filed, f.issue_number FROM shadow_issues i JOIN runs r ON r.id=i.run_id "
             "LEFT JOIN filed_issues f ON f.run_id=i.run_id AND f.repo=i.repo AND f.pr=i.pr AND "
-            "f.title_key=i.title_key WHERE i.repo=? AND i.state='posting' AND i.updated<?",
+            "f.title=i.title WHERE i.repo=? AND i.state='posting' AND i.updated<?",
             (repo, now - POSTING_STALE_S)).fetchall()
         lost = []
         for row in rows:

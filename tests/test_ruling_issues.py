@@ -103,20 +103,32 @@ class Record(unittest.TestCase):
 
     def test_a_shadows_request_the_loop_never_files_gives_way(self):
         # Review of #1874, F1, through the broker: it reads shadow.file_issues from the loop.
-        self.loop = {**self.loop, "id": "one", "triage": TRIAGE, "adjudicator_file_issues": True,
-                     "shadow": {"profile": "p"}}                      # shadow filing off
-        sup, scope = self.adjudicator_run()
-        sup.enqueue("s", REPO, 7, HEAD, "shadow")
-        with ledger.connect(sup.db) as con:
-            con.execute("UPDATE runs SET state='running', launch_intent=1 WHERE seat='shadow'")
-            shadow = con.execute("SELECT id FROM runs WHERE seat='shadow'").fetchone()[0]
-        sup.record_shadow_issue(shadow, REPO, 7, HEAD, "Retry never ends", "b", ["bug"], 3)
-        for files_on, accepted in ((True, False), (False, True)):
+        # Filing on, the shadow's is still to be filed: the adjudicator's is recorded beside it,
+        # its fallback (review of #2585, F1); off, the shadow's gives way. Either way, once only.
+        for files_on, shadow_state in ((True, "recorded"), (False, "denied")):
             with self.subTest(shadow_file_issues=files_on):
-                loop = {**self.loop, "shadow": {"profile": "p", "file_issues": files_on}}
-                with mock.patch.object(config, "by_repo", return_value=loop):
-                    answer = self.ask(self.start(scope))
-                self.assertEqual(answer["ok"], accepted, answer)
+                self.setUp()
+                self.loop = {**self.loop, "id": "one", "triage": TRIAGE,
+                             "adjudicator_file_issues": True,
+                             "shadow": {"profile": "p", "file_issues": files_on}}
+                sup, scope = self.adjudicator_run()
+                sup.enqueue("s", REPO, 7, HEAD, "shadow")
+                with ledger.connect(sup.db) as con:
+                    con.execute("UPDATE runs SET state='running', launch_intent=1 "
+                                "WHERE seat='shadow'")
+                    shadow = con.execute("SELECT id FROM runs WHERE seat='shadow'").fetchone()[0]
+                sup.record_shadow_issue(shadow, REPO, 7, HEAD, "Retry never ends", "b", ["bug"], 3)
+                with mock.patch.object(config, "by_repo", return_value=self.loop):
+                    server = self.start(scope)
+                    answer = self.ask(server)
+                    self.assertEqual(answer["ok"], True, answer)
+                    again = self.ask(server, title="retry  NEVER ends")
+                    self.assertIn("already asked for", again.get("error", ""), again)
+                with ledger.connect(sup.db) as con:
+                    self.assertEqual(con.execute("SELECT state FROM shadow_issues WHERE run_id=?",
+                                                 (shadow,)).fetchone()[0], shadow_state)
+                [row] = sup.shadow_issues_waiting(REPO, seat="adjudicator")
+                self.assertEqual(row["title"], "Retry never ends")
 
     def test_refused_where_the_loop_does_not_file_them(self):
         self.loop = {**self.loop, "id": "one", "triage": TRIAGE}
@@ -193,10 +205,8 @@ class EarlierRequests(unittest.TestCase):
     def test_one_filed_in_flight_or_still_due_keeps_blocking(self):
         for name, args, shadow_files in (
                 ("posted", ("shadow", "posted"), True),
-                ("posting", ("shadow", "posting"), True),
                 ("uncertain", ("shadow", "uncertain"), True),
                 ("a duplicate of a filed one", ("shadow", "duplicate"), True),
-                ("a shadow's, still due", ("shadow", "recorded"), True),
                 ("a live adjudicator run's", ("adjudicator", "recorded", "running"), True),
                 ("a ruled adjudicator run's", ("adjudicator", "recorded", "succeeded", "ACCEPT"),
                  True)):
@@ -205,6 +215,24 @@ class EarlierRequests(unittest.TestCase):
                 self.earlier(*args)
                 with self.assertRaisesRegex(ValueError, "already asked for"):
                     self.ask(shadow_files)
+
+    def test_a_shadows_still_to_be_filed_takes_the_adjudicators_beside_it(self):
+        # Review of #2585, F1: posting, or recorded while the loop files a shadow's, it may yet
+        # be refused, so the adjudicator's copy is its fallback, under a key of its own.
+        for state in ("recorded", "posting"):
+            with self.subTest(state):
+                self.setUp()
+                self.earlier("shadow", state)
+                run = self.ask()
+                with ledger.connect(self.sup.db) as con:
+                    rows = con.execute("SELECT run_id, state, title_key FROM shadow_issues "
+                                       "ORDER BY run_id").fetchall()
+                self.assertEqual([tuple(r) for r in rows],
+                                 [(run, "recorded", f"retry never ends#fallback:{run}"),
+                                  ("s1", state, "retry never ends")])
+                with self.assertRaisesRegex(ValueError, "already asked for"):
+                    self.sup.record_shadow_issue(run, REPO, 7, HEAD, "Retry never ends", "b",
+                                                 ["bug"], 3, seat="adjudicator")
 
     def test_a_live_shadow_keeps_its_sequence_and_cap_after_giving_way(self):
         # Review of #1874, F3: deleted, the shadow's first request left a hole its next one fell
