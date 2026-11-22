@@ -13,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import config, doctor, prompts, route_intent, routes  # noqa: E402
+from diaktoros.doctor import route_checks  # noqa: E402
 from diaktoros.gate import shims as gate_shims  # noqa: E402
 from test_gate_shims import Base  # noqa: E402
 from test_route_ownership import OLD_REVIEWER, RouteEdits  # noqa: E402
@@ -70,6 +71,28 @@ class ProfileFixNamesNoRefusedApply(RouteEdits, Base):
         self.assert_apply_refuses()
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
         self.assertEqual(routes.route("widgets-review")["prompt"], prompts.REVIEWER, out)
+        self.assert_apply_rebinds(secret)
+
+    def test_null_profile_stale_route_with_a_restorable_record_names_repair_alone(self):
+        # Review on #2583: the record still holds the route at the configured profile (gate,
+        # prompt, secret), and only the live entry went stale with a null profile. The repair
+        # restores the whole route, so it is the one fix: not apply (refused), not repair then
+        # apply, not recreate. Doctor's intent overlay names the same repair.
+        self.full_install()
+        secret = routes.route("widgets-review")["secret"]
+        self.edit_registry(lambda data: data["widgets-review"].update(
+            prompt=OLD_REVIEWER, profile=None))
+        divergence_fix, doctor_fix = self.fixes()
+        self.assertEqual(divergence_fix, REPAIR)
+        self.assertEqual(doctor_fix, route_checks.REPAIR_FIX)
+        self.assert_apply_refuses()
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
+        live = routes.route("widgets-review")
+        self.assertEqual((routes.route_profile(live), live["prompt"], live["secret"]),
+                         (config.seat_profile(config.load_id("widgets"), "reviewer"),
+                          prompts.REVIEWER, secret), out)
+        self.assertNotIn("widgets-review",
+                         gate_shims.divergence(config.load_id("widgets"), contract=True))
         self.assert_apply_rebinds(secret)
 
     def test_owned_fix_names_repair_then_apply_for_a_reworded_route_moved_twice(self):
