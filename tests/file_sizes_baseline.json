@@ -56,7 +56,6 @@
     "diaktoros/run_supervisor/intake.py::RunIntake.retry": 112,
     "diaktoros/run_supervisor/intake.py::RunIntake.submit": 91,
     "diaktoros/run_supervisor/notices.py::OperatorNotices.notify": 126,
-    "diaktoros/run_supervisor/pr_facts.py::adjudication_state": 81,
     "diaktoros/run_supervisor/pr_facts.py::pr_change": 193,
     "diaktoros/run_supervisor/turns.py::ClaimAndLaunch._production_turn": 127,
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle.complete_uncertain": 100,

@@ -2153,7 +2153,9 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
   If the owning worker is already gone (its lease expired), nothing reads the request; the
   next recovery sweep (`recover()`) ends the run the same way: `cancelled` when nothing was
-  written, `uncertain` (naming the cancel) after a write-ahead record. An expired lease does
+  written, freeing the seat and handing back an adjudicator's breach marker as the worker
+  would (#1767), and `uncertain` (naming the cancel, the seat still held) after a write-ahead
+  record. An expired lease does
   not prove the turn stopped, so this happens only when the run's recorded process is provably
   gone (the check `reconcile` uses). A live or unrecorded process, or a fixer run with a push
   intent, stays `uncertain` in quarantine, holding its PR, until `reconcile`.

@@ -407,7 +407,9 @@ class WorkerLifecycle:
             # child runs): only a run whose recorded process is provably gone is ended here.
             # A live or unprovable one stays quarantined below (uncertain, still holding its
             # PR and seat, cancel_requested kept) until an operator reconciles it.
-            for lost in con.execute("SELECT id,pid,launch_intent FROM runs WHERE state IN "
+            ended = []      # cancelled with no write record: the worker's cleanup is owed
+            for lost in con.execute("SELECT id,pid,launch_intent,repo,pr,head,seat,turn_key "
+                                    "FROM runs WHERE state IN "
                                     "('launching','running') AND lease<? AND cancel_requested "
                                     "IS NOT NULL AND push_intent IS NULL", (now,)).fetchall():
                 # The recorded PID is the worker's, not the sandbox's (#1769). A gone worker
@@ -422,6 +424,7 @@ class WorkerLifecycle:
                 wrote = run_supervisor.write_records(con, lost['id'])
                 if wrote is None:
                     state, error = 'cancelled', run_supervisor.OPERATOR_CANCEL
+                    ended.append(lost)
                 else:
                     state = 'uncertain'
                     error = (f"{run_supervisor.OPERATOR_CANCEL} after it may have written ({wrote}) — "
@@ -448,6 +451,8 @@ class WorkerLifecycle:
                         "(retry_at IS NULL OR retry_at<=?)", (now, now))
             pending = con.execute("SELECT COUNT(*) FROM runs WHERE state='pending'").fetchone()[0]
             con.execute("COMMIT")
+        for lost in ended:
+            _end_lost_cancel(lost)
         if pending and (self.fixture_mode or self.production_config):
             self._spawn()
         return run_supervisor.SILENT
@@ -736,9 +741,28 @@ def _worker_gone(row) -> bool:
             and process_state(row['pid'], row['launch_intent']) == 'gone')
 
 
+def _end_lost_cancel(row) -> None:
+    """The end-of-turn cleanup the worker's own completion path (``_production_finish``) does
+    for a ``cancelled`` run with no write-ahead record, done by ``recover`` for a run whose
+    worker died before reaching it (#1767): an adjudicator's breach marker handed back from
+    ``adjudicating`` (only this head and round, so its ``retry`` can start it again), then its
+    seat claim and in-flight mark freed. Best effort, like both of those."""
+    try:
+        from .. import config, state as state_mod
+        from . import pr_facts
+        rounds = pr_facts.breach_rounds(row['turn_key'])
+        loop = config.by_repo(row['repo']) if row['seat'] == 'adjudicator' and rounds else None
+        if loop is not None:
+            state_mod.state_for(loop).breach_resume(row['pr'], row['head'], rounds)
+    except Exception:
+        pass
+    _release_claim(row, row['id'])
+
+
 def _release_claim(row, run_id: str) -> None:
-    """Free an ended uncertain run's seat claim and in-flight mark, which it kept until now
-    (#98). Best effort: the ledger row is the decision; a loop no longer configured has none."""
+    """Free an ended run's seat claim and in-flight mark, which it kept until now (#98): an
+    uncertain one reconciled or settled, or a lost one ``recover`` cancelled (#1767). Best
+    effort: the ledger row is the decision; a loop no longer configured has none."""
     try:
         from .. import config, gate, state as state_mod
         loop = config.by_repo(row['repo'])

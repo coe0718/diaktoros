@@ -349,9 +349,9 @@ class LostWorker(Base):
         child.wait()
         return child.pid
 
-    def lost(self, pid=None, **extra):
+    def lost(self, pid=None, seat='reviewer', turn_key='', **extra):
         sup = self.sup()
-        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        sup.submit('d', REPO, 1, HEAD, seat, turn_key=turn_key)
         pid = self.dead_pid() if pid is None else pid
         self.set_state('d', 'running', owner='gone', pid=pid, lease=time.time() - 60, **extra)
         run_id = sup.get('d')['id']
@@ -420,6 +420,59 @@ class LostWorker(Base):
         self.set_state('d', 'running', lease=time.time() + 60)
         sup.recover()
         self.assertEqual(sup.get('d')['state'], 'running')
+
+    def loop_state(self):
+        """A configured loop for REPO, with its state files under the test's directory."""
+        from diaktoros import config, state as state_mod
+        loop = dict(LOOP, state_dir=str(self.root / 'state'))
+        by_repo = patch.object(config, 'by_repo', return_value=loop)
+        by_repo.start()
+        self.addCleanup(by_repo.stop)
+        return state_mod.state_for(loop)
+
+    def test_recover_frees_the_seat_claim_of_a_lost_run_it_cancels(self):
+        # #1767: the worker frees its claim at the end of its turn; a lost one never gets there.
+        from diaktoros.run_supervisor import claims
+        st = self.loop_state()
+        sup, run_id = self.lost()
+        claim = claims.claim_seat(st.loop, sup.get('d'), 600.0)
+        self.assertIsNotNone(claim)
+        self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
+        self.assertTrue(st.inflight(f'review:1:{HEAD}'))
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertNotIn(f'{REPO}#1', st.live_locks('reviewer'))
+        self.assertFalse(st.inflight(f'review:1:{HEAD}'))
+
+    def test_recover_keeps_the_claim_of_a_lost_run_it_quarantines(self):
+        # A write record makes it uncertain: the claim stays until an operator reconciles it.
+        from diaktoros.run_supervisor import claims
+        st = self.loop_state()
+        sup, run_id = self.lost()
+        claims.claim_seat(st.loop, sup.get('d'), 600.0)
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                        "VALUES(?,?,?,?,?)", (run_id, 'confirmed', 'g', 1, 0))
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'uncertain')
+        self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
+
+    def test_recover_hands_back_the_breach_marker_of_a_lost_adjudicator_it_cancels(self):
+        # #1767: the ruling was marked 'adjudicating' before launch; a cancelled lost turn made
+        # none, so its retry must be able to start the marker again.
+        import json
+        st = self.loop_state()
+        st.dir.mkdir(parents=True, exist_ok=True)
+        st.breach.write_text(json.dumps({f'{REPO}#1': {
+            'pr': 1, 'head': HEAD, 'rounds': 3, 'status': 'awaiting-adjudication'}}))
+        self.assertIsNotNone(st.breach_start(1, HEAD, 3))
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        sup.recover()
+        self.assertEqual((sup.get('d')['state'], sup.get('d')['error']),
+                         ('cancelled', OPERATOR_CANCEL))
+        self.assertEqual(st.breach_get(1)['status'], 'awaiting-adjudication')
+        self.assertEqual(sup.retry(run_id), 'pending')
+        self.assertIsNotNone(st.breach_start(1, HEAD, 3))     # the retried turn's launch step
 
 
 class Selection(Base):
