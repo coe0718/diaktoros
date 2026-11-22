@@ -670,12 +670,17 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     # listing of exactly ``max_pages`` full pages is whole when the next page is empty.
     for page in range(1, max_pages + 2):
         page_path = path if page == 1 else f"{path}&page={page}"
+        left = remaining()             # #1870: a page the budget may not fit stops the listing
+        if keep_partial and page > 1 and left is not None and left < float(
+                _gate().get("per_call") or 30.0):
+            return result, f"{what} page {page} not read: {max(left, 0):.0f}s of the budget left"
         items, error = fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
         if not error and (not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE
                           or not all(isinstance(item, dict) for item in items)):
             error = f"invalid {what} list"
-        if page > max_pages:              # the probe: only an empty page proves the listing whole
-            if not error and not items:
+        if page > max_pages:              # the probe past the bound
+            # An empty probe, or one older than the floor (sorted desc, #1868), proves it whole.
+            if not error and (not items or _older_than(items[0], created_floor)):
                 return result, ""
             # An unreadable probe proves neither whole nor longer: say so, not "exceeds" (#1727).
             reason = (f"{what} page {page}, past the {max_pages}-page bound, could not be read: "
