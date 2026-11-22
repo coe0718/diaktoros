@@ -25,7 +25,7 @@ import test_shadow_issues as shadow_base  # noqa: E402
 from diaktoros import broker, gh, ruling_issues, shadow_issues  # noqa: E402
 from diaktoros.broker import filing as broker_filing  # noqa: E402
 from diaktoros.ruled_approval import POSTING_STALE_S  # noqa: E402
-from diaktoros.run_supervisor import Supervisor, turn_prompts  # noqa: E402
+from diaktoros.run_supervisor import Supervisor, shadow_filings, turn_prompts  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 
 CITED = "diaktoros/history.py:48: false doc"
@@ -171,9 +171,9 @@ class States(Base):
                 "unlabelled": "filed", "uncertain": "filed", "duplicate": "filed", "denied": None}
 
     def test_the_states_the_shadows_filing_writes_are_each_classified(self):
-        source = Path(shadow_issues.__file__).read_text()
+        source = Path(shadow_issues.__file__).read_text() + Path(shadow_filings.__file__).read_text()
         for state in self.EXPECTED:
-            self.assertIn(f'"{state}"', source)                     # a state it really writes
+            self.assertRegex(source, f"[\"']{state}[\"']")            # a state it really writes
             with self.subTest(state):
                 self.assertEqual(ruling_issues._standing(state, True), self.EXPECTED[state])
 

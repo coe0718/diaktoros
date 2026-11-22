@@ -33,6 +33,16 @@ def _kinds(con, repo: str, number: int, keep) -> set[str]:
             for key, state, seat in rows if keep(key)}
 
 
+def asked_requests(con, run_id: str, repo: str, number: int, head: str) -> list:
+    """``(title, body, state)`` of each issue one shadow run asked to file at this PR and head,
+    but any that never will be (``denied``) (#2209); a copy dropped only on a possibly filed one
+    (``MAYBE``) stands as that one does, as ``uncertain``."""
+    return con.execute("SELECT title, body, CASE WHEN state='duplicate' AND error=? THEN "
+                       "'uncertain' ELSE state END FROM shadow_issues WHERE run_id=? AND repo=? "
+                       "AND pr=? AND head=? AND state!='denied' ORDER BY seq",
+                       (MAYBE, run_id, repo, number, head)).fetchall()
+
+
 class ShadowFilingRecords:
     """The filing methods of :class:`~diaktoros.run_supervisor.Supervisor`; ``_connect()`` is the
     one ``Supervisor`` provides."""
@@ -48,7 +58,9 @@ class ShadowFilingRecords:
         only one whose outcome is unknown does.
         ``claim`` (``(seq, attempts)`` of the ``shadow_issues`` row the caller claimed) fences it
         (review of #2585, F7): None, nothing written, unless that row is still ``posting`` under
-        that claim, so a sweep resumed after ``settle_stale`` ended its claim never POSTs."""
+        that claim, so a sweep resumed after ``settle_stale`` ended its claim never POSTs. A title
+        found taken settles that claim here too (F8): back to ``recorded`` behind a POST under way,
+        else a ``duplicate`` (``MAYBE`` behind an unknown), so a late refusal falls before or after."""
         key = " ".join(title.casefold().split())
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -59,9 +71,16 @@ class ShadowFilingRecords:
                 return None
             kinds = _kinds(con, repo, number, same or (lambda other: other == key))
             if kinds:
-                con.execute('ROLLBACK')
-                raise (ValueError if 'filed' in kinds else MaybeFiled if 'maybe' in kinds
-                       else InFlight)('an issue with this title was already filed from this PR')
+                taken = (ValueError if 'filed' in kinds else MaybeFiled if 'maybe' in kinds
+                         else InFlight)('an issue with this title was already filed from this PR')
+                if claim is not None:       # the claim settles in this transaction (F8)
+                    con.execute("UPDATE shadow_issues SET state=?,error=COALESCE(?,error),"
+                                "updated=? WHERE run_id=? AND seq=?",
+                                ('recorded' if type(taken) is InFlight else 'duplicate',
+                                 MAYBE if type(taken) is MaybeFiled else None, time.time(),
+                                 run_id, claim[0]))
+                con.execute('COMMIT')
+                raise taken
             # MAX, not COUNT: release_shadow_filing leaves holes, and a count would reuse a
             # sequence another sweep of this run already holds.
             seq = con.execute('SELECT COALESCE(MAX(seq),0) FROM filed_issues WHERE run_id=?',
@@ -92,6 +111,21 @@ class ShadowFilingRecords:
             return [r[0] for r in con.execute('SELECT f.title_key FROM filed_issues f WHERE '
                                               'f.repo=? AND f.pr=?' + where,
                                               (repo, number)).fetchall()]
+
+    def drop_copy(self, run_id: str, seq: int, decide) -> str | None:
+        """Drop a ``recorded`` issue as a ``duplicate`` when ``decide(con)``, run in the
+        transaction that writes it, still finds its copy ``"filed"`` or ``"maybe"`` (``MAYBE``),
+        so a late refusal (``refused_after_claim``) lands wholly before that decision or after
+        the drop it then undoes (review of #2585, F8). What ``decide`` found."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            kind = decide(con)
+            if kind in ('filed', 'maybe'):
+                con.execute("UPDATE shadow_issues SET state='duplicate',error=COALESCE(?,error),"
+                            "updated=? WHERE run_id=? AND seq=? AND state='recorded'",
+                            (MAYBE if kind == 'maybe' else None, time.time(), run_id, seq))
+            con.execute('COMMIT')
+            return kind
 
     def filed_standing(self, repo: str, number: int, keep) -> set[str]:
         """How the filings from a PR whose title key ``keep`` accepts stand (``_kinds``)."""

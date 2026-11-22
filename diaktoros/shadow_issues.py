@@ -26,7 +26,7 @@ import time
 from . import broker, config, gate, gh
 from .broker import filing as broker_filing
 from .ruled_approval import POSTING_STALE_S
-from .run_supervisor.shadow_filings import MAYBE, STALE_WHY, InFlight, MaybeFiled
+from .run_supervisor.shadow_filings import STALE_WHY, _kinds
 
 WAIT_S = 7 * 86400        # a head the real reviewer never reached is not waited on for ever
 MAX_ATTEMPTS = 12         # refused POSTs (nothing written) before the issue is dropped (#1732)
@@ -39,20 +39,26 @@ def _same(title: str, filed: list[str]) -> bool:
                for other in filed)
 
 
-def _filed(sup, repo: str, number: int, title: str) -> str | None:
+def _filed(sup, repo: str, number: int, title: str, con=None) -> str | None:
     """``"filed"`` when an issue this PR filed has the title or one close to it; ``"maybe"`` when
     the only such one's POST has an unknown outcome (dropped as ``MAYBE``, taken up again if a late
     refusal settles it: review of #2585, F8); ``"flying"`` when the only such one is a shadow's or
     an adjudicator's POST still under way, which may yet be refused and released, so a copy waits
-    for it rather than being dropped on its strength (F1); otherwise None."""
-    kinds = sup.filed_standing(repo, number, lambda key: _same(title, [key]))
+    for it rather than being dropped on its strength (F1); otherwise None. Read in ``con``'s
+    transaction when given."""
+    keep = lambda key: _same(title, [key])                            # noqa: E731
+    kinds = _kinds(con, repo, number, keep) if con else sup.filed_standing(repo, number, keep)
     return next((kind for kind in ("filed", "maybe", "flying") if kind in kinds), None)
 
 
-def _drop(sup, row, why: str) -> None:
-    """A ``duplicate``: ``why`` "filed" or "maybe" (``MAYBE``, which a late refusal undoes)."""
-    sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded",
-                            error=MAYBE if why == "maybe" else None)
+def _drop(sup, row, number: int, asked=None) -> None:
+    """A ``duplicate`` (``MAYBE`` when only a possibly filed copy holds the title), decided again
+    in the transaction that writes it (``drop_copy``: review of #2585, F8), with ``asked(con)``,
+    the ruling's shadow request, as a second copy."""
+    def decide(con):
+        known = {_filed(sup, row["repo"], number, row["title"], con=con), asked and asked(con)}
+        return next((kind for kind in ("filed", "maybe") if kind in known), None)
+    sup.drop_copy(row["run_id"], row["seq"], decide)
 
 
 def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int | None:
@@ -70,12 +76,7 @@ def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int 
         filing = sup.record_shadow_filing(run_id, row["repo"], number, head, row["title"],
                                           depth, claim=(seq, attempts),
                                           same=lambda key: _same(row["title"], [key]))
-    except InFlight:
-        sup.shadow_issue_status(run_id, seq, "recorded", expect="posting", attempts=attempts)
-        return None
-    except ValueError as taken:
-        sup.shadow_issue_status(run_id, seq, "duplicate", expect="posting", attempts=attempts,
-                                error=MAYBE if isinstance(taken, MaybeFiled) else None)
+    except ValueError:            # InFlight, MaybeFiled or filed: settled with the claim (F8)
         return None
     if filing is None:
         log(f"{what} issue for #{number} ({row['title']!r}) not sent: its claim was ended")
@@ -115,7 +116,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
             continue                                  # the real review has not landed yet
         filed_as = _filed(sup, loop["repo"], number, row["title"])
         if filed_as in ("filed", "maybe"):
-            _drop(sup, row, filed_as)
+            _drop(sup, row, number)
             continue
         if filed_as == "flying":
             continue                                  # dropped only once that one is filed

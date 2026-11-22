@@ -12,7 +12,7 @@ import json
 import time
 
 from .. import run_supervisor
-from .shadow_filings import MAYBE, ShadowFilingRecords
+from .shadow_filings import ShadowFilingRecords, asked_requests
 
 class ShadowIssueRecords(ShadowFilingRecords):
     """The shadow-issue methods of :class:`~diaktoros.run_supervisor.Supervisor`; ``_connect()``
@@ -97,11 +97,7 @@ class ShadowIssueRecords(ShadowFilingRecords):
         """``(title, body, state)`` of each issue one shadow run asked to file at this PR and head,
         but any that never will be (``denied``): what a ruling over it need not ask again (#2209)."""
         with self._connect() as con:
-            # A copy dropped only on a possibly filed one (``MAYBE``) stands as that one does.
-            return con.execute("SELECT title, body, CASE WHEN state='duplicate' AND error=? THEN "
-                               "'uncertain' ELSE state END FROM shadow_issues WHERE run_id=? AND "
-                               "repo=? AND pr=? AND head=? AND state!='denied' ORDER BY seq",
-                               (MAYBE, run_id, repo, number, head)).fetchall()
+            return asked_requests(con, run_id, repo, number, head)
 
     def shadow_model(self, run_id: str) -> str:
         """The model of the shadow review a run recorded, or ''."""

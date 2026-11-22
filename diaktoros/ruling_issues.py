@@ -31,6 +31,7 @@ import time
 
 from . import config, shadow_issues
 from .broker import filing as broker_filing
+from .run_supervisor import shadow_filings
 
 # The first `path:line` or `path:line-line` a body cites (#2209), extensionless paths such as
 # `Makefile:5` included. Never one inside a URL: each whole URL, its query string with it, is
@@ -75,19 +76,20 @@ def _standing(state: str, shadow_files: bool) -> str | None:  # also what the pr
     return "waiting" if state == "posting" or state == "recorded" and shadow_files else None
 
 
-def _shadow_asked(loop: dict, sup, row) -> str | None:
+def _shadow_asked(loop: dict, sup, row, con=None) -> str | None:
     """Whether the shadow review this ruling was over asked, at its PR and head, for the same
     finding (#2209): a close title, or the same place cited first in both bodies. ``"filed"``
     when such a request was filed (or may have been), whether or not the loop still files a
     shadow's requests; ``"waiting"`` when the only ones are still to be filed (``_standing``), so
     the ruling's copy waits for their outcome rather than being dropped first. ``None`` for
-    none, or none that will ever be filed."""
+    none, or none that will ever be filed. Read in ``con``'s transaction when given (F8)."""
     shadow = row["shadow_run"]
     if not shadow:
         return None
     place, files = _cited(row["body"]), config.shadow_file_issues(loop)
-    states = {(_standing(state, files), state) for title, body, state in sup.shadow_requests(
-                  shadow, loop["repo"], int(row["pr"]), str(row["head"]))
+    where = (shadow, loop["repo"], int(row["pr"]), str(row["head"]))
+    asked = shadow_filings.asked_requests(con, *where) if con else sup.shadow_requests(*where)
+    states = {(_standing(state, files), state) for title, body, state in asked
               if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
               or _same_place(place, _cited(body))}
     # Filed only as `uncertain` is "maybe": dropped, but taken up again if a late refusal shows
@@ -135,7 +137,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         filed_as = shadow_issues._filed(sup, loop["repo"], number, row["title"])
         known = {asked, filed_as}
         if known & {"filed", "maybe"}:
-            shadow_issues._drop(sup, row, "filed" if "filed" in known else "maybe")
+            shadow_issues._drop(sup, row, number, lambda con: _shadow_asked(loop, sup, row, con=con))
             continue
         if asked == "waiting" or filed_as == "flying":
             continue          # filed only if the shadow's copy never is (denied, filing off)
