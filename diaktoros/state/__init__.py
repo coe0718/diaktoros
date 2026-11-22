@@ -35,7 +35,7 @@ from collections.abc import Callable
 
 from .. import config, hostdirs
 from ..config import settings_form
-from ..util import atomic_write, finite_time, log, now_iso, register_lock
+from ..util import atomic_write, finite_time, log, now_iso, plain_number, register_lock
 from .fix_asks import FixAsks
 
 # The flock files this module keeps in a loop's state directory, each registered by its writer
@@ -261,9 +261,9 @@ def read_record(st, name: str, unreadable: Callable[[str], None] | None = None) 
 
 
 def _numbered(key) -> bool:
-    """A key ``int`` reads as a PR or issue number: ASCII digits, since ``isdigit`` also takes
-    characters such as '²' that ``int`` refuses (fourth review on #2589)."""
-    return isinstance(key, str) and key.isascii() and key.isdigit()
+    """A key ``int`` reads as a PR or issue number (``util.plain_number``): not '²', nor a run of
+    digits too long to convert (fourth and fifth reviews on #2589)."""
+    return plain_number(key) is not None
 
 
 def _deps_number(key) -> int:

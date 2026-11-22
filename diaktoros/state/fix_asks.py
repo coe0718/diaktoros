@@ -5,6 +5,7 @@ state's ``dir``, ``locked``, ``_load`` and ``_save_strict``, and adds no state o
 """
 
 from __future__ import annotations
+from ..util import plain_number
 
 
 class FixAsks:
@@ -18,7 +19,7 @@ class FixAsks:
         out = {}
         for name in ("open", "count", "handoff"):
             part = raw.get(name)
-            out[name] = ({str(k): v for k, v in part.items() if str(k).isascii() and str(k).isdigit()
+            out[name] = ({str(k): v for k, v in part.items() if plain_number(str(k)) is not None
                           and (name == "count") == (type(v) is int)}
                          if isinstance(part, dict) else {})
         approved = raw.get("approved")

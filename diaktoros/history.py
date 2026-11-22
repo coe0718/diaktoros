@@ -18,6 +18,7 @@ from . import findings as findings_mod, history_summary, stats
 from .history_sources import (audit_writes, excerpt, github_reads, github_events,
                               tracked_findings, wait_events)
 from .run_supervisor import NOT_ENDED, views
+from .util import plain_number
 
 # What each ledger table adds to the timeline: its event kind and the columns it is read with.
 # Rows are joined to their run (seat, head) by run_id; a table without run_id carries its own head.
@@ -251,4 +252,4 @@ def _findings(tracked: dict, number: int, rounds: list, reviews: list,
 
 
 def _fnum(fid: str) -> int:
-    return int(fid[1:]) if fid[1:].isascii() and fid[1:].isdigit() else 0
+    return plain_number(fid[1:]) or 0

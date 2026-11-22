@@ -44,6 +44,7 @@ from . import (arm_action, config, doctor, findings, pacing, retry_action, route
 from .gate import decisions as gate_decisions
 from .run_supervisor import views
 from .config import settings_form
+from .util import plain_number
 
 SINCE_CHOICES = ("24h", "7d", "30d")
 # What the ledger keeps for one PR is its turns; a long-lived PR is bounded here so a single
@@ -957,7 +958,7 @@ def _findings(loop: dict, pr: int) -> list[dict]:
                     "head": stats.recorded_head(item.get("head")),
                     "at": float(at) if isinstance(at, (int, float)) else None,
                     "missed": bool(item.get("missed"))})
-    out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isascii() and item["id"][1:].isdigit() else 0)
+    out.sort(key=lambda item: plain_number(item["id"][1:]) or 0)
     return out
 
 

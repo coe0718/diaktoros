@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+from .util import plain_number
 
 STATES = ("fixed", "open", "withdrawn")
 MISSED = "missed earlier"
@@ -72,7 +73,7 @@ def open_ids(entry: dict) -> list[str]:
     found = found if isinstance(found, dict) else {}
     # Host state may hold a key the parser never makes (hand edit, partial write): skip it.
     return sorted((k for k, v in found.items()
-                   if isinstance(k, str) and re.fullmatch(r"F\d+", k)
+                   if isinstance(k, str) and re.fullmatch(r"F\d{1,18}", k)   # int reads it
                    and isinstance(v, dict) and v.get("state") == "open"),
                   key=lambda k: int(k[1:]))
 
@@ -306,7 +307,7 @@ def record(loop: dict, number: int, head: str, body: str) -> None:
 def lines(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
     out = []
-    for fid in sorted(found, key=lambda k: int(k[1:]) if k[1:].isascii() and k[1:].isdigit() else 0):
+    for fid in sorted(found, key=lambda k: plain_number(k[1:]) or 0):
         item = found[fid]
         if isinstance(item, dict):
             out.append(f"{fid} {item.get('state', '?')}"

@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 
 from . import gate, state as state_mod
+from .util import plain_number
 
 FILE = "escalate-pending.json"
 TTL_S = 24 * 3600
@@ -93,4 +94,4 @@ def prune(st, open_numbers) -> list[int]:
         dropped = [k for k, v in memory.items() if k not in keep or not _live(v, now)]
         if dropped:
             st.kv_set_strict(_path(st), {k: v for k, v in memory.items() if k not in dropped})
-    return [int(k) for k in dropped if k.isascii() and k.isdigit()]
+    return [n for k in dropped if (n := plain_number(k)) is not None]
