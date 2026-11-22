@@ -3,6 +3,7 @@ absent beside the valid entries, in ``findings.json`` (PR numbers and finding id
 other number-keyed state files, so the real callers neither raise nor lose the valid entries.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -36,8 +37,9 @@ class UnicodeDigitKeys(unittest.TestCase):
         tracked = self.st.findings_all()
         self.assertEqual(list(tracked), ["7"])
         db = self.root / "ledger.db"
-        with sqlite3.connect(db) as con:
+        with contextlib.closing(sqlite3.connect(db)) as con:
             con.execute("CREATE TABLE runs (repo, pr, head, seat, model, created)")
+            con.commit()
         got = stats.finding_outcomes(db, self.st.loop["repo"], 0, NOW + 10, tracked)
         self.assertEqual(got["raised"], 2)
         lines = findings.lines(tracked["7"])
