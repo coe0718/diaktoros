@@ -1,6 +1,8 @@
 """Seventh review on #2587: a guard's list named by a module constant is read as that tuple only
 when nothing binds the name again, anywhere. ``ALLOWED += ('intruder',)`` after it let a writer
-record 'intruder' while the drift guard reported only the tuple's roles.
+record 'intruder' while the drift guard reported only the tuple's roles. Eighth: nor through a
+namespace dict (``globals()['ALLOWED'] = …``), nor by a name the guard cannot read, which fails
+every constant closed.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -22,7 +24,22 @@ REBOUND = {
                                  "    ALLOWED_2587 = ('intruder',)\n",
     'as an attribute of its module': "import synthetic\nsynthetic.ALLOWED_2587 = ('intruder',)\n",
     'by setattr': "import synthetic\nsetattr(synthetic, 'ALLOWED_2587', ('intruder',))\n",
+    # Eighth review: through a namespace dict, by a literal name or one the guard cannot read.
+    'in globals()': "globals()['ALLOWED_2587'] = ('reviewer', 'intruder')\n",
+    'in vars() of its module': "import synthetic\nvars(synthetic)['ALLOWED_2587'] = ('intruder',)\n",
+    'in its module __dict__': "import sys\n"
+                              "sys.modules['synthetic'].__dict__['ALLOWED_2587'] = ('intruder',)\n",
+    'by globals().update': "globals().update(ALLOWED_2587=('intruder',))\n",
+    'through an alias': "ns = globals()\nns['ALLOWED_2587'] = ('intruder',)\n",
+    'under a computed key': "key = 'ALLOWED_' + '2587'\nglobals()[key] = ('intruder',)\n",
+    'by setattr of a computed name': "import synthetic\nname = 'ALLOWED_2587'\n"
+                                     "setattr(synthetic, name, ('intruder',))\n",
+    'by setattr on sys.modules': "import sys\nname = 'ALLOWED_2587'\n"
+                                 "setattr(sys.modules['synthetic'], name, ('intruder',))\n",
 }
+# Reads of a namespace dict, and setattr on another package's module, rebind nothing here.
+READ_ONLY = ("x = globals().get('ALLOWED_2587')\ny = vars(object())['a']\n"
+             "import os\nname = 'getcwd'\nsetattr(os, name, os.getcwd)\n")
 
 
 def real():
@@ -40,8 +57,10 @@ class GuardConstants(unittest.TestCase):
                                    ('other.py', extra)]).written()
 
     def test_a_guard_constant_bound_once_bounds_the_writer(self):
-        roles, _ = Writers(real() + [('synthetic.py', _CONST + _WRITER)]).written()
-        self.assertEqual(roles, set(broker.AUDIT_ROLES))
+        for extra in ('', READ_ONLY):
+            with self.subTest(read_only=bool(extra)):
+                roles, _ = Writers(real() + [('synthetic.py', _CONST + extra + _WRITER)]).written()
+                self.assertEqual(roles, set(broker.AUDIT_ROLES))
 
 
 if __name__ == "__main__":

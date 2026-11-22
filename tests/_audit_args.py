@@ -51,19 +51,75 @@ def bindings(name, nodes) -> int:
     return sum(_bound(node).count(name) for node in nodes)
 
 
-def module_bindings(trees) -> Counter:
+# A name's namespace dict (eighth review on #2587): ``globals()['NAME'] = …`` rebinds NAME with
+# no name or attribute store. Read only through these; any other use may write to it.
+_NAMESPACES, _READS = {'globals', 'locals', 'vars'}, {'get', 'keys', 'values', 'items', 'copy'}
+ANY = '*'                     # a write the guard cannot name: every constant fails closed
+
+
+def _namespace(node) -> bool:
+    return ((isinstance(node, ast.Call) and getattr(node.func, 'id', '') in _NAMESPACES)
+            or (isinstance(node, ast.Attribute) and node.attr == '__dict__'))
+
+
+def _namespace_writes(node, up) -> str | None:
+    """The name a namespace dict ``node`` is written under (``ANY`` when it may be written
+    under any name), or None when it is only read: a load of a key, or a read method."""
+    parent = up.get(node)
+    if isinstance(parent, ast.Subscript) and parent.value is node:
+        if isinstance(parent.ctx, ast.Load):
+            return None
+        key = parent.slice
+        return key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else ANY
+    if (isinstance(parent, ast.Attribute) and parent.attr in _READS
+            and isinstance(up.get(parent), ast.Call) and up[parent].func is parent):
+        return None
+    return ANY                        # passed on, aliased, updated, assigned: may write any name
+
+
+def _package_modules(tree, modules) -> set[str]:
+    """The names a tree binds to a module of ``modules`` (the scanned ones, by name)."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.level or (node.module or '').partition(
+                '.')[0] in modules):
+            found.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            found.update(alias.asname or alias.name.partition('.')[0] for alias in node.names
+                         if alias.name.partition('.')[0] in modules)
+    return found
+
+
+def module_bindings(trees, modules=frozenset()) -> Counter:
     """Every binding of every name anywhere in ``trees``, inside functions too, plus each
     attribute store or ``setattr`` of a literal name (``mod.NAME = …``), which may rebind a
-    module's constant from elsewhere (seventh review on #2587)."""
+    module's constant from elsewhere (seventh review on #2587), and each write to a namespace
+    dict (eighth). A write whose name the guard cannot read (``globals().update(…)``,
+    ``setattr(module, name, …)`` on a module of ``modules`` or ``sys.modules``) counts under
+    ``ANY``."""
     found = Counter()
-    for node in (node for tree in trees for node in ast.walk(tree)):
-        found.update(_bound(node))
-        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
-            found[node.attr] += 1
-        elif (isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'setattr'
-              and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)):
-            found[str(node.args[1].value)] += 1
+    for tree in trees:
+        up = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        ours = _package_modules(tree, modules)
+        for node in ast.walk(tree):
+            found.update(_bound(node))
+            if _namespace(node) and (name := _namespace_writes(node, up)) is not None:
+                found[name] += 1
+            elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
+                found[node.attr] += 1
+            elif (isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'setattr'
+                  and len(node.args) > 1):
+                if isinstance(node.args[1], ast.Constant):
+                    found[str(node.args[1].value)] += 1
+                elif (isinstance(node.args[0], ast.Subscript)
+                      or getattr(node.args[0], 'id', None) in ours):
+                    found[ANY] += 1
     return found
+
+
+def constant(bound: Counter, name: str) -> bool:
+    """Whether ``name`` is bound once, and nothing writes a name the guard cannot read."""
+    return bound[name] == 1 and not bound[ANY]
 
 
 def passed(call, index, name, where):
