@@ -68,7 +68,7 @@ def _same_place(one, other) -> bool:
 _FILED = frozenset({"posted", "unlabelled", "uncertain", "duplicate"})
 
 
-def _standing(state: str, shadow_files: bool) -> str | None:
+def _standing(state: str, shadow_files: bool) -> str | None:  # also what the prompt lists
     """``"filed"``, ``"waiting"`` or None (never to be filed) for a shadow request's state."""
     if state in _FILED:
         return "filed"
@@ -86,11 +86,15 @@ def _shadow_asked(loop: dict, sup, row) -> str | None:
     if not shadow:
         return None
     place, files = _cited(row["body"]), config.shadow_file_issues(loop)
-    states = {_standing(state, files) for title, body, state in sup.shadow_requests(
+    states = {(_standing(state, files), state) for title, body, state in sup.shadow_requests(
                   shadow, loop["repo"], int(row["pr"]), str(row["head"]))
               if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
               or _same_place(place, _cited(body))}
-    return "filed" if "filed" in states else "waiting" if "waiting" in states else None
+    # Filed only as `uncertain` is "maybe": dropped, but taken up again if a late refusal shows
+    # nothing was filed (review of #2585, F8).
+    kinds = {"maybe" if standing == "filed" and state == "uncertain" else standing
+             for standing, state in states}
+    return next((kind for kind in ("filed", "maybe", "waiting") if kind in kinds), None)
 
 
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
@@ -129,8 +133,9 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         # way may yet be refused, so this one waits for it (review of #2585, F1).
         asked = _shadow_asked(loop, sup, row)
         filed_as = shadow_issues._filed(sup, loop["repo"], number, row["title"])
-        if "filed" in (asked, filed_as):
-            sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
+        known = {asked, filed_as}
+        if known & {"filed", "maybe"}:
+            shadow_issues._drop(sup, row, "filed" if "filed" in known else "maybe")
             continue
         if asked == "waiting" or filed_as == "flying":
             continue          # filed only if the shadow's copy never is (denied, filing off)

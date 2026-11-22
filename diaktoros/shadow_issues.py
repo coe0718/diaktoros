@@ -26,6 +26,7 @@ import time
 from . import broker, config, gate, gh
 from .broker import filing as broker_filing
 from .ruled_approval import POSTING_STALE_S
+from .run_supervisor.shadow_filings import MAYBE, STALE_WHY, InFlight, MaybeFiled
 
 WAIT_S = 7 * 86400        # a head the real reviewer never reached is not waited on for ever
 MAX_ATTEMPTS = 12         # refused POSTs (nothing written) before the issue is dropped (#1732)
@@ -39,13 +40,19 @@ def _same(title: str, filed: list[str]) -> bool:
 
 
 def _filed(sup, repo: str, number: int, title: str) -> str | None:
-    """``"filed"`` when an issue this PR filed (or may have) has the title or one close to it;
-    ``"flying"`` when the only such one is a shadow's or an adjudicator's POST still under way,
-    which may yet be refused and released, so a copy waits for it rather than being dropped on
-    its strength (review of #2585, F1); otherwise None."""
-    if _same(title, sup.filed_titles(repo, number, in_flight=False)):
-        return "filed"
-    return "flying" if _same(title, sup.filed_titles(repo, number, in_flight=True)) else None
+    """``"filed"`` when an issue this PR filed has the title or one close to it; ``"maybe"`` when
+    the only such one's POST has an unknown outcome (dropped as ``MAYBE``, taken up again if a late
+    refusal settles it: review of #2585, F8); ``"flying"`` when the only such one is a shadow's or
+    an adjudicator's POST still under way, which may yet be refused and released, so a copy waits
+    for it rather than being dropped on its strength (F1); otherwise None."""
+    kinds = sup.filed_standing(repo, number, lambda key: _same(title, [key]))
+    return next((kind for kind in ("filed", "maybe", "flying") if kind in kinds), None)
+
+
+def _drop(sup, row, why: str) -> None:
+    """A ``duplicate``: ``why`` "filed" or "maybe" (``MAYBE``, which a late refusal undoes)."""
+    sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded",
+                            error=MAYBE if why == "maybe" else None)
 
 
 def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int | None:
@@ -53,15 +60,22 @@ def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int 
     POST, so a second sweep never files it twice and the origin-PR hold (#324) and lineage bound
     (#487) see it. Both fenced by the attempts the row was read with (review of #2585, F7): a
     sweep whose claim ``settle_stale`` ended meanwhile (it counts an attempt) writes no row, so it
-    never POSTs. The row's sequence, or None: not claimed, the claim lost, or a ``duplicate``."""
+    never POSTs. Whether the title is taken is decided in the transaction that writes the row
+    (F1): taken only by a POST under way, the claim goes back to ``recorded`` and waits for it.
+    The row's sequence, or None: not claimed, the claim lost, waiting, or a ``duplicate``."""
     run_id, seq, attempts = row["run_id"], row["seq"], int(row["attempts"])
     if not sup.shadow_issue_status(run_id, seq, "posting", expect="recorded", attempts=attempts):
         return None
     try:
         filing = sup.record_shadow_filing(run_id, row["repo"], number, head, row["title"],
-                                          depth, claim=(seq, attempts))
-    except ValueError:
-        sup.shadow_issue_status(run_id, seq, "duplicate", expect="posting", attempts=attempts)
+                                          depth, claim=(seq, attempts),
+                                          same=lambda key: _same(row["title"], [key]))
+    except InFlight:
+        sup.shadow_issue_status(run_id, seq, "recorded", expect="posting", attempts=attempts)
+        return None
+    except ValueError as taken:
+        sup.shadow_issue_status(run_id, seq, "duplicate", expect="posting", attempts=attempts,
+                                error=MAYBE if isinstance(taken, MaybeFiled) else None)
         return None
     if filing is None:
         log(f"{what} issue for #{number} ({row['title']!r}) not sent: its claim was ended")
@@ -100,8 +114,8 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                       expect="recorded")
             continue                                  # the real review has not landed yet
         filed_as = _filed(sup, loop["repo"], number, row["title"])
-        if filed_as == "filed":
-            sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
+        if filed_as in ("filed", "maybe"):
+            _drop(sup, row, filed_as)
             continue
         if filed_as == "flying":
             continue                                  # dropped only once that one is filed
@@ -153,7 +167,7 @@ def settle_stale(sup, repo: str, now: float, log) -> None:
                 attempts, state, why = row["attempts"], "unlabelled", "labels: not confirmed"
             else:
                 attempts, state = row["attempts"], "uncertain"
-                why = "interrupted after the POST was claimed; outcome unknown"
+                why = STALE_WHY                     # a late, definite refusal undoes it (F8)
                 con.execute("UPDATE filed_issues SET state='uncertain', error=?, updated=? WHERE "
                             "run_id=? AND seq=? AND state='recorded'",
                             (why, time.time(), row["run_id"], row["filing"]))
@@ -207,10 +221,10 @@ def _post(loop: dict, sup, row, filing, depth: int, log, send=_send_shadow,
         # Refused with nothing written (no reader identity, a repository mismatch, GitHub's
         # 4xx other than 408): not an unknown outcome. Back to `recorded` with the reason, so a
         # sweep after the operator fixes it files the issue; the filed_issues row is released for
-        # that retry.
-        # Each refusal is counted: at MAX_ATTEMPTS the issue is dropped, not retried for ever.
-        sup.release_shadow_filing(row["run_id"], filing)
-        state = sup.shadow_issue_refused(row["run_id"], row["seq"], str(exc), MAX_ATTEMPTS)
+        # that retry. Each refusal is counted: at MAX_ATTEMPTS the issue is dropped, not retried
+        # for ever. A claim settle_stale ended meanwhile as uncertain is settled by it (F8).
+        state = sup.refused_after_claim(row["run_id"], row["seq"], filing, int(row["attempts"]),
+                                        str(exc), MAX_ATTEMPTS)
         log(f"{what} issue for #{number} ({row['title']!r}) not filed, "
             + ("dropped" if state == "denied" else "retried next sweep") + f": {exc}")
         return None, False

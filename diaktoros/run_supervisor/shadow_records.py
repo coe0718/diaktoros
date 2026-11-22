@@ -12,9 +12,9 @@ import json
 import time
 
 from .. import run_supervisor
+from .shadow_filings import MAYBE, ShadowFilingRecords
 
-
-class ShadowIssueRecords:
+class ShadowIssueRecords(ShadowFilingRecords):
     """The shadow-issue methods of :class:`~diaktoros.run_supervisor.Supervisor`; ``_connect()``
     is the one ``Supervisor`` provides."""
 
@@ -97,60 +97,11 @@ class ShadowIssueRecords:
         """``(title, body, state)`` of each issue one shadow run asked to file at this PR and head,
         but any that never will be (``denied``): what a ruling over it need not ask again (#2209)."""
         with self._connect() as con:
-            return con.execute("SELECT title, body, state FROM shadow_issues WHERE run_id=? AND "
+            # A copy dropped only on a possibly filed one (``MAYBE``) stands as that one does.
+            return con.execute("SELECT title, body, CASE WHEN state='duplicate' AND error=? THEN "
+                               "'uncertain' ELSE state END FROM shadow_issues WHERE run_id=? AND "
                                "repo=? AND pr=? AND head=? AND state!='denied' ORDER BY seq",
-                               (run_id, repo, number, head)).fetchall()
-
-    def record_shadow_filing(self, run_id: str, repo: str, number: int, head: str, title: str,
-                             depth: int, claim: tuple[int, int] | None = None) -> int | None:
-        """The ``filed_issues`` row of an issue the host files for a shadow review (#914), before
-        the POST, so the origin-PR hold (#324) and the lineage bound (#487) see it as they see the
-        reviewer's. Its sequence in that run; ``ValueError`` when this PR already filed the title.
-        ``claim`` (``(seq, attempts)`` of the ``shadow_issues`` row the caller claimed) fences it
-        (review of #2585, F7): None, nothing written, unless that row is still ``posting`` under
-        that claim, so a sweep resumed after ``settle_stale`` ended its claim never POSTs."""
-        key = " ".join(title.casefold().split())
-        with self._connect() as con:
-            con.execute('BEGIN IMMEDIATE')
-            if claim is not None and not con.execute(
-                    "SELECT 1 FROM shadow_issues WHERE run_id=? AND seq=? AND attempts=? AND "
-                    "state='posting'", (run_id, *claim)).fetchone():
-                con.execute('ROLLBACK')
-                return None
-            if con.execute('SELECT 1 FROM filed_issues WHERE repo=? AND pr=? AND title_key=?',
-                           (repo, number, key)).fetchone():
-                con.execute('ROLLBACK')
-                raise ValueError('an issue with this title was already filed from this PR')
-            # MAX, not COUNT: release_shadow_filing leaves holes, and a count would reuse a
-            # sequence another sweep of this run already holds.
-            seq = con.execute('SELECT COALESCE(MAX(seq),0) FROM filed_issues WHERE run_id=?',
-                              (run_id,)).fetchone()[0] + 1
-            now = time.time()
-            con.execute('INSERT INTO filed_issues(run_id,seq,repo,pr,head,title,title_key,depth,'
-                        'state,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                        (run_id, seq, repo, number, head, title, key, depth, 'recorded', now, now))
-            con.execute('COMMIT')
-            return seq
-
-    def release_shadow_filing(self, run_id: str, seq: int) -> None:
-        """Take back a ``record_shadow_filing`` row whose POST was refused with nothing written, so
-        the shadow issue can be filed again; only a row still ``recorded``, never one posted."""
-        with self._connect() as con:
-            con.execute("DELETE FROM filed_issues WHERE run_id=? AND seq=? AND state='recorded'",
-                        (run_id, seq))
-
-    def filed_titles(self, repo: str, number: int, in_flight: bool | None = None) -> list[str]:
-        """The normalized titles of every issue filed (or being filed) from a PR, whoever filed
-        it: the reviewer, a shadow review or the adjudicator (#1978). ``in_flight`` True: only a
-        shadow's or an adjudicator's POST still under way (``recorded``: it may yet be refused and
-        released); False: all but those (review of #2585, F1)."""
-        flying = ("f.state='recorded' AND f.run_id IN (SELECT id FROM runs WHERE seat IN "
-                  "('shadow','adjudicator'))")
-        where = {None: '', True: f' AND {flying}', False: f' AND NOT ({flying})'}[in_flight]
-        with self._connect() as con:
-            return [r[0] for r in con.execute('SELECT f.title_key FROM filed_issues f WHERE '
-                                              'f.repo=? AND f.pr=?' + where,
-                                              (repo, number)).fetchall()]
+                               (MAYBE, run_id, repo, number, head)).fetchall()
 
     def shadow_model(self, run_id: str) -> str:
         """The model of the shadow review a run recorded, or ''."""
@@ -179,24 +130,3 @@ class ShadowIssueRecords:
                               (state, issue_number, error, time.time(), run_id, seq,
                                *(arg for _, arg in fence)))
         return cur.rowcount == 1
-
-    def shadow_issue_refused(self, run_id: str, seq: int, reason: str, limit: int) -> str:
-        """Count one POST refused with nothing written (#1732) against a claimed (``posting``)
-        shadow issue: back to ``recorded`` with ``reason``, or ``denied`` once ``limit`` such
-        attempts are used. The state it moved to, '' when the row was not ``posting``."""
-        with self._connect() as con:
-            con.execute('BEGIN IMMEDIATE')
-            row = con.execute("SELECT attempts FROM shadow_issues WHERE run_id=? AND seq=? "
-                              "AND state='posting'", (run_id, seq)).fetchone()
-            if row is None:
-                con.execute('ROLLBACK')
-                return ''
-            attempts = row[0] + 1
-            state = 'denied' if attempts >= limit else 'recorded'
-            note = (f'not sent, dropped after {attempts} refused attempts: {reason}'
-                    if state == 'denied' else f'not sent, retried next sweep: {reason}')
-            con.execute('UPDATE shadow_issues SET state=?,attempts=?,error=?,updated=? '
-                        'WHERE run_id=? AND seq=?',
-                        (state, attempts, note[:200], time.time(), run_id, seq))
-            con.execute('COMMIT')
-            return state
