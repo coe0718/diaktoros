@@ -43,6 +43,18 @@ class Protection:
         return bool(self.sources)
 
 
+def merge_button(found: Protection) -> str:
+    """What the merge button does with a posted merge check no read source requires, in the
+    words doctor and setup share (#1952): plainly "ignores it" only when every source answered;
+    a source that could not be read may require the check, so then the claim is qualified."""
+    if not found.unread:
+        return "the merge button ignores it"
+    names = " and ".join(unread.split(" (")[0] for unread in found.unread)
+    verb = "requires" if len(found.unread) == 1 else "require"
+    return (f"the merge button ignores it unless {names}, which could not be read, "
+            f"{verb} it")
+
+
 def reviewer_app_id(loop: dict) -> int | None:
     """The reviewer App's id, the check's pin; ``None`` for a PAT reviewer."""
     if not config.reviewer_is_app(loop):
@@ -202,8 +214,8 @@ def problems(loop: dict, found: Protection) -> tuple[list[str], list[str], list[
         return blocking, warnings, facts
     if not found.required:
         where = "requires it nowhere doctor could read" if found.unread else "does not require it"
-        warnings.append(f"{ci.MERGE_CHECK} is posted but {base} {where}: the merge "
-                        "button ignores it")
+        warnings.append(f"{ci.MERGE_CHECK} is posted but {base} {where}: "
+                        f"{merge_button(found)}")
     elif app_id:
         others = sorted({s for s in found.sources if s is not None and s != app_id})
         if others:

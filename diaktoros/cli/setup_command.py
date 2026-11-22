@@ -523,7 +523,7 @@ def _setup_merge_check(args, loop: dict, admin: str, interactive: bool) -> None:
     if not (args.protect or _agree(
             f"Require {protection.RULESET_NAME} on {loop['base']}? No one, admins included, "
             "merges a PR until the loop's check is green.", False, interactive, False)):
-        print(f"   not required: the check is posted, but the merge button ignores it. "
+        print(f"   not required: the check is posted, but {protection.merge_button(found)}. "
               f"When ready: {command}")
         return
     done, line = protection.require(loop, admin or None)
