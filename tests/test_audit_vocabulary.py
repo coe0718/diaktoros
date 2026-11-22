@@ -141,6 +141,24 @@ class SyntheticWriters(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(Unresolved):
                 Writers(sources + [('synthetic.py', head + args + call)]).written()
 
+    def test_a_repeated_key_is_read_as_python_reads_it(self):
+        # Fourth review on #2587: a literal's repeated key keeps its last value, so reading the
+        # first one passed a recorded 'intruder' unseen. Both parameters, beside every real writer.
+        sources = [(str(path), path.read_text())
+                   for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
+        head = "def write_dup_2587(loop):\n    _audit(loop, 'acme/w', 1, 'a' * 40, '', "
+        for args, slot in (("operation='review', login='x', "
+                            "**{'role': 'reviewer', 'role': 'intruder'})\n", 0),
+                           ("'reviewer', login='x', "
+                            "**{'operation': 'review', 'operation': 'intruder'})\n", 1)):
+            with self.subTest(args=args):
+                written = Writers(sources + [('synthetic.py', head + args)]).written()
+                self.assertIn('intruder', written[slot])
+                self.assertNotIn('intruder', written[1 - slot])
+        # Passed twice (a keyword and an expansion), Python refuses the call: it fails closed.
+        with self.assertRaises(Unresolved):
+            synthetic(head + "role='reviewer', operation='review', **{'role': 'intruder'})\n")
+
     def test_a_guard_before_the_write_on_every_path_bounds_it(self):
         for body in ("    " + _GUARD.format(i='    ') + _AUDIT, "    check(role=role)\n" + _AUDIT,
                      "    try:\n        check(role=role)\n    except ValueError:\n        raise\n"
