@@ -482,6 +482,11 @@ def inspect(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_h
     ``summary`` and ``pr`` (empty when never recorded) and ``reason``: for a ``stale`` stage,
     which fingerprint changed (or why it cannot be compared). ``read`` is its statuses.
 
+    ``cause`` is the first stale stage when that is an earlier one (``""`` otherwise), and
+    ``own`` the status the stage has from its own record and fingerprint alone, ignoring that
+    cascade (``stale`` when its own inputs changed or it was invalidated). ``setup`` uses them
+    to keep a current ``armed`` stage whose only staleness is a stale ``live_turn`` (#1713).
+
     Reads the record and, for ``live_turn`` and ``armed`` only, GitHub (repository GETs; an App
     reader POSTs once to mint an installation token only when no usable one is stored); writes
     nothing.
@@ -493,7 +498,7 @@ def inspect(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_h
     for stage in STAGES:
         entry = stored.get(stage)
         row = {"status": NOT_ATTEMPTED, "reason": "", "at": "", "command": "", "summary": "",
-               "pr": None}
+               "pr": None, "cause": "", "own": NOT_ATTEMPTED}
         out[stage] = row
         if (not isinstance(entry, dict) or entry.get("status") not in RECORDED
                 or not isinstance(entry.get("fingerprint"), str)):
@@ -502,12 +507,12 @@ def inspect(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_h
                    command=str(entry.get("command") or ""),
                    summary=str(entry.get("summary") or ""),
                    pr=entry["pr"] if type(entry.get("pr")) is int else None)
-        if cause:
-            reason = f"{first} is stale, and this was shown against it"
-        elif entry.get("invalidated") is True:
-            reason = "an earlier stage was re-recorded against other inputs since this was recorded"
+        if entry.get("invalidated") is True:
+            own = "an earlier stage was re-recorded against other inputs since this was recorded"
         else:
-            reason = _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state)
+            own = _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state)
+        row.update(own=STALE if own else entry["status"], cause=first)
+        reason = f"{first} is stale, and this was shown against it" if cause else own
         if reason:
             row.update(status=STALE, reason=reason)
             if not cause:
