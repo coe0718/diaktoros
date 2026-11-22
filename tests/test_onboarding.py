@@ -430,6 +430,24 @@ class Review1(Fixture):
         self.assertEqual(rows["loop"]["status"], "stale")
         self.assertIn("other rules", rows["loop"]["reason"])
 
+    def test_an_entry_whose_stored_rules_hash_differs_is_stale(self):                    # 2588 F3
+        # A future release that widens a stage's rules must invalidate entries judged under the
+        # old ones: the entry keeps its (now different) hash, and only that stage goes stale.
+        from unittest import mock
+        self.record_all()
+        old = onboarding.path(self.loop).read_text()
+        self.assertEqual(self.read()["loop"], "passed")
+        wider = dict(onboarding.FAILURE_SCOPE, loop=onboarding.FAILURE_SCOPE["loop"] + ("new:",))
+        with mock.patch.object(onboarding, "FAILURE_SCOPE", wider):
+            rows = onboarding.inspect(self.loop, runtime_file=self.runtime,
+                                      resolver=self.resolver,
+                                      pr_head=lambda loop, number: self.head,
+                                      hook_state=lambda loop: self.hooks)
+        self.assertEqual(onboarding.path(self.loop).read_text(), old)   # old hash still stored
+        self.assertEqual(rows["identities"]["status"], "passed")
+        self.assertEqual(rows["loop"]["status"], "stale")
+        self.assertIn("other rules", rows["loop"]["reason"])
+
     def test_a_healthy_loop_report_passes_and_containment_trouble_does_not(self):          # F4
         self.assertEqual(onboarding.stage_status("loop", "passed", LOOP_OK, loop=self.loop),
                          "passed")

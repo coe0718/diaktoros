@@ -640,6 +640,21 @@ class Setup(unittest.TestCase):
         self.assertIn("starting at the loop stage (stale: loop was recorded under other rules", out)
         self.assertNotIn("skipped doctor", out)
 
+    def test_a_loop_entry_judged_under_a_different_rules_hash_is_rerun_by_setup(self):
+        # #2588 F3: an entry that carries a rules hash, but not this version's (its stage's
+        # rules changed since it was written), must not let setup skip step 4 either.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        data = json.loads(onboarding.path(loop).read_text())
+        self.assertEqual(data["stages"]["loop"]["rules"], onboarding.rules("loop"))
+        data["stages"]["loop"]["rules"] = onboarding._digest(["older", "rules"])
+        onboarding.path(loop).write_text(json.dumps(data))
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (stale: loop was recorded under other rules", out)
+        self.assertNotIn("skipped doctor", out)
+
     def test_a_failed_seat_check_of_no_model_is_rerun_by_the_next_setup(self):
         # #2588 F2: selftest --no-model asks for model skipped; a seat:* FAIL in that run must
         # not leave a skipped model that setup reads as covering step 4.
