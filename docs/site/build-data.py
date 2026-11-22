@@ -104,8 +104,8 @@ def _load(path):
     return snap if isinstance(snap, dict) else None
 
 
-def _pushed(snap):
-    return _util().iso_epoch(snap.get("pushed_at"))
+def _stamp(snap, key):
+    return _util().iso_epoch(snap.get(key))
 
 
 def base_snapshot(previous=None):
@@ -113,16 +113,27 @@ def base_snapshot(previous=None):
 
     The deploy refreshes into the artifact only, so the checked-in file can
     be older than what the site last published. ``previous`` (the deployed
-    data.json, when the workflow could fetch it) wins when its last push is
-    later than the checked-in file's: an outage then keeps the newest
-    published figures rather than rolling them back (Vex, PR #2570 r1).
+    data.json, when the workflow could fetch it) wins unless the checked-in
+    file is shown newer: an outage then keeps the newest published figures
+    rather than rolling them back (Vex, PR #2570 r1).
+
+    Freshness is ``refreshed_at``, stamped by every successful refresh, not
+    ``pushed_at``: stars, counts and releases change without a push (r2).
+    A deployed snapshot that carries it beats a checked-in one that does
+    not, or carries an earlier one. Only two snapshots written before the
+    stamp existed fall back to a strictly later ``pushed_at``.
     """
     checked_in = _load(OUT) or {}
     deployed = _load(previous) if previous else None
-    if deployed and _pushed(deployed) and (
-            not _pushed(checked_in) or _pushed(deployed) > _pushed(checked_in)):
-        return deployed
-    return checked_in
+    if not deployed:
+        return checked_in
+    mine, theirs = _stamp(checked_in, "refreshed_at"), _stamp(deployed, "refreshed_at")
+    if theirs is not None:
+        return deployed if mine is None or theirs >= mine else checked_in
+    if mine is not None:
+        return checked_in
+    pushed, was = _stamp(deployed, "pushed_at"), _stamp(checked_in, "pushed_at")
+    return deployed if pushed is not None and (was is None or pushed > was) else checked_in
 
 
 def refresh(data):
@@ -179,6 +190,9 @@ def refresh(data):
     # the weeks it returned could not be summed (#1773, #2438).
     if activity_ok:
         data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # When this snapshot was taken, whatever moved: what base_snapshot()
+    # compares (Vex, PR #2570 r2). ``generated`` dates the commit count.
+    data["refreshed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data.pop("error", None)
 
 
