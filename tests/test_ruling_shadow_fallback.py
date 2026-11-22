@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -27,8 +28,10 @@ class Fallback(unittest.TestCase):
     ruled_over_shadow = dedup.FilePending.ruled_over_shadow
 
     def shadow_becomes(self, state):
+        """As the filing moves it: ``updated`` now, so a claim reads live, not stopped (F1)."""
         with ledger.connect(self.db) as con:
-            con.execute("UPDATE shadow_issues SET state=? WHERE run_id='s1'", (state,))
+            con.execute("UPDATE shadow_issues SET state=?, updated=? WHERE run_id='s1'",
+                        (state, time.time()))
 
     def test_the_rulings_copy_waits_while_the_shadows_is_still_to_be_filed(self):
         run = self.ruled_over_shadow(CITED, CITED)
@@ -58,7 +61,7 @@ class Fallback(unittest.TestCase):
                 self.assertEqual(self.state(run), "posted")
 
     def test_it_is_a_duplicate_once_the_shadows_copy_was_or_may_have_been_filed(self):
-        for state in ("posted", "uncertain", "duplicate"):
+        for state in ("posted", "unlabelled", "uncertain", "duplicate"):
             with self.subTest(state):
                 self.setUp()
                 run = self.ruled_over_shadow(CITED, CITED)

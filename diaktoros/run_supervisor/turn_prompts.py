@@ -362,14 +362,16 @@ def shadow_review_section(loop: dict, row, found=_READ) -> str:
 
 
 def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
-    """The issues the ruled shadow review asked to file (#2209), where the loop files both a
-    shadow's and the adjudicator's. One already filed (or that may have been) is not asked again.
-    One still waiting to be filed may yet be dropped (refused, expired, filing turned off), so the
-    ruling still asks for it if it holds: the host files that copy only if the shadow's never is."""
+    """The issues the ruled shadow review asked to file (#2209), where the loop files the
+    adjudicator's. One already filed (or that may have been) is not asked again, whether or not
+    the loop still files a shadow's. One still waiting to be filed may yet be dropped (refused,
+    expired, filing turned off), so the ruling still asks for it if it holds: the host files that
+    copy only if the shadow's never is. Each state is read as the filing reads it
+    (``ruling_issues._standing``); one never to be filed is not listed."""
     import sqlite3
     from .. import config
-    from ..ruling_issues import _FILED
-    if not (config.shadow_file_issues(loop) and config.adjudicator_file_issues(loop)):
+    from ..ruling_issues import _standing
+    if not config.adjudicator_file_issues(loop):
         return ''
     try:
         con = views.read_only_connect(run_supervisor.production_ledger())
@@ -384,8 +386,9 @@ def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
             con.close()
     except (sqlite3.Error, OSError):
         return ''
-    filed = [title for title, state in asked if state in _FILED]
-    waiting = [title for title, state in asked if state not in _FILED]
+    files = config.shadow_file_issues(loop)
+    filed = [title for title, state in asked if _standing(state, files) == "filed"]
+    waiting = [title for title, state in asked if _standing(state, files) == "waiting"]
     text = ''
     if filed:
         text += ('\n\nThe shadow review asked to file these issues, and the host filed them from '

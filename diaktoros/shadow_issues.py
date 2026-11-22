@@ -12,7 +12,8 @@ reader identity, a reader credential that is missing or unreadable, a repository
 other than 408 from GitHub) leaves the issue ``recorded`` with the reason, and the next sweep tries
 again, up to ``MAX_ATTEMPTS`` refusals, after
 which it is ``denied`` with the reason (#1732); any other failure of the POST (a 408 included) is
-``uncertain``, never replayed.
+``uncertain``, never replayed. A claim a sweep was stopped after (left ``posting`` past
+``POSTING_STALE_S``) is ended by :func:`settle_stale`, so nothing waits on it for ever (#2585).
 Every one that ends ``uncertain`` or ``denied`` is said in the sweep's log, with its reason (#1359).
 """
 from __future__ import annotations
@@ -24,6 +25,7 @@ import time
 
 from . import broker, config, gate, gh
 from .broker import filing as broker_filing
+from .ruled_approval import POSTING_STALE_S
 
 WAIT_S = 7 * 86400        # a head the real reviewer never reached is not waited on for ever
 MAX_ATTEMPTS = 12         # refused POSTs (nothing written) before the issue is dropped (#1732)
@@ -46,6 +48,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         return []
     now = time.time() if now is None else now
     sup = run_supervisor.Supervisor(db or run_supervisor.production_ledger(), create=False)
+    settle_stale(sup, loop["repo"], now, log)
     waiting = sup.shadow_issues_waiting(loop["repo"])
     if not waiting:
         return []
@@ -75,7 +78,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
         # Claimed before the POST: a second sweep never files it twice; a crash after this
-        # leaves it `posting`, which is never replayed.
+        # leaves it `posting`, which is never replayed, only ended by `settle_stale`.
         if not sup.shadow_issue_status(row["run_id"], row["seq"], "posting", expect="recorded"):
             continue
         # Its filed_issues row too, before the POST, so the origin-PR hold (#324) and the
@@ -92,6 +95,49 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         if issue is not None:
             filed.append(issue)
     return filed
+
+
+def settle_stale(sup, repo: str, now: float, log) -> None:
+    """End each claim (``posting``, a shadow's or an adjudicator's) left past ``POSTING_STALE_S``
+    (#2585): its sweep was stopped after claiming it, and nothing else moves it, so a ruling's
+    copy that waits on it would wait for ever. Read from its ``filed_issues`` row, which is
+    committed before the POST and only then: none, the POST was never sent, so it goes back to
+    ``recorded`` as a refusal does (counted, ``denied`` at ``MAX_ATTEMPTS``) and is filed later;
+    that row ``posted``, it was filed (its labels unconfirmed: ``unlabelled``); otherwise the POST
+    may have been sent, so it is ``uncertain``, never replayed, as ``ruled_approval`` does for a
+    stale write (``POSTING_STALE_S``). Only a claim no POST can have left is retried, and the
+    retry takes a fresh ``filed_issues`` row, whose unique title holds it to one POST."""
+    with sup._connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        rows = con.execute(
+            "SELECT i.run_id, i.seq, i.pr, i.title, i.attempts, r.seat, f.seq AS filing, "
+            "f.state AS filed, f.issue_number FROM shadow_issues i JOIN runs r ON r.id=i.run_id "
+            "LEFT JOIN filed_issues f ON f.run_id=i.run_id AND f.repo=i.repo AND f.pr=i.pr AND "
+            "f.title_key=i.title_key WHERE i.repo=? AND i.state='posting' AND i.updated<?",
+            (repo, now - POSTING_STALE_S)).fetchall()
+        lost = []
+        for row in rows:
+            if row["filing"] is None:
+                attempts = row["attempts"] + 1
+                state = "denied" if attempts >= MAX_ATTEMPTS else "recorded"
+                why = f"not sent: interrupted before the POST ({attempts} attempts)"
+            elif row["filed"] == "posted":
+                attempts, state, why = row["attempts"], "unlabelled", "labels: not confirmed"
+            else:
+                attempts, state = row["attempts"], "uncertain"
+                why = "interrupted after the POST was claimed; outcome unknown"
+                con.execute("UPDATE filed_issues SET state='uncertain', error=?, updated=? WHERE "
+                            "run_id=? AND seq=? AND state='recorded'",
+                            (why, time.time(), row["run_id"], row["filing"]))
+            con.execute("UPDATE shadow_issues SET state=?, attempts=?, error=?, issue_number="
+                        "COALESCE(?, issue_number), updated=? WHERE run_id=? AND seq=?",
+                        (state, attempts, why, row["issue_number"], time.time(), row["run_id"],
+                         row["seq"]))
+            lost += [(row, state, why)] if state != "recorded" else []
+        con.execute("COMMIT")
+    for row, state, why in lost:
+        what = "adjudicator-found" if row["seat"] == "adjudicator" else "shadow-found"
+        log(f"{what} issue for #{int(row['pr'])} ({row['title']!r}) {state}: {why}")
 
 
 def _lost(sup, row, state: str, why: str, log, what: str = "shadow-found",

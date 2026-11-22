@@ -9,12 +9,13 @@ the PR it follows up and the ruling. Its ``filed_issues`` row makes ``fix_hold``
 to merge, and counts its lineage, exactly as for the reviewer's and the shadow's.
 
 Not filed: a title the reviewer or a shadow review already filed from the PR (or one close to it:
-``duplicate``); one the shadow review it ruled over already asked for at that PR and head, where
-the loop files a shadow's requests: a title close to it, or a body whose first ``path:line`` (or
-``path:line-line``) is in the same file with overlapping lines (``duplicate``, #2209) once that
-request was filed or may have been, while one still to be filed holds the ruling's copy until it
-is (a denied one, refused or expired, lets the ruling's be filed); one whose run
-ended without a ruling (``denied``); any past
+``duplicate``); one the shadow review it ruled over already asked for at that PR and head: a
+title close to it, or a body whose first ``path:line`` (or ``path:line-line``) is in the same file
+with overlapping lines (``duplicate``, #2209) once that request was filed or may have been,
+whatever the loop's settings now, while one still to be filed holds the ruling's copy until it is
+(a denied one, refused or expired, or one recorded while the loop no longer files a shadow's
+requests, lets the ruling's be filed; a claim stopped mid-POST is ended by
+``shadow_issues.settle_stale``); one whose run ended without a ruling (``denied``); any past
 ``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep (a full bound stops only the
 POSTs: the sweep still rules out the rest, #1982). A POST refused with nothing
 written is retried, up to ``shadow_issues.MAX_ATTEMPTS``; any other failure is ``uncertain`` and
@@ -55,30 +56,40 @@ def _same_place(one, other) -> bool:
             and a1 <= b2 and b1 <= a2)
 
 
-# A shadow request with a settled outcome that filed it, or may have (an uncertain POST, or the
-# reviewer's own copy already filed): the ruling's is a duplicate. One ``recorded`` or ``posting``
-# can still be refused with nothing written, so the ruling's waits for it.
-_FILED = frozenset({"posted", "uncertain", "duplicate"})
+# Each state a shadow request can be in (``shadow_issues``), for a ruling's copy of the same
+# finding (#2209, review of #2585). Filed, or may have been, whatever the loop's settings now: the
+# shadow's own issue posted (``unlabelled``: posted, its labels unconfirmed), ``uncertain`` (its
+# POST may have landed: never replayed, reconciled by hand), or ``duplicate`` (the reviewer's or
+# another shadow's copy filed). Still to be filed: ``recorded``, only while the loop files a
+# shadow's requests (off, no sweep ever files it), and ``posting``, a POST under way, whatever the
+# setting, since it may land; a claim its sweep was stopped after is ended by
+# ``shadow_issues.settle_stale``, so that wait is bounded. ``denied`` never will be.
+_FILED = frozenset({"posted", "unlabelled", "uncertain", "duplicate"})
+
+
+def _standing(state: str, shadow_files: bool) -> str | None:
+    """``"filed"``, ``"waiting"`` or None (never to be filed) for a shadow request's state."""
+    if state in _FILED:
+        return "filed"
+    return "waiting" if state == "posting" or state == "recorded" and shadow_files else None
 
 
 def _shadow_asked(loop: dict, sup, row) -> str | None:
     """Whether the shadow review this ruling was over asked, at its PR and head, for the same
     finding (#2209): a close title, or the same place cited first in both bodies. ``"filed"``
-    when such a request was filed (or may have been); ``"waiting"`` when the only ones are still
-    to be filed, so the ruling's copy waits for their outcome rather than being dropped first; a
-    denied one never counts. ``None`` for none, or where the loop never files a shadow's
-    requests."""
+    when such a request was filed (or may have been), whether or not the loop still files a
+    shadow's requests; ``"waiting"`` when the only ones are still to be filed (``_standing``), so
+    the ruling's copy waits for their outcome rather than being dropped first. ``None`` for
+    none, or none that will ever be filed."""
     shadow = row["shadow_run"]
-    if not shadow or not config.shadow_file_issues(loop):
+    if not shadow:
         return None
-    place = _cited(row["body"])
-    states = {state for title, body, state in sup.shadow_requests(
+    place, files = _cited(row["body"]), config.shadow_file_issues(loop)
+    states = {_standing(state, files) for title, body, state in sup.shadow_requests(
                   shadow, loop["repo"], int(row["pr"]), str(row["head"]))
               if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
               or _same_place(place, _cited(body))}
-    if states & _FILED:
-        return "filed"
-    return "waiting" if states else None
+    return "filed" if "filed" in states else "waiting" if "waiting" in states else None
 
 
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
@@ -96,6 +107,9 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         return []
     now = time.time() if now is None else now
     sup = run_supervisor.Supervisor(db or run_supervisor.production_ledger(), create=False)
+    # Here too, not only in the shadow's sweep: a shadow claim stopped mid-POST must end even
+    # while the loop no longer files a shadow's requests, or a ruling's copy waits on it for ever.
+    shadow_issues.settle_stale(sup, loop["repo"], now, log)
     waiting = sup.shadow_issues_waiting(loop["repo"], seat="adjudicator")
     if not waiting:
         return []
@@ -116,7 +130,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
         if asked == "waiting":
-            continue          # filed only if the shadow's copy ends denied (refused, expired)
+            continue          # filed only if the shadow's copy never is (denied, filing off)
         if room <= 0:
             continue                                  # no room: later rows may still be lost
         depth = shadow_issues._lineage_depth(loop, sup, number)

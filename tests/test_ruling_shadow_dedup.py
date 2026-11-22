@@ -119,9 +119,11 @@ class FilePending(unittest.TestCase):
             self.assertEqual(len(self.file()[1]), 1)
             self.assertEqual(self.state(run), "posted")
 
-    def test_a_loop_that_never_files_a_shadows_requests_still_posts(self):
+    def test_a_loop_that_never_files_a_shadows_requests_posts_over_one_still_due(self):
+        # A filed one still counts with filing off (review of #2585, F6:
+        # test_ruling_shadow_settle); one only recorded never will be filed now.
         cited = "diaktoros/history.py:48: false doc"
-        run = self.ruled_over_shadow(cited, cited, shadow_state="posted")
+        run = self.ruled_over_shadow(cited, cited)
         self.loop["shadow"] = {"profile": "p"}                # shadow filing off
         self.assertEqual(len(self.file()[1]), 1)
         self.assertEqual(self.state(run), "posted")
@@ -165,8 +167,12 @@ class Prompt(escalate.Base):
         self.assertIn("- Waits", waiting)
         for absent in ("Gone", "Another run"):                # never to be filed; not this run
             self.assertNotIn(absent, text)
+        # Shadow filing off: what was filed still is (review of #2585, F6); one still due
+        # never will be, so it is not listed, and the ruling asks for it as for any finding.
         off = {**self.loop, "shadow": {**self.loop["shadow"], "file_issues": False}}
-        self.assertNotIn("asked to file", turn_prompts.shadow_review_section(off, row))
+        text = turn_prompts.shadow_review_section(off, row)
+        self.assertIn(f"- {SHADOW_TITLE}", text)
+        self.assertNotIn("Waits", text)
 
     def test_the_adjudicators_prompt_over_a_dispute_lists_none(self):
         from diaktoros import ci, gh, issue_facts
