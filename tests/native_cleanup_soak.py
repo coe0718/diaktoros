@@ -143,7 +143,8 @@ class Soak:
         record = {'kind': kind, 'monotonic': time.monotonic(), **value}
         with (self.output/'events.jsonl').open('a') as out:
             out.write(json.dumps(record, sort_keys=True)+'\n')
-            out.flush(); os.fsync(out.fileno())
+            out.flush()
+            os.fsync(out.fileno())
         print('NATIVE_CLEANUP_SOAK '+json.dumps(record, sort_keys=True), flush=True)
 
     def sweep(self):
@@ -187,7 +188,8 @@ class Soak:
         mode = MODES[cycle % len(MODES)]
         interpreter = Path(sys.executable).resolve()
         framework = Path(sys.base_prefix)/'Resources/Python.app/Contents/MacOS/Python'
-        if framework.is_file(): interpreter = framework.resolve()
+        if framework.is_file():
+            interpreter = framework.resolve()
         policy = seatbelt.profile(read_roots=(Path(sys.base_prefix),), write_roots=(workspace.work,))
         policy = replace(policy,text=policy.text+'(allow syscall-unix)\n(deny syscall-unix (syscall-number 82 147 244))\n')
         policy_path = self.output/f'policy-{cycle:04}.sb'
@@ -203,7 +205,8 @@ class Soak:
                 nonlocal group, expected
                 deadline = time.monotonic()+10
                 ready = workspace.work/'ready'
-                while not ready.exists() and time.monotonic()<deadline: time.sleep(.01)
+                while not ready.exists() and time.monotonic()<deadline:
+                    time.sleep(.01)
                 value = json.loads(ready.read_text())
                 pids = [value['pid'], *value['children']]
                 if (value['mode'] != mode or len(pids)>3 or len(set(pids)) != len(pids) or
@@ -252,8 +255,10 @@ class Soak:
                     if workspace.pending_cleanup is None:
                         raise AcceptanceError('retained image lacks pending disposal acknowledgement')
                     self.budget.add(root, eligible_at)
-                    if injected: self.injected_deferrals += 1
-                    else: self.observed_deferrals += 1
+                    if injected:
+                        self.injected_deferrals += 1
+                    else:
+                        self.observed_deferrals += 1
                 self.completed += 1
                 summary = self.pool.status()
                 self.max_pending = max(self.max_pending,summary['pending_images'])
@@ -264,7 +269,8 @@ class Soak:
                 workspace.retain('soak failed; retain evidence and storage')
                 # Release host descriptors, but never delete or signal a discovered PID.
                 if workspace._disposal_lease is not None:
-                    os.close(workspace._disposal_lease); workspace._disposal_lease=None
+                    os.close(workspace._disposal_lease)
+                    workspace._disposal_lease=None
                 raise
 
     def snapshot(self):
@@ -274,7 +280,8 @@ class Soak:
         receipts = self.output/'receipts'
         receipts.mkdir(mode=0o700,exist_ok=True)
         for root in self.pool.volumes.iterdir():
-            if root.is_symlink(): continue
+            if root.is_symlink():
+                continue
             path=root/native_recovery.JOURNAL
             if path.is_file():
                 (receipts/(root.name+'.json')).write_bytes(path.read_bytes()[:native_recovery.MAX_RECORD+1])
@@ -290,8 +297,10 @@ class Soak:
         error = None
         started = time.monotonic()
         try:
-            for cycle in range(self.turns): self.turn(cycle)
-            while self.budget.pending: self.sweep()
+            for cycle in range(self.turns):
+                self.turn(cycle)
+            while self.budget.pending:
+                self.sweep()
             if list(self.pool.volumes.iterdir()):
                 raise AcceptanceError('owned workspaces remain after final reconciliation')
         except BaseException as exception:
@@ -318,9 +327,11 @@ def main():
     parser.add_argument('--turns',type=int,default=200)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    if not 1<=args.turns<=200: parser.error('turn count must be 1..200')
+    if not 1<=args.turns<=200:
+        parser.error('turn count must be 1..200')
     reason=seatbelt.unavailable()
-    if reason: parser.error(reason)
+    if reason:
+        parser.error(reason)
     return Soak(args.output,args.turns).run()
 
 

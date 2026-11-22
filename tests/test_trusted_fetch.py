@@ -596,7 +596,7 @@ class TrustedFetchTests(unittest.TestCase):
             with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
                 trusted_fetch._fetch_tarball(
                     self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
-        # Neither server was contacted, and nothing was extracted.
+        # Neither codeload server was contacted, and nothing was extracted.
         self.assertEqual(allowed.recorder.requests, [])
         self.assertEqual(other.recorder.requests, [])
         self.assertFalse((self.root / "sandbox").exists())

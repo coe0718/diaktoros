@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sys
 import tempfile
 import threading
 import time

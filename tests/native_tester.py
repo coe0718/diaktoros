@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parent.parent
 SUITES = ('test_seatbelt.py', 'test_native_storage.py', 'test_native_snapshot.py',
           'test_native_lifecycle.py', 'test_native_roles.py', 'test_native_detach.py',
           'test_native_python_spawn.py', 'test_native_recovery.py', 'test_native_cleanup.py',
-          'test_native_backend.py', 'test_native_setup.py', 'test_native_supervisor.py',
+          'test_native_shell.py', 'test_native_backend.py', 'test_native_setup.py', 'test_native_supervisor.py',
           'test_native_turn_orchestration.py', 'test_native_proofs.py')
 
 

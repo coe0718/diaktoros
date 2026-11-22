@@ -84,7 +84,7 @@ def _socket_rules(sockets, writes, params, rules):
 
 
 def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
-            sockets: tuple[Path, ...] = ()) -> Profile:
+            sockets: tuple[Path, ...] = (), read_files: tuple[Path, ...] = ()) -> Profile:
     """Deny by default, allow narrow runtime/run roots and exact AF_UNIX endpoints.
 
     System executable/library trees are readable; home directories, /private,
@@ -94,7 +94,11 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
     """
     reads = tuple(_root(p) for p in read_roots)
     writes = tuple(_root(p) for p in write_roots)
-    if any(read == write or write in read.parents for read in reads for write in writes):
+    files = tuple(Path(p) for p in read_files)
+    if any(not p.is_absolute() or not p.is_file() or any(ord(c) < 32 for c in str(p)) for p in files):
+        raise ValueError('sandbox read files must be absolute existing files without control characters')
+    if any(read.resolve() == write or write in read.resolve().parents
+           for read in (*reads, *files) for write in writes):
         raise ValueError('read-only roots cannot be inside writable roots')
     params: list[tuple[str, str]] = []
     rules = ['(version 1)', '(deny default)',
@@ -123,12 +127,18 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
              ' (sysctl-name "kern.hostname")'
              ' (sysctl-name "kern.bootargs")'
              ' (sysctl-name "security.mac.lockdown_mode_state"))']
-    for prefix, roots, operation in (('READ', reads, 'file-read*'),
-                                      ('WRITE', writes, 'file-read* file-write*')):
+    for prefix, roots, operation, predicate in (('READ', reads, 'file-read*', 'subpath'),
+                                                ('FILE', files, 'file-read*', 'literal'),
+                                                ('WRITE', writes, 'file-read* file-write*', 'subpath')):
         for index, path in enumerate(roots):
             key = f'{prefix}_{index}'
             params.append((key, str(path)))
-            rules.append(f'(allow {operation} (subpath (param "{key}")))')
+            rules.append(f'(allow {operation} ({predicate} (param "{key}")))')
+            if prefix == 'FILE':
+                # dyld must inspect versioned symlink names beside the exact library.
+                key = f'FILE_PARENT_{index}'
+                params.append((key, str(path.parent)))
+                rules.append(f'(allow file-read-metadata (subpath (param "{key}")))')
             # Traversal/metadata only: never permit reading sibling file contents.
             for ancestor in path.parents:
                 key = f'PARENT_{len(params)}'

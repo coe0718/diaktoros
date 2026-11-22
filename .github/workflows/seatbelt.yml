@@ -11,6 +11,7 @@ on:
       - diaktoros/native_recovery.py
       - diaktoros/run_supervisor/**
       - diaktoros/native_backend.py
+      - diaktoros/native_shell.py
       - diaktoros/native_turn.py
       - diaktoros/runtime_detect.py
       - diaktoros/seatbelt_wire.py
@@ -37,6 +38,7 @@ on:
       - tests/test_turn_layout.py
       - tests/test_native_roles.py
       - tests/test_native_backend.py
+      - tests/test_native_shell.py
       - tests/test_native_proofs.py
       - tests/test_native_production.py
       - tests/test_native_setup.py
@@ -78,6 +80,7 @@ jobs:
           python-version: '3.11'
       - name: Validate the tester commands on a clean Mac
         run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
           mkdir -m 700 "$RUNNER_TEMP/tester-evidence"
           python tests/native_tester.py preflight --output "$RUNNER_TEMP/tester-evidence/preflight"
           python tests/native_tester.py boundary --output "$RUNNER_TEMP/tester-evidence/boundary"
@@ -171,7 +174,9 @@ jobs:
           version: '0.12.19'
           enable-cache: false
       - name: Prepare pinned Hermes using the tester command
-        run: python tests/native_tester.py prepare-hermes --output "$RUNNER_TEMP/tester-hermes-preparation"
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          python tests/native_tester.py prepare-hermes --output "$RUNNER_TEMP/tester-hermes-preparation"
       - name: Real Hermes tool turn using the tester command
         run: python tests/native_tester.py hermes --prepared "$RUNNER_TEMP/tester-hermes-preparation/result.json" --output "$RUNNER_TEMP/tester-hermes-evidence"
       - uses: actions/upload-artifact@v7

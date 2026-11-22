@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from . import contained, native_backend, native_lifecycle, native_python_spawn, native_recovery, native_storage, seatbelt, turn_layout
+from . import contained, native_backend, native_lifecycle, native_python_spawn, native_recovery, native_shell, native_storage, seatbelt, turn_layout
 
 PROVIDER = 'diaktoros-seatbelt-wire'
 
@@ -147,12 +147,13 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
     if adapter is not None and not adapter.is_file():
         raise ValueError('spawn adapter must be a trusted compiled file')
     adapter_roots = (adapter.parent,) if adapter is not None else ()
+    env = _stage_environment(layout, rust=rust, model=model, inference_socket=inference_socket,
+                             broker_socket=broker_socket, build_roots=build_roots)
+    shell_libraries = native_shell.read_files(Path(env['SHELL']))
     profile = seatbelt.profile(read_roots=(code, venv, runtime, rust, client, export,
                                           *build_roots, *read_work, *adapter_roots),
                                write_roots=writes,
-                               sockets=(inference_socket, broker_socket))
-    env = _stage_environment(layout, rust=rust, model=model, inference_socket=inference_socket,
-                             broker_socket=broker_socket, build_roots=build_roots)
+                               sockets=(inference_socket, broker_socket), read_files=shell_libraries)
     entry = layout.hermes_entry(provider=PROVIDER, model=model, max_steps=max_steps, timeout=timeout)
     if adapter is not None:
         profile = replace(profile, text=profile.text + '(allow syscall-unix)\n'

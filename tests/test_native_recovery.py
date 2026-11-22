@@ -15,7 +15,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from diaktoros import contained, native_anchor, native_lifecycle, native_recovery, native_storage, run_supervisor, seatbelt
+from diaktoros import contained, native_lifecycle, native_recovery, native_storage, run_supervisor, seatbelt
 
 
 class RecoveryValidation(unittest.TestCase):

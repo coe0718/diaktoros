@@ -35,6 +35,12 @@ Apple Command Line Tools (`xcode-select --install`). `sandbox-exec`, `hdiutil`,
 `diskutil`, `codesign` and the selected SDK/compiler must be available. No root
 service, per-turn account or permanent APFS volume is required.
 
+Apple Silicon also needs a plain `arm64` Bash, for example `brew install bash`.
+The backend discovers it on `PATH` or at the standard Homebrew locations. It
+does not re-sign Apple's `arm64e` system shell or require altered boot security.
+Intel can use the system Bash. The private copy stays read-only after signing;
+its non-system libraries receive exact-file read grants, not a Homebrew-wide grant.
+
 In a development installation, the normal setup supports `--source`, `--venv`,
 `--runtime`, `--rust` and optional `--node` overrides. `--node ""` selects no Node.
 Do not reuse a Linux runtime JSON unchanged. Setup writes private 0600 settings.

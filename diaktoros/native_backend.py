@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import contained, envnames, native_cleanup, native_lifecycle, native_recovery, native_storage, seatbelt
+from . import contained, envnames, native_cleanup, native_lifecycle, native_recovery, native_shell, native_storage, seatbelt
 
 
 def unavailable() -> str:
@@ -19,9 +19,13 @@ def unavailable() -> str:
     if envnames.get('NATIVE_MACOS') != '1':
         return 'native macOS is experimental; explicit opt-in requires DIAKTOROS_NATIVE_MACOS=1'
     for tool in ('/usr/bin/sandbox-exec', '/usr/bin/hdiutil', '/usr/sbin/diskutil',
-                 '/usr/bin/clang', '/usr/bin/xcrun', '/usr/bin/codesign', '/bin/bash'):
+                 '/usr/bin/clang', '/usr/bin/xcrun', '/usr/bin/codesign', '/usr/bin/lipo', '/usr/bin/otool'):
         if not os.access(tool, os.X_OK):
             return f'native containment requires {tool}; install Apple Command Line Tools'
+    try:
+        native_shell.source()
+    except contained.ContainmentUnavailable as error:
+        return str(error)
     return ''
 
 
@@ -84,9 +88,10 @@ def _check_roots(paths, **additional):
 
 def stage_shell(directory: Path) -> Path:
     """A private, ad-hoc signed shell keeps the adapter across terminal commands."""
+    source = native_shell.source()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     shell = directory / 'bash'
-    shutil.copyfile('/bin/bash', shell)
+    shutil.copyfile(source, shell)
     shell.chmod(0o700)
     subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none', str(shell)],
                    env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=30, check=True)
@@ -183,6 +188,7 @@ def _settings(reads, env, extra_env):
 
 def _launch(volume, host, reads, mapping, env, sockets, entry, checkout_writable, timeout, stop):
     shell = stage_shell(host / 'shell')
+    shell_libraries = native_shell.read_files(shell)
     mapping.update({'/bin/sh': shell, '/bin/bash': shell})
     env['SHELL'] = str(shell)
     env['PATH'] = str(shell.parent) + os.pathsep + env['PATH']
@@ -202,7 +208,8 @@ def _launch(volume, host, reads, mapping, env, sockets, entry, checkout_writable
     writes = [volume.home, volume.scratch]
     (writes if checkout_writable else reads).append(volume.work)
     profile = seatbelt.profile(read_roots=tuple(dict.fromkeys(reads)),
-                               write_roots=tuple(writes), sockets=tuple(sockets))
+                               write_roots=tuple(writes), sockets=tuple(sockets),
+                               read_files=shell_libraries)
     policy = host / 'policy.sb'
     policy.write_text(profile.text + '(allow syscall-unix)\n'
                       '(deny syscall-unix (syscall-number 82 147 244))\n')

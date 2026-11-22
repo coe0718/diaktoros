@@ -363,7 +363,8 @@ class CleanupPoolTests(unittest.TestCase):
             self.assertEqual(sup.native_cleanup_results['results'][0]['status'], 'removed')
 
     def test_watchdog_pending_status_keeps_process_proof_distinct_from_disk_disposal(self):
-        import json, os
+        import json
+        import os
         read, write = os.pipe()
         try:
             os.write(write, json.dumps({'returncode': 0, 'timeout': False, 'parent_lost': False,
@@ -496,7 +497,8 @@ class NativeCleanupBoundary(unittest.TestCase):
                     native_recovery.recover(root, defer=True)
 
     def test_real_watchdog_death_drains_group_then_queues_disposal_for_host_sweep(self):
-        import os, select
+        import os
+        import select
         from contextlib import closing
         from test_native_recovery import NativeRecoveryBoundary
         from diaktoros import contained
