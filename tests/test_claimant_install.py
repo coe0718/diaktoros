@@ -70,6 +70,20 @@ class InstallFolder(unittest.TestCase):
         self.assertEqual(claimant.installed_commit(), "")
         self.assertEqual(claimant.stale(), "")
 
+    def test_an_install_inside_another_repository_has_no_commit_of_its_own(self):
+        # Review on #2572 (F3): git searches parent directories, so an unpacked install under a
+        # HERMES_HOME that is itself in a checkout (a dotfiles home) read that repository's HEAD.
+        host = pathlib.Path(tempfile.mkdtemp()) / "home"
+        self.addCleanup(shutil.rmtree, host.parent, ignore_errors=True)
+        _checkout(host)
+        (host / "plugins" / "diaktoros").mkdir(parents=True)
+        with mock.patch.object(config, "home", lambda: host):
+            self.assertEqual(claimant.installed_commit(), "")
+            self.assertEqual(claimant.stale(), "")
+            installed = _checkout(host / "plugins" / "hermes-review-loop")  # a real checkout there
+            shutil.rmtree(host / "plugins" / "diaktoros")
+            self.assertEqual(claimant.installed_commit(), installed)
+
     def test_without_an_install_folder_the_loaded_checkout_is_the_install(self):
         self.assertEqual(claimant.install_root(), claimant.plugin_root())
         self.assertEqual(claimant.stale(), "")

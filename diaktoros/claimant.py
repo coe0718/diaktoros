@@ -15,7 +15,7 @@ The installed commit is the HEAD of the plugin's install folder under ``$HERMES_
 read at each check (#2226), so a process that loaded another copy (an old plugin folder, a stale
 checkout a worker was spawned on) is caught too. Without an install folder (a development run),
 the installed side is the loaded checkout itself. A plugin that is not a git checkout has no
-commit to compare, so it is never called stale.
+commit to compare, so it is never called stale, even inside another repository's checkout.
 """
 from __future__ import annotations
 
@@ -55,12 +55,17 @@ def installed_commit() -> str:
 
 
 def _head(root: pathlib.Path) -> str:
+    """``root``'s HEAD, or "" unless ``root`` is itself the top of a checkout. git searches parent
+    directories, so an unpacked install inside another repository (a dotfiles home) would report
+    that repository's HEAD as the plugin's: that folder has no commit of its own (#2572 review)."""
     try:
-        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD"],
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        lines = proc.stdout.splitlines()
+        own = len(lines) == 2 and pathlib.Path(lines[0]).resolve() == root.resolve()
     except (OSError, subprocess.SubprocessError):
         return ""
-    sha = proc.stdout.strip()
+    sha = lines[1].strip() if own else ""
     return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
 
 
