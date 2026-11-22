@@ -57,7 +57,9 @@ def _poller_lock(db: Path):
     process ends, so a killed poller never blocks the next one."""
     db = Path(db)
     try:
-        handle = open(db.with_name(db.name + POLLER), 'a')
+        # Read-only, made if missing: the file is never written, only locked.
+        handle = os.fdopen(os.open(db.with_name(db.name + POLLER),
+                                   os.O_RDONLY | os.O_CREAT | os.O_CLOEXEC, 0o600), 'rb')
     except OSError:
         return None
     try:
