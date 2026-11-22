@@ -2996,7 +2996,10 @@ function healthFixture(loop = 'fixture-loop') {
 }
 
 for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'), 'caller'],
-  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'http503']]) {
+  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'http503'],
+  // #2538, as the docs say: a status is read from a brace-delimited body, parsed or not.
+  [new Error('503: {not json}'), 'http503'], [new Error('503: []'), 'unreachable'],
+  [new Error('503: <html>private</html>'), 'unreachable']]) {
   test('health fallback retains validated local checks and honest disclosure: ' + failure.message, async () => {
     const h = await harness(); h.render('page')
     const offline = { ...healthFixture(), offline: true, checks: [
