@@ -74,6 +74,9 @@ def _setup_review_only_flags(first) -> None:  # noqa: ANN001
                             "(default: the plugin setting, else 3)")
     first.add_argument("--change-proof-max", default=None, metavar="N",
                        help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
+    first.add_argument("--reply-settle-seconds", type=int, default=None, metavar="N",
+                       help="seconds a fix turn a maintainer's reply woke waits before it starts, "
+                            "0-3600, 0 = at once (default: the plugin setting, else 120)")
     first.add_argument("--provider-breaker-failures", default=None, metavar="N",
                        help="turns in a row killed by a provider error before the account waits, "
                             "0-20, 0 = off (default: the plugin setting, else 3)")
