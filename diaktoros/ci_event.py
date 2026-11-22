@@ -61,11 +61,12 @@ def gate(loop: dict, st, payload: dict) -> None:
     with sweep_lock(st, LOCK_WAIT_S) as held:
         if held:
             drain(loop, st, by_head=by_head)
-            if head not in by_head and token not in taken(st):
-                # Its note left the queue untaken (``NUDGES_MAX`` dropped it): read it here, as
-                # the drain would have (F4). Past ``TAKEN_MAX`` this can repeat a holder's read
-                # of the commit, never a turn (``ci_fix`` keys it by head).
-                by_head[head] = _act(loop, st, head, numbers, log)
+            if token not in taken(st):
+                # Its note left the queue untaken (``NUDGES_MAX`` dropped it): read its own PRs
+                # here, as the drain would have (F4), even where a note for the same commit naming
+                # other PRs was taken. Past ``TAKEN_MAX`` this can repeat a holder's read of the
+                # commit, never a turn (``ci_fix`` keys it by head).
+                by_head.setdefault(head, []).extend(_act(loop, st, head, numbers, log))
     if not held:
         silence(f"check_suite @ {head[:7]}: noted for the running watchdog sweep, which takes "
                 "it when it lets the lock go (or the next sweep does)", "accepted")

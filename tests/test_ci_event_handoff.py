@@ -137,6 +137,23 @@ class Handoff(base.Handler):
         self.assertEqual([a[3] for a, _kw in self.queued], [base.HEAD])
         self.assertEqual(self.left(), [])
 
+    def test_a_dropped_note_is_read_for_its_own_prs_beside_a_same_commit_note(self):
+        # Fourth review on #2577: the notes left name #9 at this commit, so the head was taken,
+        # but not this delivery's note for #7: its own PR is still read and queued.
+        self.prs = {7: base.pr(7), 9: base.pr(9)}
+        note = ci_event.note
+
+        def crowded(st, head, numbers):
+            token = note(st, head, numbers)
+            for _ in range(ci_event.NUDGES_MAX):
+                note(st, head, [9])
+            return token
+        with mock.patch.object(ci_event, "note", side_effect=crowded):
+            reason, decision = self.deliver(base.suite(numbers=(7,)))
+        self.assertEqual(decision, "accepted")
+        self.assertIn("CI read for #7", reason)
+        self.assertEqual(sorted(a[2] for a, _kw in self.queued), [7, 9])
+
     def test_the_watchdog_hands_off_after_it_lets_the_lock_go(self):
         import importlib.util
         path = base.Path(__file__).resolve().parents[1] / "scripts/watchdog.py"

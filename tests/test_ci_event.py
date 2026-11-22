@@ -76,9 +76,9 @@ class Handler(unittest.TestCase):
             self.reads.append(f"pr {number}")
             return self.prs.get(number)
 
-        def rows(_repo, _number, _db=None):   # the ledger: what this test queued so far
+        def rows(_repo, number, _db=None):    # the ledger: what this test queued for the PR
             return self.fixes + [{"head": a[3], "state": "pending", "push_confirmed": None}
-                                 for a, _kw in self.queued]
+                                 for a, _kw in self.queued if a[2] == number]
 
         with mock.patch.object(ci_event, "silence", side_effect=silenced), \
              mock.patch.object(gh, "api", side_effect=api), \
