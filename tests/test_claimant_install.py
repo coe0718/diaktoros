@@ -2,13 +2,17 @@
 ``$HERMES_HOME/plugins``, not from the checkout this process loaded, so a claimant that loaded
 another copy (an old plugin folder, a stale checkout a worker was spawned on) is caught.
 
-Real git checkouts in the test's temp ``HERMES_HOME``; nothing is read from a real install.
+Real git checkouts in temp folders, both the install and the "loaded" one (``plugin_root`` is
+patched to it), so the tests never depend on the runner's own checkout being a git repository
+(review on #2572); nothing is read from a real install.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import pathlib
 import shutil
 import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 from diaktoros import claimant, config
 
@@ -26,12 +30,18 @@ def _checkout(path: pathlib.Path) -> str:
                           text=True).stdout.strip()
 
 
+@unittest.skipUnless(shutil.which("git"), "needs a git binary to make the checkouts")
 class InstallFolder(unittest.TestCase):
     def setUp(self):
         self.plugins = config.home() / "plugins"
         self.addCleanup(shutil.rmtree, self.plugins, ignore_errors=True)
-        if not claimant.LOADED:
-            self.skipTest("this checkout is not a git checkout: no loaded commit to compare")
+        loaded = pathlib.Path(tempfile.mkdtemp()) / "loaded"
+        self.addCleanup(shutil.rmtree, loaded.parent, ignore_errors=True)
+        head = _checkout(loaded)
+        for name, value in (("plugin_root", lambda: loaded), ("LOADED", head)):
+            patcher = mock.patch.object(claimant, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_a_process_loaded_from_another_copy_is_stale(self):
         installed = _checkout(self.plugins / "diaktoros")
@@ -67,6 +77,7 @@ class InstallFolder(unittest.TestCase):
     def test_the_loaded_commit_is_the_imported_checkouts_head(self):
         _checkout(self.plugins / "diaktoros")
         self.assertEqual(claimant.loaded_commit(), claimant.LOADED, "the install never moves it")
+        self.assertEqual(claimant.loaded_commit(), claimant._head(claimant.plugin_root()))
 
 
 if __name__ == "__main__":

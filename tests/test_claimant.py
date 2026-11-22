@@ -15,14 +15,16 @@ from diaktoros import claimant
 import test_retryable_turns as turns
 
 OLD, NEW = "1" * 40, "2" * 40
+# #2234: past the 80 characters identity() keeps, wherever the CI interpreter lives.
+LONG_EXE = "/opt/" + "long-interpreter-directory/" * 5 + "python3"
 
 
 class ClaimantLine(unittest.TestCase):
     def test_identity_names_pid_executable_and_plugin_commit(self):
-        with patch.object(claimant, "LOADED", OLD):
+        with patch.object(claimant, "LOADED", OLD), patch.object(sys, "executable", LONG_EXE):
             line = claimant.identity(installed=OLD)
         self.assertIn(f"pid {os.getpid()}", line)
-        self.assertIn(claimant._tail(sys.executable), line, "#2234: any path length")
+        self.assertIn(claimant._tail(LONG_EXE), line, "#2234: any path length")
         self.assertIn(f"plugin {OLD[:7]}", line)
         self.assertNotIn("installed", line, "one commit when loaded and installed agree")
 
@@ -68,12 +70,12 @@ class ClaimantAtClaim(turns.Base):
         self.s.submit('review', 'o/r', 1, turns.HEAD, 'reviewer')
 
     def test_a_claim_read_failure_records_the_claimant(self):
-        with patch.object(claimant, "LOADED", OLD), \
+        with patch.object(claimant, "LOADED", OLD), patch.object(sys, "executable", LONG_EXE), \
              patch.object(claimant, "installed_commit", return_value=OLD):
             self.assertIsNone(self.claim(None))       # gh.api answers None: the read failed
         error = self.s.get("review")["error"]
         self.assertIn("claim-time read failed: PR unreadable", error)
-        self.assertIn(f"[claimant pid {os.getpid()} {claimant._tail(sys.executable)}", error)
+        self.assertIn(f"[claimant pid {os.getpid()} {claimant._tail(LONG_EXE)}", error)
         self.assertIn(f"plugin {OLD[:7]}]", error)
 
     def test_a_claimant_older_than_the_install_refuses_and_leaves_the_run_pending(self):
