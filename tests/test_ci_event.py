@@ -266,6 +266,34 @@ class Handler(unittest.TestCase):
         self.assertEqual(acted, ["CI read for #7", "CI read for #9"])
         self.assertEqual(self.st.kv_get(self.st.dir / ci_event.NUDGES, None), [])
 
+    def test_a_drain_takes_notes_until_none_is_left(self):
+        """#1996: a suite noted during what was the drain's last pass (5) is taken by that drain:
+        its handler, having stopped waiting for the lock, said this drain acts on it."""
+        heads = [f"{i:x}" * 40 for i in range(1, 8)]
+        self.prs = {n: pr(number=n, head=h) for n, h in enumerate(heads, start=10)}
+        act = ci_event.act
+
+        def acting(loop, st, head, numbers):     # each act notes the next commit's suite
+            later = heads.index(head) + 1
+            if later < len(heads):
+                ci_event.note(st, heads[later], [10 + later])
+            return act(loop, st, head, numbers)
+        ci_event.note(self.st, heads[0], [10])
+        with mock.patch.object(ci_event, "act", side_effect=acting):
+            acted = self.deliver(None)
+        self.assertEqual(acted, [f"CI read for #{n}" for n in range(10, 17)])
+        self.assertEqual(self.st.kv_get(self.st.dir / ci_event.NUDGES, None), [])
+
+    def test_a_matching_head_with_no_ledger_yet_is_acted_on_not_declined(self):
+        """#1997: before a loop's first turn there is no ledger, so no review is held for CI:
+        nothing to wake, and the suite on the PR's head is recorded as acted on."""
+        self.state = ci.CIState(passed=["tests (3.11)"])
+        self.sup.db = Path(self.st.dir) / "no-ledger-yet.sqlite"
+        reason, decision = self.deliver(suite())
+        self.assertEqual((reason, decision), ("check_suite @ aaaaaaa: CI read for #7", "accepted"))
+        self.assertEqual(self.woken, [])
+        self.assertFalse(self.sup.db.exists())
+
     def requested(self):
         """A green suite on #7's head, after a confirmed CI fix pushed from ``OLD``, with the
         reviewer seat still requested: the case a lost review request leaves."""

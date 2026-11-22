@@ -37,7 +37,6 @@ from .util import log, register_lock, silence
 LOCK_WAIT_S = 20.0
 NUDGES = "ci-nudges.json"     # suites noted for the lock's holder, newest last
 NUDGES_MAX = 50
-DRAIN_PASSES = 5              # a drain's takes of the notes; any left wait for the next holder
 # The watchdog's per-loop sweep lock (``watchdog.sweep_loop``), in the loop's state directory.
 SWEEP_LOCK = register_lock("sweep.lock")
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -78,13 +77,11 @@ def note(st, head: str, numbers: list[int]) -> None:
 def drain(loop: dict, st, log=log) -> list[str]:
     """Act on every noted suite, once per commit per take, under the sweep lock its caller
     holds: the handler that took it, or the watchdog's sweep as its last step. Notes written
-    while it acts are taken next (review on #1992, F4): their handler may have stopped waiting
-    for the lock. What was acted on."""
+    while it acts are taken next (review on #1992, F4), until a take finds none (#1996): their
+    handler may have stopped waiting for the lock, having said this drain acts on them. It ends:
+    each take clears the notes, and only a new delivery writes one. What was acted on."""
     acted = []
-    for _ in range(DRAIN_PASSES):
-        heads = _take(st)
-        if not heads:
-            break
+    while heads := _take(st):
         for head, numbers in heads.items():
             try:
                 acted += act(loop, st, head, numbers)
@@ -132,7 +129,10 @@ def wake_held_reviews(loop: dict, head: str, prs: list[dict]) -> int:
     """Make the reviews held for CI at ``head`` due now and run the worker's recovery, which
     claims them: the claim re-reads CI and holds one whose checks still run (#241)."""
     from . import gate, run_supervisor
-    sup = run_supervisor.Supervisor(run_supervisor.production_ledger(), create=False)
+    db = run_supervisor.production_ledger()
+    if not os.path.exists(db):             # no ledger yet: no turn, so none held (#1997)
+        return 0
+    sup = run_supervisor.Supervisor(db, create=False)
     released = sum(sup.release_ci_holds(loop["repo"], pr["number"], head) for pr in prs)
     if released:
         gate.resume_isolated(loop)
