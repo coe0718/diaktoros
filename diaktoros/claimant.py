@@ -10,9 +10,12 @@ process made the claim. Two answers here:
   now (a gateway that loads plugins once at start, a watchdog started before a reinstall). Such a
   claimant refuses to claim; the run stays pending for a worker running the installed code.
 
-The commit is the plugin checkout's HEAD, read when this module is first imported (the code this
-process loaded) and again at each check (the code installed now). A plugin that is not a git
-checkout has no commit to compare, so it is never called stale.
+The loaded commit is the HEAD of the checkout this module was imported from, read at first import.
+The installed commit is the HEAD of the plugin's install folder under ``$HERMES_HOME/plugins``,
+read at each check (#2226), so a process that loaded another copy (an old plugin folder, a stale
+checkout a worker was spawned on) is caught too. Without an install folder (a development run),
+the installed side is the loaded checkout itself. A plugin that is not a git checkout has no
+commit to compare, so it is never called stale, even inside another repository's checkout.
 """
 from __future__ import annotations
 
@@ -22,25 +25,52 @@ import re
 import subprocess
 import sys
 
+from . import config
+
+# The install folders Hermes keys by manifest name: the new one, then the one before the rename.
+INSTALL_NAMES = ("diaktoros", "hermes-review-loop")
+
 
 def plugin_root() -> pathlib.Path:
-    """The installed plugin's checkout: the directory holding the ``diaktoros`` package."""
+    """The checkout this process loaded: the directory holding this ``diaktoros`` package."""
     return pathlib.Path(__file__).resolve().parents[1]
 
 
+def install_root() -> pathlib.Path:
+    """The installed plugin's folder under ``$HERMES_HOME/plugins`` (the new name, unless only the
+    old one exists), or ``plugin_root()`` when neither is there."""
+    plugins = config.home() / "plugins"
+    found = [plugins / name for name in INSTALL_NAMES if (plugins / name).is_dir()]
+    return found[0] if found else plugin_root()
+
+
+def loaded_commit() -> str:
+    """The HEAD of the checkout this process loaded, or "" when it is not one."""
+    return _head(plugin_root())
+
+
 def installed_commit() -> str:
-    """The plugin checkout's HEAD now, or "" when it is not a git checkout or git is unreadable."""
+    """The install folder's HEAD now, or "" when it is not a git checkout or git is unreadable."""
+    return _head(install_root())
+
+
+def _head(root: pathlib.Path) -> str:
+    """``root``'s HEAD, or "" unless ``root`` is itself the top of a checkout. git searches parent
+    directories, so an unpacked install inside another repository (a dotfiles home) would report
+    that repository's HEAD as the plugin's: that folder has no commit of its own (#2572 review)."""
     try:
-        proc = subprocess.run(["git", "-C", str(plugin_root()), "rev-parse", "HEAD"],
+        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD"],
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        lines = proc.stdout.splitlines()
+        own = len(lines) == 2 and pathlib.Path(lines[0]).resolve() == root.resolve()
     except (OSError, subprocess.SubprocessError):
         return ""
-    sha = proc.stdout.strip()
+    sha = lines[1].strip() if own else ""
     return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
 
 
 # The commit this process loaded: read once, at first import.
-LOADED = installed_commit()
+LOADED = loaded_commit()
 
 
 def stale(installed: str | None = None) -> str:
