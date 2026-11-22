@@ -237,6 +237,12 @@ class ClaimAndLaunch:
                                      "ORDER BY created,id").fetchall()
             fences = merge_hold.fences(con, time.time())    # before any read (#2468)
         for row in claims.claim_order(candidates):
+            if self.production_config and row['seat'] in self.capacity:
+                # #2609: a row that cannot start now costs no GitHub read; it stays pending
+                # for the worker a freed slot starts. The commit's locked check decides.
+                with self._connect() as con:
+                    if self._blocked(con, row):
+                        continue
             if (self.production_config and row['seat'] in self.capacity
                     and self._ci_poll(row)):
                 waits.note(self, row['id'])     # why it waits, once per reason (#2080)
@@ -450,6 +456,21 @@ class ClaimAndLaunch:
         self._refresh_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
                                    else 'failed')
 
+    def _blocked(self, con, row) -> bool:
+        """Whether ``row`` cannot start now: its PR is occupied by another non-shadow turn, or
+        its seat is at capacity in its repo. A shadow turn (#218) neither occupies the PR nor
+        waits for it: it writes nothing, so the real reviewer and fixer never queue behind it,
+        and it never queues behind them. Capacity is per repo and seat: another repo's rows
+        never consume it."""
+        occupied = row['seat'] != run_supervisor.SHADOW and con.execute(
+            "SELECT 1 FROM runs WHERE repo=? AND pr=? AND " + run_supervisor.NOT_SHADOW + " "
+            "AND (state IN ('claimed','launching','running','uncertain') "
+            "OR push_intent IS NOT NULL)", (row['repo'], row['pr'])).fetchone()
+        used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
+                           "state IN ('claimed','launching','running','uncertain')",
+                           (row['repo'], row['seat'])).fetchone()[0]
+        return bool(occupied) or used >= self._capacity_for(row['repo'], row['seat'])
+
     def _claim_commit(self, row, read: _ClaimRead):
         """Settle one candidate under the writer lock from what its read found: claim it
         (returning ``(id, owner)``), retire it, back it off, or leave it pending (None)."""
@@ -468,18 +489,8 @@ class ClaimAndLaunch:
                 con.execute('COMMIT')
                 self._refresh_check(None, row, 'cancelled')     # #2326
                 return None
-            # Recheck both capacity and PR occupancy under the writer lock. A shadow turn
-            # (#218) neither occupies the PR nor waits for it: it writes nothing, so the real
-            # reviewer and fixer never queue behind it, and it never queues behind them.
-            occupied = row['seat'] != run_supervisor.SHADOW and con.execute(
-                "SELECT 1 FROM runs WHERE repo=? AND pr=? AND " + run_supervisor.NOT_SHADOW + " "
-                "AND (state IN ('claimed','launching','running','uncertain') "
-                "OR push_intent IS NOT NULL)", (row['repo'], row['pr'])).fetchone()
-            # Capacity is per repo and seat: another repo's rows never consume it.
-            used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
-                               "state IN ('claimed','launching','running','uncertain')",
-                               (row['repo'], row['seat'])).fetchone()[0]
-            if occupied or used >= self._capacity_for(row['repo'], row['seat']):
+            # Recheck both capacity and PR occupancy under the writer lock (``_blocked``).
+            if self._blocked(con, row):
                 con.execute("COMMIT")
                 return None
             now = time.time()

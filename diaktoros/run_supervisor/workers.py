@@ -46,6 +46,29 @@ def process_state(pid: int | None, launched: float | None) -> str:
 
 
 LINGER_MARK = '.linger.'
+POLLER = '.poller'
+
+
+def _poller_lock(db: Path):
+    """The ledger's one CI poller lock (``<ledger>.poller``, #2609): an open file holding an
+    exclusive ``flock`` when this worker is the poller, False when another worker holds it, None
+    when the lock cannot be taken at all (the worker then polls unlocked, as before: a missing
+    lock must not stop the polling). The kernel drops the lock when the file closes or the
+    process ends, so a killed poller never blocks the next one."""
+    db = Path(db)
+    try:
+        handle = open(db.with_name(db.name + POLLER), 'a')
+    except OSError:
+        return None
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return False
+    except OSError:
+        handle.close()
+        return None
+    return handle
 
 
 def linger_mark(db: Path, pid: int) -> Path:
@@ -705,17 +728,29 @@ class WorkerLifecycle:
         maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by any worker."""
         if not self.held_for_ci and not self.settling():
             return
+        # One poller per ledger (#2609): each lingerer polls every held row, not only its own,
+        # and every wake can start a worker that lingers too. With ~30 PRs held for CI, workers
+        # kept starting each other: 9,200 in an hour, and GitHub's read limit ran out. A worker
+        # that finds another lingering leaves the polling to it.
+        poller = _poller_lock(self.db)
+        if poller is False:
+            return
         def marked_sleep(seconds):
             # Marked only while asleep (#1811): a worker in its database reads or in recover()
             # is at work, and a hang there must fail a test's exit check, not be ended.
             with lingering(self.db):
                 sleep(seconds)
-        self._linger_until_due(marked_sleep)
+        try:
+            self._linger_until_due(marked_sleep)
+        finally:
+            if poller is not None:
+                poller.close()          # the kernel drops the lock with the descriptor
 
     def _linger_until_due(self, sleep) -> None:
         """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row
         and ``recover()`` it, until the window closes or nothing falls due in it."""
-        deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
+        window = max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
+        deadline, end = time.time() + window, time.time() + run_supervisor.POLLER_MAX_S
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
                   run_supervisor.CLAIM_READ_FAILED, run_supervisor.SETTLE_HOLD)
         recovered = None
@@ -733,6 +768,9 @@ class WorkerLifecycle:
                 # worker backed off may fall due later in the window (#1302): keep waiting.
                 self.recover()
                 recovered = due
+                # The one poller (#2609) stays while rows keep falling due, other workers'
+                # included, since they leave the polling to it; at most POLLER_MAX_S.
+                deadline = min(time.time() + window, end)
                 continue
             sleep(min(due - time.time(), deadline - time.time()) + 1)
 

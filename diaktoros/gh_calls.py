@@ -29,6 +29,7 @@ import os
 import pathlib
 import random
 import re
+import sys
 import time
 from collections import Counter
 
@@ -43,6 +44,7 @@ _counts: Counter = Counter()   # (hour, login, method, shape, outcome) -> calls
 _limits: dict = {}             # login -> the newest rate-limit headers seen, with when
 _pending = 0
 _name = ""
+_caller = ""                   # which program this process is (#2609); see ``caller``
 _registered = False
 
 
@@ -127,6 +129,18 @@ def record(login: str, method: str, path: str, result: str, headers: dict | None
         return
 
 
+def set_caller(name: str) -> None:
+    """Name the program this process is (``worker``, ``gate_reviewer``, ``watchdog``), written into
+    its count file so ``hermes dk calls`` can say which program made the calls (#2609)."""
+    global _caller
+    _caller = str(name)[:60]
+
+
+def caller() -> str:
+    """This process's program: the name ``set_caller`` gave, else its entry script's."""
+    return _caller or os.path.basename(sys.argv[0] or "") or "unknown"
+
+
 def _writable() -> bool:
     from . import gh_cache, hostdirs
     if hostdirs.in_worker():
@@ -156,7 +170,8 @@ def flush() -> None:
             del _counts[key]
         rows = [[*key, n] for key, n in _counts.items()]
         directory().mkdir(parents=True, exist_ok=True, mode=0o700)
-        atomic_write(directory() / _name, json.dumps({"counts": rows, "limits": _limits}))
+        atomic_write(directory() / _name, json.dumps({"counts": rows, "limits": _limits,
+                                                      "caller": caller()}))
         _pending = 0
     except (OSError, TypeError, ValueError):
         return
@@ -183,14 +198,15 @@ def prune(now: float | None = None) -> int:
 
 
 def _empty() -> dict:
-    return {**{result: 0 for result in OUTCOMES}, "limit": None}
+    return {**{result: 0 for result in OUTCOMES}, "limit": None, "callers": {}}
 
 
 def summary(since: float) -> dict:
     """Every process's counts from the hour holding ``since`` on, by login: ``{login: {"spent",
     "free", "limited", "unsent", "error", "paths": [[method, shape, outcome, calls], ...] (most first),
-    "limit": the newest rate-limit headers seen, or None}}``. Read-only; unreadable files are
-    skipped."""
+    "limit": the newest rate-limit headers seen, or None, "callers": {program: {"processes",
+    "calls", "spent"}} (#2609; a file from before callers were recorded is ``unknown``)}}``.
+    Read-only; unreadable files are skipped."""
     start = int(since // 3600 * 3600)
     logins: dict = {}
     paths: dict = {}
@@ -198,8 +214,10 @@ def summary(since: float) -> dict:
         try:
             data = json.loads(file.read_text())
             rows, limits = data["counts"], data.get("limits") or {}
-        except (OSError, ValueError, KeyError, TypeError):
+            program = str(data.get("caller") or "unknown")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
+        counted: set = set()
         for row in rows if isinstance(rows, list) else []:
             try:
                 hour, login, method, path, result, calls = row
@@ -209,6 +227,13 @@ def summary(since: float) -> dict:
                 entry[str(result)] = entry.get(str(result), 0) + int(calls)
                 key = (str(login), str(method), str(path), str(result))
                 paths[key] = paths.get(key, 0) + int(calls)
+                by = entry.setdefault("callers", {}).setdefault(
+                    program, {"processes": 0, "calls": 0, "spent": 0})
+                by["calls"] += int(calls)
+                by["spent"] += int(calls) if str(result) == "spent" else 0
+                if str(login) not in counted:
+                    counted.add(str(login))
+                    by["processes"] += 1
             except (TypeError, ValueError):
                 continue
         for login, seen in limits.items() if isinstance(limits, dict) else []:

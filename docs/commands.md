@@ -294,6 +294,11 @@ other `hermes dk` commands (`doctor`, `explain`, `status`, `stats --github`, `up
 rest), and not the Desktop until it runs a review. Read-only. The files hold logins and path
 shapes only: no token, body or error text.
 
+Each login also lists which programs made its calls (#2609): `by worker`, `by gate_reviewer.py`,
+`by watchdog.py` and so on, with how many processes, calls and spent calls each. A count file
+from before programs were recorded shows as `by unknown`. Many processes of one program in an
+hour is the sign of a runaway.
+
 <!-- flags:calls -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |

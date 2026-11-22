@@ -84,6 +84,11 @@ def cmd_calls(args) -> int:
                   f"({limit.get('resource') or 'core'}), resets {reset}")
         for method, path, result, calls in entry["paths"][:args.top]:
             print(f"  {calls:>7,}  {method:<6} {path}  ({result})")
+        # Which programs made them (#2609): a runaway shows as many processes of one program.
+        for program, by in sorted(entry.get("callers", {}).items(),
+                                  key=lambda item: -item[1]["calls"])[:args.top]:
+            print(f"  by {program}: {by['processes']:,} process(es) · {by['calls']:,} calls · "
+                  f"{by['spent']:,} spent")
     print("\nNot counted: a process that never ran a gate (the hermes dk commands other than "
           "review, such as doctor, explain, status, stats and update; the Desktop until it runs "
           "a review), and any call made from somewhere else with the same credential. GitHub's "
