@@ -352,7 +352,10 @@ class LostWorker(Base):
     def lost(self, pid=None, seat='reviewer', turn_key='', **extra):
         sup = self.sup()
         sup.submit('d', REPO, 1, HEAD, seat, turn_key=turn_key)
-        pid = self.dead_pid() if pid is None else pid
+        if pid is None:
+            # A launch stamp, as _run_one writes it: the attempt a claim or marker names.
+            pid = self.dead_pid()
+            extra.setdefault('launch_intent', time.time() - 120)
         self.set_state('d', 'running', owner='gone', pid=pid, lease=time.time() - 60, **extra)
         run_id = sup.get('d')['id']
         self.assertEqual(sup.cancel(run_id), {'was': 'running', 'state': 'stopping'})
@@ -457,22 +460,100 @@ class LostWorker(Base):
         self.assertEqual(sup.get('d')['state'], 'uncertain')
         self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
 
-    def test_recover_hands_back_the_breach_marker_of_a_lost_adjudicator_it_cancels(self):
-        # #1767: the ruling was marked 'adjudicating' before launch; a cancelled lost turn made
-        # none, so its retry must be able to start the marker again.
+    def breach_marker(self, st):
+        """An ``awaiting-adjudication`` marker for PR 1 at HEAD, round 3."""
         import json
-        st = self.loop_state()
         st.dir.mkdir(parents=True, exist_ok=True)
         st.breach.write_text(json.dumps({f'{REPO}#1': {
             'pr': 1, 'head': HEAD, 'rounds': 3, 'status': 'awaiting-adjudication'}}))
-        self.assertIsNotNone(st.breach_start(1, HEAD, 3))
+
+    @staticmethod
+    def launch(st, row, start=True):
+        """What a worker's launch of ``row`` holds, as ``_production_turn`` and
+        ``_prepare_verdict_launch`` take them: its seat claim, then (unless it dies before,
+        ``start=False``) the marker, both stamped with this launch's attempt."""
+        from diaktoros.run_supervisor import claims
+        claim = claims.claim_seat(st.loop, row, 600.0)
+        started = (st.breach_start(row['pr'], row['head'], 3,
+                                   attempt=claims.attempt_of(row['id'], row['launch_intent']))
+                   if start else None)
+        return claim, started
+
+    def test_recover_hands_back_the_breach_marker_of_a_lost_adjudicator_it_cancels(self):
+        # #1767: the ruling was marked 'adjudicating' before launch; a cancelled lost turn made
+        # none, so its retry must be able to start the marker again.
+        st = self.loop_state()
+        self.breach_marker(st)
         sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        claim, started = self.launch(st, sup.get('d'))
+        self.assertIsNotNone(started)
         sup.recover()
         self.assertEqual((sup.get('d')['state'], sup.get('d')['error']),
                          ('cancelled', OPERATOR_CANCEL))
         self.assertEqual(st.breach_get(1)['status'], 'awaiting-adjudication')
+        self.assertNotIn(f'{REPO}#1', st.live_locks('adjudicator'))
         self.assertEqual(sup.retry(run_id), 'pending')
         self.assertIsNotNone(st.breach_start(1, HEAD, 3))     # the retried turn's launch step
+
+    def test_recover_late_cleanup_keeps_a_retried_attempts_claim_and_marker(self):
+        # Review F1 on #2600: recover() cleans up after its COMMIT, so the operator's retry can
+        # relaunch the same run id first. The late cleanup must leave the retry's claim and its
+        # 'adjudicating' marker alone. Deterministic: recover's cleanup is paused at its
+        # call, the retry is relaunched, then the real cleanup runs. The lost attempt took its
+        # seat (turns.py, _production_turn) and died before breach_start, as in the review.
+        from diaktoros.run_supervisor import workers
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        self.assertIsNotNone(self.launch(st, sup.get('d'), start=False)[0])
+        real = workers._end_lost_cancel
+        retried = {}
+
+        def retry_first(row):
+            self.assertEqual(sup.retry(run_id), 'pending')
+            self.set_state('d', 'running', owner='w2', pid=os.getpid(),
+                           launch_intent=time.time(), lease=time.time() + 600)
+            retried['claim'], retried['started'] = self.launch(st, sup.get('d'))
+            real(row)
+
+        with patch.object(workers, '_end_lost_cancel', retry_first):
+            sup.recover()
+        self.assertIsNotNone(retried['claim'])
+        self.assertIsNotNone(retried['started'])
+        self.assertEqual(sup.get('d')['state'], 'running')
+        self.assertEqual(st.breach_get(1)['status'], 'adjudicating',
+                         "the retry's ruling is out: its marker is not handed back")
+        self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
+        self.assertEqual(st.live_locks('adjudicator').get(f'{REPO}#1', {}).get('run'), run_id,
+                         "the retry's seat claim is kept")
+        # And the retry's own end still frees what it holds.
+        from diaktoros.run_supervisor import claims
+        claims.release_seat(retried['claim'], 'failed')
+        self.assertNotIn(f'{REPO}#1', st.live_locks('adjudicator'))
+
+    def test_recover_leaves_a_marker_the_lost_attempt_never_started(self):
+        # Review F2 on #2600: the lost worker died before its breach_start, and another actor
+        # (a legacy gateway route, or another launch) started the marker. Recovery must not
+        # hand that actor's ruling back.
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        self.assertIsNotNone(st.breach_claim(1, HEAD))        # the gateway's claim
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertEqual(st.breach_get(1)['status'], 'adjudicating')
+        self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
+
+    def test_recover_leaves_a_marker_another_launch_started(self):
+        # F2, the isolated-run side: another launch stamped the marker as its own.
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        self.assertIsNotNone(st.breach_start(1, HEAD, 3, attempt='other@1.0'))
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertEqual(st.breach_get(1)['status'], 'adjudicating')
+        self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
 
 
 class Selection(Base):
@@ -655,14 +736,15 @@ class ProductionTurn(Base):
         sup.production_config = self.root / 'unused'
         sup.submit('d', REPO, 1, HEAD, 'adjudicator')
         breach = SimpleNamespace(resumed=[])
-        breach.breach_resume = lambda pr, head, rounds: breach.resumed.append((pr, head, rounds))
+        breach.breach_resume = lambda pr, head, rounds, attempt=None: breach.resumed.append(
+            (pr, head, rounds))
 
         def turn(t):
             with sup._connect() as con:
                 t.row = con.execute("SELECT * FROM runs WHERE id=?", (t.run_id,)).fetchone()
                 con.execute("UPDATE runs SET state='running' WHERE id=?", (t.run_id,))
                 con.execute("UPDATE runs SET cancel_requested=1 WHERE id=?", (t.run_id,))
-            t.loop, t.breach = LOOP, (breach, 2)
+            t.loop, t.breach = LOOP, (breach, 2, 'attempt')
             raise contained.Stopped()
 
         with patch.object(sup, '_claim_read_live', lambda row, read: None), \

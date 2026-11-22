@@ -745,15 +745,24 @@ def _end_lost_cancel(row) -> None:
     """The end-of-turn cleanup the worker's own completion path (``_production_finish``) does
     for a ``cancelled`` run with no write-ahead record, done by ``recover`` for a run whose
     worker died before reaching it (#1767): an adjudicator's breach marker handed back from
-    ``adjudicating`` (only this head and round, so its ``retry`` can start it again), then its
-    seat claim and in-flight mark freed. Best effort, like both of those."""
+    ``adjudicating``, then its seat claim and in-flight mark freed. Best effort, like both.
+
+    It runs after the cancel is committed, so the run may already be retried and relaunched,
+    and another actor may hold the marker. Both acts name the lost launch (``row`` carries its
+    ``launch_intent``; ``claims.attempt_of``), and the marker and the claim carry the launch
+    that took them: only what this attempt itself started or claimed is handed back or freed.
+    A marker the lost attempt never started (it died before ``breach_start``), or one started
+    by a gateway, another run or the retry, is left alone."""
+    attempt = claims.attempt_of(row['id'], row['launch_intent'])
     try:
         from .. import config, state as state_mod
         from . import pr_facts
         rounds = pr_facts.breach_rounds(row['turn_key'])
-        loop = config.by_repo(row['repo']) if row['seat'] == 'adjudicator' and rounds else None
+        loop = (config.by_repo(row['repo'])
+                if row['seat'] == 'adjudicator' and rounds and attempt is not None else None)
         if loop is not None:
-            state_mod.state_for(loop).breach_resume(row['pr'], row['head'], rounds)
+            state_mod.state_for(loop).breach_resume(row['pr'], row['head'], rounds,
+                                                    attempt=attempt)
     except Exception:
         pass
     _release_claim(row, row['id'])
@@ -762,7 +771,9 @@ def _end_lost_cancel(row) -> None:
 def _release_claim(row, run_id: str) -> None:
     """Free an ended run's seat claim and in-flight mark, which it kept until now (#98): an
     uncertain one reconciled or settled, or a lost one ``recover`` cancelled (#1767). Best
-    effort: the ledger row is the decision; a loop no longer configured has none."""
+    effort: the ledger row is the decision; a loop no longer configured has none. Only the
+    claim of the attempt ``row['launch_intent']`` names: the run may be retried by the time
+    this runs, and its retry's claim stays (#1767)."""
     try:
         from .. import config, gate, state as state_mod
         loop = config.by_repo(row['repo'])
@@ -770,8 +781,9 @@ def _release_claim(row, run_id: str) -> None:
             st = state_mod.state_for(loop)
             # Only the claim this run wrote: the ledger row left `uncertain` already, so a
             # newer run may already hold this seat/PR/head, and keeps its claim and mark.
-            if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
-                              run=run_id) and row['seat'] in claims.INFLIGHT_LABEL):
+            if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'], run=run_id,
+                              attempt=claims.attempt_of(run_id, row['launch_intent']))
+                    and row['seat'] in claims.INFLIGHT_LABEL):
                 st.inflight_clear(f"{claims.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
     except Exception:
         pass
