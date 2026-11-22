@@ -22,7 +22,9 @@ read whole (#1147); only past the page bound (or when the page past it cannot be
 the sweep work on the newest issues it read and return an alert line saying the older ones were not
 checked, with the listing's reason (#1037). A listing the watchdog's budget cuts (``gh_paging``)
 reads on from the page it stopped at in the next sweep (``RESUME_FILE``), then starts over from
-page 1, so a page the budget never reaches from page 1 is still read (review on #2578).
+page 1, so a page the budget never reaches from page 1 is still read (review on #2578). It reads
+on only once every candidate on the pages it read was queued: one left (past ``PER_SWEEP``, or the
+ledger or worker down) has the next sweep read those pages again (F4).
 """
 from __future__ import annotations
 
@@ -92,6 +94,8 @@ def resume_page(st) -> int:
 
 
 RESUME_NOTE = {"saved": ", the next sweep reads on from there",
+               "held": "; issues it read still wait to be queued, so the next sweep reads "
+                       "those pages again",
                "cleared": "; where it stopped could not be saved, so the next sweep starts "
                           "again from page 1",
                "stale": "; where it stopped could not be saved, and an older saved page could "
@@ -117,6 +121,33 @@ def keep_resume(st, progress: dict) -> str:
         return "stale"
 
 
+def queue_missed(loop: dict, st, issues: list, now: float) -> tuple[list[str], bool]:
+    """Queue up to ``PER_SWEEP`` missed triages from ``issues``: the lines, and whether every
+    candidate among them was queued (none left past the bound, the ledger or the worker: F4)."""
+    lines: list[str] = []
+    try:
+        queued = gate.isolated_supervisor(loop).seat_numbers(loop["repo"], "triage")
+    except Exception as exc:              # no private runtime / ledger: the gate cannot enqueue either
+        log(f"triage sweep: run ledger unavailable: {type(exc).__name__}: {exc}")
+        return lines, False
+    found = candidates(loop, issues, queued, now)
+    for number in found[:PER_SWEEP]:
+        try:
+            outcome = gate.enqueue_isolated(loop, "triage", number, config.TRIAGE_HEAD,
+                                            turn_key="triage")
+        except Exception as exc:
+            lines.append(f"⚠️ Diaktoros [{loop['id']}] issue #{number} triage not queued: "
+                         f"isolated worker unavailable: {type(exc).__name__}: {exc} "
+                         "— retrying next sweep")
+            return lines, False           # the worker is the same for every issue
+        log(f"issue #{number} triage {outcome} (recovery sweep)")
+        if outcome in ("enqueued", "rearmed", "pending"):
+            st.late_triage_note(number, now, outcome)
+            lines.append(f"Diaktoros [{loop['id']}] issue #{number} triage queued late: the "
+                         "webhook delivery was missed")
+    return lines, len(found) <= PER_SWEEP
+
+
 def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     """Queue the triage turn of each issue whose delivery was missed; return the alert lines."""
     ledger_down = resolve_late(loop, st)
@@ -129,38 +160,20 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     if issues is None:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
-    kept = keep_resume(st, progress)
+    # The ledger cleanup just logged why it is down: one line per cause, nothing queued.
+    queued, drained = ([], False) if ledger_down else queue_missed(loop, st, issues, now)
+    held = "next" in progress and not drained       # these pages again, not the next (F4)
+    kept = keep_resume(st, ({"next": start} if start > 1 else {}) if held else progress)
     lines: list[str] = []
     if error:                             # not proven whole: the newest were read, older not
         log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
         which = (f"the newest {len(issues)}" if start == 1 else
                  f"{len(issues)} (from page {start}, the newer ones last sweep)")
+        note = RESUME_NOTE["held" if held and kept == "saved" else kept]
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only {which} "
                      f"open issues/PRs ({gh.one_line(error)}); older issues inside the sweep "
-                     "window were not checked" + (RESUME_NOTE[kept] if "next" in progress
-                                                  else ""))
+                     "window were not checked" + (note if "next" in progress else ""))
     if kept == "stale" and "next" not in progress:
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep could not reset where "
                      "its listing starts: the next sweep may skip the newest open issues")
-    if ledger_down:                       # the cleanup just logged why: one line per cause
-        return lines
-    try:
-        queued = gate.isolated_supervisor(loop).seat_numbers(loop["repo"], "triage")
-    except Exception as exc:              # no private runtime / ledger: the gate cannot enqueue either
-        log(f"triage sweep: run ledger unavailable: {type(exc).__name__}: {exc}")
-        return lines
-    for number in candidates(loop, issues, queued, now)[:PER_SWEEP]:
-        try:
-            outcome = gate.enqueue_isolated(loop, "triage", number, config.TRIAGE_HEAD,
-                                            turn_key="triage")
-        except Exception as exc:
-            lines.append(f"⚠️ Diaktoros [{loop['id']}] issue #{number} triage not queued: "
-                         f"isolated worker unavailable: {type(exc).__name__}: {exc} "
-                         "— retrying next sweep")
-            break                         # the worker is the same for every issue
-        log(f"issue #{number} triage {outcome} (recovery sweep)")
-        if outcome in ("enqueued", "rearmed", "pending"):
-            st.late_triage_note(number, now, outcome)
-            lines.append(f"Diaktoros [{loop['id']}] issue #{number} triage queued late: the "
-                         "webhook delivery was missed")
-    return lines
+    return lines + queued

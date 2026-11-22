@@ -24,8 +24,9 @@ PRS = [tts.issue(900 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)]
 
 
 class ResumedSweep(tts.SweepBase):
-    def run_sweep(self, left_after_page1: float, page2=None, budget: float = 20.0):
-        """One sweep; page 1 leaves ``left_after_page1`` seconds. ``page2(path)`` answers page 2."""
+    def run_sweep(self, left_after_page1: float, page2=None, budget: float = 20.0, page1=PRS):
+        """One sweep; page 1 (``page1``) leaves ``left_after_page1`` seconds. ``page2(path)``
+        answers page 2."""
         seen = []
 
         def fetch(loop, path, *args, **kw):
@@ -34,7 +35,7 @@ class ResumedSweep(tts.SweepBase):
             seen.append(path)
             if "&page=" not in path:
                 scope["deadline"] = time.monotonic() + left_after_page1
-                return PRS, None
+                return page1, None
             if path.endswith("&page=2"):
                 return page2(path) if page2 else ([tts.issue(8)], None)
             return [], None
@@ -106,6 +107,29 @@ class ResumedSweep(tts.SweepBase):
         self.assertTrue(seen[0].endswith("&page=2"))
         self.assertEqual(len(alerts), 1, alerts)
         self.assertIn("could not reset where its listing starts", alerts[0])
+
+    def test_a_cut_page_is_read_again_until_every_candidate_on_it_is_queued(self):
+        # Review on #2578, F4: the resume point moved past a cut page before its candidates were
+        # queued, so those past the sweep's bound (or a worker that was down) were skipped.
+        from diaktoros import triage_sweep
+        page1 = [tts.issue(n, age=7200.0 + n) for n in range(100, 115)] + PRS[:85]   # and PRs
+
+        def down(*_args, **_kwargs):
+            raise RuntimeError("worker down")
+        with mock.patch.object(self, "fake_enqueue", side_effect=down):
+            alerts, _, _ = self.run_sweep(2.0, page1=page1)     # cut after page 1, none queued
+        self.assertIn("still wait to be queued", alerts[0])
+        self.assertEqual((self.queued(), triage_sweep.resume_page(self.st)), ([], 1))
+        alerts, seen, _ = self.run_sweep(2.0, page1=page1)      # page 1 again: ten of fifteen
+        self.assertNotIn("&page=", seen[0])
+        self.assertEqual((len(self.queued()), triage_sweep.resume_page(self.st)), (10, 1))
+        alerts, seen, _ = self.run_sweep(2.0, page1=page1)      # page 1 again: the last five
+        self.assertNotIn("&page=", seen[0])
+        self.assertEqual(sorted(self.queued()), list(range(100, 115)))
+        self.assertIn("reads on from there", alerts[0])
+        alerts, seen, _ = self.run_sweep(2.0, page1=page1)      # only now on to page 2
+        self.assertTrue(seen[0].endswith("&page=2"))
+        self.assertEqual((alerts, self.queued()[-1]), ([], 8))
 
 
 if __name__ == "__main__":
