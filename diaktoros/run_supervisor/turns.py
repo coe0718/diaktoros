@@ -237,12 +237,9 @@ class ClaimAndLaunch:
                                      "ORDER BY created,id").fetchall()
             fences = merge_hold.fences(con, time.time())    # before any read (#2468)
         for row in claims.claim_order(candidates):
-            if self.production_config and row['seat'] in self.capacity:
-                # #2609: a row that cannot start now costs no GitHub read; it stays pending
-                # for the worker a freed slot starts. The commit's locked check decides.
-                with self._connect() as con:
-                    if self._blocked(con, row):
-                        continue
+            if (self.production_config and row['seat'] in self.capacity
+                    and self._unstartable(row)):
+                continue        # #2609: no GitHub read for a row that cannot start now
             if (self.production_config and row['seat'] in self.capacity
                     and self._ci_poll(row)):
                 waits.note(self, row['id'])     # why it waits, once per reason (#2080)
@@ -470,6 +467,13 @@ class ClaimAndLaunch:
                            "state IN ('claimed','launching','running','uncertain')",
                            (row['repo'], row['seat'])).fetchone()[0]
         return bool(occupied) or used >= self._capacity_for(row['repo'], row['seat'])
+
+    def _unstartable(self, row) -> bool:
+        """Whether ``row`` cannot start now (``_blocked``, read without the writer lock). Such a
+        row costs no GitHub read (#2609): it stays pending for the worker a freed slot starts,
+        and the commit's locked check still decides."""
+        with self._connect() as con:
+            return self._blocked(con, row)
 
     def _claim_commit(self, row, read: _ClaimRead):
         """Settle one candidate under the writer lock from what its read found: claim it

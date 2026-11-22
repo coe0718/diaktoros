@@ -80,6 +80,7 @@ PUSH_SETTLED = "push quarantine settled: nothing written:"
 CLAIM_READ_FAILED = "claim-time read failed"
 CI_POLL_S = 90
 POLLER_MAX_S = 3600.0   # the one lingering CI poller (#2609) hands over after this long
+POLL_SLICE_S = 30.0     # and sleeps at most this long, to see rows held meanwhile
 # The CI light poll's live maintainer-hold read (#1708): once per this many seconds of a hold,
 # so a hold the watchdog sweep has not recorded yet is still seen within this bound.
 CI_HOLD_READ_S = 10 * 60

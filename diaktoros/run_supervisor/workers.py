@@ -26,7 +26,7 @@ import time
 
 from .. import envnames, run_supervisor, util
 from ..hostdirs import WORKER_ENV, in_worker
-from . import claims, waits
+from . import claims, poller, waits
 
 
 def process_state(pid: int | None, launched: float | None) -> str:
@@ -46,33 +46,6 @@ def process_state(pid: int | None, launched: float | None) -> str:
 
 
 LINGER_MARK = '.linger.'
-POLLER = '.poller'
-
-
-def _poller_lock(db: Path):
-    """The ledger's one CI poller lock (``<ledger>.poller``, #2609): an open file holding an
-    exclusive ``flock`` when this worker is the poller, False when another worker holds it, None
-    when the lock cannot be taken at all (the worker then polls unlocked, as before: a missing
-    lock must not stop the polling). The kernel drops the lock when the file closes or the
-    process ends, so a killed poller never blocks the next one."""
-    db = Path(db)
-    try:
-        # Read-only, made if missing: the file is never written, only locked.
-        handle = os.fdopen(os.open(db.with_name(db.name + POLLER),
-                                   os.O_RDONLY | os.O_CREAT | os.O_CLOEXEC, 0o600), 'rb')
-    except OSError:
-        return None
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        handle.close()
-        return False
-    except OSError:
-        handle.close()
-        return None
-    return handle
-
-
 def linger_mark(db: Path, pid: int) -> Path:
     """The file ``<ledger>.linger.<pid>`` that process ``pid`` keeps beside the ledger while it
     is inside ``linger_for_ci`` (#1811): the mark by which a test's cleanup tells a lingering
@@ -727,15 +700,18 @@ class WorkerLifecycle:
         sweep interval later, would otherwise start a row waiting out a backoff (#1302). Only a
         row due within this linger's window is waited for: the second and later read-failure
         backoffs (4 min and up) are the watchdog sweep's, as before. A fix turn settling after a
-        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by any worker."""
-        if not self.held_for_ci and not self.settling():
+        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by any worker.
+
+        One poller per ledger (#2609): each lingerer polled every held row, not only its own,
+        and every wake could start a worker that lingered too. With ~30 PRs held for CI, workers
+        kept starting each other: 9,200 in an hour, and GitHub's read limit ran out. Now only
+        the worker holding ``<ledger>.poller`` polls; one that finds it held leaves the polling
+        to it. Any worker takes the polling up when rows are due soon and nobody polls, and a
+        poller that stops at ``POLLER_MAX_S`` with rows still due soon starts its successor."""
+        if not self.held_for_ci and not self.settling() and not self._due_soon():
             return
-        # One poller per ledger (#2609): each lingerer polls every held row, not only its own,
-        # and every wake can start a worker that lingers too. With ~30 PRs held for CI, workers
-        # kept starting each other: 9,200 in an hour, and GitHub's read limit ran out. A worker
-        # that finds another lingering leaves the polling to it.
-        poller = _poller_lock(self.db)
-        if poller is False:
+        held = poller.lock(self.db)
+        if held is False:
             return
         def marked_sleep(seconds):
             # Marked only while asleep (#1811): a worker in its database reads or in recover()
@@ -743,38 +719,55 @@ class WorkerLifecycle:
             with lingering(self.db):
                 sleep(seconds)
         try:
-            self._linger_until_due(marked_sleep)
+            ran_out = self._linger_until_due(marked_sleep)
         finally:
-            if poller is not None:
-                poller.close()          # the kernel drops the lock with the descriptor
+            if held is not None:
+                held.close()            # the kernel drops the lock with the descriptor
+        if ran_out and self._due_soon():
+            self._spawn()               # the successor takes the lock and polls (#2609)
 
-    def _linger_until_due(self, sleep) -> None:
+    def _polled_due(self) -> float | None:
+        """The earliest due time of a waiting row a lingerer polls, or None."""
+        with self._connect() as con:
+            return con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
+                               + " OR ".join("error LIKE ?" for _ in poller.polled()) + ")",
+                               tuple(hold + '%' for hold in poller.polled())).fetchone()[0]
+
+    def _due_soon(self) -> bool:
+        """Whether a polled row falls due within a linger's window from now."""
+        due = self._polled_due()
+        return due is not None and due <= time.time() + poller.window()
+
+    def _linger_until_due(self, sleep) -> bool:
         """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row
-        and ``recover()`` it, until the window closes or nothing falls due in it."""
-        window = max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
+        and ``recover()`` it, until the window closes or nothing falls due in it. The window
+        restarts at each recovery, since this one poller polls every worker's rows, up to
+        ``POLLER_MAX_S``. It sleeps at most ``POLL_SLICE_S`` at a time, so a row another worker
+        holds meanwhile, due sooner than the one it waits for, is not left late (#2609).
+        True when it stopped because its time ran out (the window, or ``POLLER_MAX_S``), not
+        because nothing was due or a due row could not be released."""
+        window = poller.window()
         deadline, end = time.time() + window, time.time() + run_supervisor.POLLER_MAX_S
-        polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
-                  run_supervisor.CLAIM_READ_FAILED, run_supervisor.SETTLE_HOLD)
         recovered = None
         while time.time() < deadline:
-            with self._connect() as con:
-                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
-                                  + " OR ".join("error LIKE ?" for _ in polled) + ")",
-                                  tuple(hold + '%' for hold in polled)).fetchone()[0]
-            if due is None or due > deadline:
-                return          # nothing due in this window: the watchdog sweep is the backstop
+            due = self._polled_due()
+            if due is None:
+                return False
+            if due > deadline:
+                # Nothing due in this window: the watchdog sweep is the backstop. But a window
+                # the cap cut short ran out: the successor polls what falls due after it.
+                return deadline >= end
             if due <= time.time():
                 if due == recovered:
-                    return      # recover() did not release it: do not spin on it
+                    return False    # recover() did not release it: do not spin on it
                 # Not a return: the earliest due row may be another worker's, and the row this
                 # worker backed off may fall due later in the window (#1302): keep waiting.
                 self.recover()
                 recovered = due
-                # The one poller (#2609) stays while rows keep falling due, other workers'
-                # included, since they leave the polling to it; at most POLLER_MAX_S.
                 deadline = min(time.time() + window, end)
                 continue
-            sleep(min(due - time.time(), deadline - time.time()) + 1)
+            sleep(min(due - time.time(), deadline - time.time(), run_supervisor.POLL_SLICE_S) + 1)
+        return True
 
 
 def _worker_gone(row) -> bool:
