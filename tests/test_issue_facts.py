@@ -116,6 +116,17 @@ class IssueFacts(unittest.TestCase):
         body = "## Requirements\n  - one: met\n      - evidence: tests/a.py\n"
         self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
 
+    def test_a_separate_later_list_is_read_from_its_own_first_item(self):
+        # Second review on #2573 (F2): a later list after prose may be indented two spaces and
+        # is still top level; nested evidence after a blank line still needs no status.
+        body = "## Requirements\n- first: met\n\nMore requirements:\n  - second: export flag\n"
+        self.assertIn("- second: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
+        for body in ("## Requirements\n- first: met\n\n  - evidence: tests/a.py\n",
+                     "## Requirements\n- first: met\n\n  Checked by hand:\n\n  - evidence: a\n",
+                     "## Requirements\n- first: met\nlazy text\n  - evidence: tests/a.py\n"):
+            with self.subTest(body):
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
     def test_a_section_with_no_status_names_its_unmarked_item(self):
         # Review on #2573 (F3): #2309 asks which line, also when no item has a status.
         for verdict in ("APPROVE", "REQUEST_CHANGES"):

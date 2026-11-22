@@ -249,8 +249,8 @@ def referenced_section(loop: dict, number: int, texts: list[str], closing,
             "words.\n\n" + "\n".join(rows))
 
 
-def requirements(body: str) -> list[str] | None:
-    """The lines of the review's ``Requirements`` section, or None when there is none."""
+def _section(body: str) -> list[str] | None:
+    """The ``Requirements`` section's lines, blank ones kept, or None when there is none."""
     lines = body.splitlines()
     for i, line in enumerate(lines):
         if HEADING.match(line):
@@ -258,23 +258,37 @@ def requirements(body: str) -> list[str] | None:
             for rest in lines[i + 1:]:
                 if _ANY_HEADING.match(rest) and not _STATUS.search(rest):
                     break
-                if rest.strip():
-                    out.append(rest)
+                out.append(rest)
             return out
     return None
 
 
+def requirements(body: str) -> list[str] | None:
+    """The non-blank lines of the review's ``Requirements`` section, or None when there is none."""
+    section = _section(body)
+    return None if section is None else [line for line in section if line.strip()]
+
+
 def _top_items(lines: list[str]) -> list[str]:
-    """The section's top-level list items. Nesting is read against the first item's indent, not
-    from column 0, so a list indented as a whole is still top level (review on #2573)."""
-    base, out = None, []
+    """The section's top-level list items. Nesting is read against the list's first item, not
+    from column 0, so a list indented as a whole is still top level (review on #2573). A line of
+    prose after a blank line, not indented into the item, ends that list as Markdown does, so the
+    next list is read from its own first item (second review on #2573)."""
+    base, blank, out = None, False, []
     for line in lines:
+        if not line.strip():
+            blank = True
+            continue
         found = _MARKER.match(line)
+        indent = len((found.group(1) if found else line[:len(line) - len(line.lstrip())])
+                     .expandtabs(4))
         if found:
-            indent = len(found.group(1).expandtabs(4))
             base = indent if base is None else base
             if indent < base + 2:
                 out.append(line)
+        elif blank and base is not None and indent < base + 2:
+            base = None
+        blank = False
     return out
 
 
@@ -296,7 +310,7 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
     # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
     marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
     statuses = [found for _, found in marked if found]
-    tops = set(_top_items(items))
+    tops = set(_top_items(_section(body) or []))
     top = [line for line, found in marked if not found and line in tops]
     if not statuses:
         named = f" ({json.dumps(_clip(top[0].strip(), 120))} has none)" if top else ""
