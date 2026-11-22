@@ -5,7 +5,9 @@
 the 0.0 by hand; ``GUARDED`` registers each one (``path::function``) with how it handles it and
 the behaviour test below that feeds it a missing or garbage stamp. The scan fails on a caller
 not registered, and on a registered one that is gone. ``util.age_min`` is still used (by
-``scripts/watchdog.py``'s stall checks), so it stays; ``tests/test_util_time.py`` covers it.
+``scripts/watchdog.py``'s stall checks), so it stays: ``tests/test_util_time.py`` covers the
+helper, and ``tests/test_epoch_age_decisions.py`` registers each decision that consumes it and
+drives each one with a missing and a garbage time.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
@@ -28,8 +30,9 @@ STAMP = "2026-09-21T14:13:20Z"            # T
 
 # path::function -> (how it handles epoch's 0.0, the test here that proves it, or why none).
 GUARDED = {
-    "diaktoros/util.py::age_min": ("0.0 is None: unknown, past every grace (#563)",
-                                   "tests/test_util_time.py"),
+    "diaktoros/util.py::age_min": ("0.0 is None: unknown, past every grace (#563); each "
+                                   "watchdog decision that consumes it is tested there",
+                                   "tests/test_epoch_age_decisions.py"),
     "diaktoros/fix_reply.py::_wake": ("only 0 < updated < began skips the comments: an "
                                       "unreadable update time reads them", "test_wake"),
     "diaktoros/fix_reply.py::newest_reply": ("an unreadable comment time is no reply after "
