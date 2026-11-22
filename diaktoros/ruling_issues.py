@@ -11,7 +11,9 @@ to merge, and counts its lineage, exactly as for the reviewer's and the shadow's
 Not filed: a title the reviewer or a shadow review already filed from the PR (or one close to it:
 ``duplicate``); one the shadow review it ruled over already asked for at that PR and head, where
 the loop files a shadow's requests: a title close to it, or a body whose first ``path:line`` (or
-``path:line-line``) is in the same file with overlapping lines (``duplicate``, #2209); one whose run
+``path:line-line``) is in the same file with overlapping lines (``duplicate``, #2209) once that
+request was filed or may have been, while one still to be filed holds the ruling's copy until it
+is (a denied one, refused or expired, lets the ruling's be filed); one whose run
 ended without a ruling (``denied``); any past
 ``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep (a full bound stops only the
 POSTs: the sweep still rules out the rest, #1982). A POST refused with nothing
@@ -28,12 +30,16 @@ import time
 from . import config, shadow_issues
 from .broker import filing as broker_filing
 
-# The first `path:line` or `path:line-line` a body cites; never one inside a URL (#2209).
-_CITE = re.compile(r"(?<![\w./:-])((?:[\w.-]+/)*[\w-][\w.-]*\.\w+):(\d+)(?:-(\d+))?(?!\d)")
+# The first `path:line` or `path:line-line` a body cites (#2209), extensionless paths such as
+# `Makefile:5` included. Never one inside a URL: each whole URL, its query string with it, is
+# blanked out first; a last component of digits alone (`12:30`) names no file.
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.I)
+_CITE = re.compile(r"(?<![\w./:-])((?:[\w.-]+/)*[\w-][\w.-]*):(\d+)(?:-(\d+))?(?!\d)")
 
 
 def _cited(body) -> tuple[str, int, int] | None:
-    match = _CITE.search(str(body or ""))
+    match = next((m for m in _CITE.finditer(_URL.sub(" ", str(body or "")))
+                  if re.search(r"[A-Za-z_]", m.group(1).rsplit("/", 1)[-1])), None)
     if match is None:
         return None
     first, last = int(match.group(2)), int(match.group(3) or match.group(2))
@@ -49,18 +55,30 @@ def _same_place(one, other) -> bool:
             and a1 <= b2 and b1 <= a2)
 
 
-def _shadow_asked(loop: dict, sup, row) -> bool:
+# A shadow request with a settled outcome that filed it, or may have (an uncertain POST, or the
+# reviewer's own copy already filed): the ruling's is a duplicate. One ``recorded`` or ``posting``
+# can still be refused with nothing written, so the ruling's waits for it.
+_FILED = frozenset({"posted", "uncertain", "duplicate"})
+
+
+def _shadow_asked(loop: dict, sup, row) -> str | None:
     """Whether the shadow review this ruling was over asked, at its PR and head, for the same
-    finding (#2209): a close title, or the same place cited first in both bodies. Only where the
-    loop files a shadow's requests, since otherwise they are never filed."""
+    finding (#2209): a close title, or the same place cited first in both bodies. ``"filed"``
+    when such a request was filed (or may have been); ``"waiting"`` when the only ones are still
+    to be filed, so the ruling's copy waits for their outcome rather than being dropped first; a
+    denied one never counts. ``None`` for none, or where the loop never files a shadow's
+    requests."""
     shadow = row["shadow_run"]
     if not shadow or not config.shadow_file_issues(loop):
-        return False
+        return None
     place = _cited(row["body"])
-    return any(shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
-               or _same_place(place, _cited(body))
-               for title, body in sup.shadow_requests(shadow, loop["repo"], int(row["pr"]),
-                                                      str(row["head"])))
+    states = {state for title, body, state in sup.shadow_requests(
+                  shadow, loop["repo"], int(row["pr"]), str(row["head"]))
+              if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
+              or _same_place(place, _cited(body))}
+    if states & _FILED:
+        return "filed"
+    return "waiting" if states else None
 
 
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
@@ -92,10 +110,13 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                                     "the adjudicator's run ended without a ruling", log,
                                     what="adjudicator-found", expect="recorded")
             continue                                  # still ruling: filed once it has
+        asked = _shadow_asked(loop, sup, row)
         if (shadow_issues._same(row["title"], sup.filed_titles(loop["repo"], number))
-                or _shadow_asked(loop, sup, row)):
+                or asked == "filed"):
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
+        if asked == "waiting":
+            continue          # filed only if the shadow's copy ends denied (refused, expired)
         if room <= 0:
             continue                                  # no room: later rows may still be lost
         depth = shadow_issues._lineage_depth(loop, sup, number)

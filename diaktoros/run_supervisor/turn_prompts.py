@@ -363,9 +363,12 @@ def shadow_review_section(loop: dict, row, found=_READ) -> str:
 
 def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
     """The issues the ruled shadow review asked to file (#2209), where the loop files both a
-    shadow's and the adjudicator's: the host files them, so the ruling asks only for others."""
+    shadow's and the adjudicator's. One already filed (or that may have been) is not asked again.
+    One still waiting to be filed may yet be dropped (refused, expired, filing turned off), so the
+    ruling still asks for it if it holds: the host files that copy only if the shadow's never is."""
     import sqlite3
     from .. import config
+    from ..ruling_issues import _FILED
     if not (config.shadow_file_issues(loop) and config.adjudicator_file_issues(loop)):
         return ''
     try:
@@ -373,19 +376,26 @@ def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
         if con is None:
             return ''
         try:
-            titles = [r[0] for r in con.execute(
-                "SELECT title FROM shadow_issues WHERE run_id=? AND repo=? AND pr=? AND head=? "
-                "AND state!='denied' ORDER BY seq", (shadow_run, row['repo'], row['pr'],
-                                                     row['head']))]
+            asked = con.execute(
+                "SELECT title, state FROM shadow_issues WHERE run_id=? AND repo=? AND pr=? AND "
+                "head=? AND state!='denied' ORDER BY seq",
+                (shadow_run, row['repo'], row['pr'], row['head'])).fetchall()
         finally:
             con.close()
     except (sqlite3.Error, OSError):
         return ''
-    if not titles:
-        return ''
-    return ('\n\nThe shadow review asked to file these issues, and the host files them from this '
-            'PR: do not ask for them again, only for findings beyond them.\n'
-            + ''.join(f'\n- {title}' for title in titles))
+    filed = [title for title, state in asked if state in _FILED]
+    waiting = [title for title, state in asked if state not in _FILED]
+    text = ''
+    if filed:
+        text += ('\n\nThe shadow review asked to file these issues, and the host filed them from '
+                 'this PR: do not ask for them again, only for findings beyond them.\n'
+                 + ''.join(f'\n- {title}' for title in filed))
+    if waiting:
+        text += ('\n\nThe shadow review also asked to file these, not filed yet: if you rule one '
+                 'valid, ask for it too. The host files your copy only if the shadow\'s never is.\n'
+                 + ''.join(f'\n- {title}' for title in waiting))
+    return text
 
 
 def upheld_shadow_section(row, ruled: float, found=_READ) -> str:

@@ -344,11 +344,11 @@ class LedgerRecords:
                 "ORDER BY i.created, i.run_id, i.seq", (repo, seat)).fetchall()
 
     def shadow_requests(self, run_id: str, repo: str, number: int, head: str) -> list:
-        """``(title, body)`` of each issue one shadow run asked to file at this PR and head, but
-        any that never will be (``denied``): what a ruling over it need not ask again (#2209)."""
+        """``(title, body, state)`` of each issue one shadow run asked to file at this PR and head,
+        but any that never will be (``denied``): what a ruling over it need not ask again (#2209)."""
         with self._connect() as con:
-            return con.execute("SELECT title, body FROM shadow_issues WHERE run_id=? AND repo=? "
-                               "AND pr=? AND head=? AND state!='denied' ORDER BY seq",
+            return con.execute("SELECT title, body, state FROM shadow_issues WHERE run_id=? AND "
+                               "repo=? AND pr=? AND head=? AND state!='denied' ORDER BY seq",
                                (run_id, repo, number, head)).fetchall()
 
     def record_shadow_filing(self, run_id: str, repo: str, number: int, head: str, title: str,
