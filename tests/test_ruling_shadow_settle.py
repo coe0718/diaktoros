@@ -168,7 +168,7 @@ class States(Base):
     """F5 and F6: every state a shadow request ends in, read as the filing and the prompt read it."""
 
     EXPECTED = {"recorded": "waiting", "posting": "waiting", "posted": "filed",
-                "unlabelled": "filed", "uncertain": "filed", "duplicate": "filed", "denied": None}
+                "unlabelled": "filed", "uncertain": "maybe", "duplicate": "filed", "denied": None}
 
     def test_the_states_the_shadows_filing_writes_are_each_classified(self):
         source = Path(shadow_issues.__file__).read_text() + Path(shadow_filings.__file__).read_text()

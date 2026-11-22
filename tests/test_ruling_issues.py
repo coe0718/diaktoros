@@ -205,7 +205,6 @@ class EarlierRequests(unittest.TestCase):
     def test_one_filed_in_flight_or_still_due_keeps_blocking(self):
         for name, args, shadow_files in (
                 ("posted", ("shadow", "posted"), True),
-                ("uncertain", ("shadow", "uncertain"), True),
                 ("a duplicate of a filed one", ("shadow", "duplicate"), True),
                 ("a live adjudicator run's", ("adjudicator", "recorded", "running"), True),
                 ("a ruled adjudicator run's", ("adjudicator", "recorded", "succeeded", "ACCEPT"),
@@ -218,8 +217,9 @@ class EarlierRequests(unittest.TestCase):
 
     def test_a_shadows_still_to_be_filed_takes_the_adjudicators_beside_it(self):
         # Review of #2585, F1: posting, or recorded while the loop files a shadow's, it may yet
-        # be refused, so the adjudicator's copy is its fallback, under a key of its own.
-        for state in ("recorded", "posting"):
+        # be refused, so the adjudicator's copy is its fallback, under a key of its own; so may
+        # one whose POST's outcome is unknown (F9).
+        for state in ("recorded", "posting", "uncertain"):
             with self.subTest(state):
                 self.setUp()
                 self.earlier("shadow", state)

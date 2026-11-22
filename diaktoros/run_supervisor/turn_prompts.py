@@ -363,14 +363,16 @@ def shadow_review_section(loop: dict, row, found=_READ) -> str:
 
 def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
     """The issues the ruled shadow review asked to file (#2209), where the loop files the
-    adjudicator's. One already filed (or that may have been) is not asked again, whether or not
-    the loop still files a shadow's. One still waiting to be filed may yet be dropped (refused,
-    expired, filing turned off), so the ruling still asks for it if it holds: the host files that
-    copy only if the shadow's never is. Each state is read as the filing reads it
-    (``ruling_issues._standing``); one never to be filed is not listed."""
+    adjudicator's. One already filed is not asked again, whether or not the loop still files a
+    shadow's. One still waiting to be filed may yet be dropped (refused, expired, filing turned
+    off), and one whose POST's outcome is unknown may yet prove refused (review of #2585, F9), so
+    the ruling still asks for either if it holds: the host files that copy only if the shadow's
+    never is. Each state is read as the filing reads it (``ruling_issues._standing``); one never
+    to be filed is not listed."""
     import sqlite3
     from .. import config
     from ..ruling_issues import _standing
+    from .shadow_filings import asked_requests
     if not config.adjudicator_file_issues(loop):
         return ''
     try:
@@ -378,26 +380,28 @@ def shadow_requests_section(loop: dict, row, shadow_run: str) -> str:
         if con is None:
             return ''
         try:
-            asked = con.execute(
-                "SELECT title, state FROM shadow_issues WHERE run_id=? AND repo=? AND pr=? AND "
-                "head=? AND state!='denied' ORDER BY seq",
-                (shadow_run, row['repo'], row['pr'], row['head'])).fetchall()
+            asked = asked_requests(con, shadow_run, row['repo'], row['pr'], row['head'])
         finally:
             con.close()
     except (sqlite3.Error, OSError):
         return ''
     files = config.shadow_file_issues(loop)
-    filed = [title for title, state in asked if _standing(state, files) == "filed"]
-    waiting = [title for title, state in asked if _standing(state, files) == "waiting"]
+    kinds = {kind: [title for title, _body, state in asked if _standing(state, files) == kind]
+             for kind in ("filed", "waiting", "maybe")}
     text = ''
-    if filed:
+    if kinds["filed"]:
         text += ('\n\nThe shadow review asked to file these issues, and the host filed them from '
                  'this PR: do not ask for them again, only for findings beyond them.\n'
-                 + ''.join(f'\n- {title}' for title in filed))
-    if waiting:
+                 + ''.join(f'\n- {title}' for title in kinds["filed"]))
+    if kinds["waiting"]:
         text += ('\n\nThe shadow review also asked to file these, not filed yet: if you rule one '
                  'valid, ask for it too. The host files your copy only if the shadow\'s never is.\n'
-                 + ''.join(f'\n- {title}' for title in waiting))
+                 + ''.join(f'\n- {title}' for title in kinds["waiting"]))
+    if kinds["maybe"]:
+        text += ('\n\nThe shadow review also asked to file these, and whether the host\'s filing '
+                 'went through is unknown: if you rule one valid, ask for it too. The host files '
+                 'your copy only if the shadow\'s proves never filed.\n'
+                 + ''.join(f'\n- {title}' for title in kinds["maybe"]))
     return text
 
 

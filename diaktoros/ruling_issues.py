@@ -59,43 +59,46 @@ def _same_place(one, other) -> bool:
 
 
 # Each state a shadow request can be in (``shadow_issues``), for a ruling's copy of the same
-# finding (#2209, review of #2585). Filed, or may have been, whatever the loop's settings now: the
-# shadow's own issue posted (``unlabelled``: posted, its labels unconfirmed), ``uncertain`` (its
-# POST may have landed: never replayed, reconciled by hand), or ``duplicate`` (the reviewer's or
-# another shadow's copy filed). Still to be filed: ``recorded``, only while the loop files a
-# shadow's requests (off, no sweep ever files it), and ``posting``, a POST under way, whatever the
-# setting, since it may land; a claim its sweep was stopped after is ended by
-# ``shadow_issues.settle_stale``, so that wait is bounded. ``denied`` never will be.
-_FILED = frozenset({"posted", "unlabelled", "uncertain", "duplicate"})
+# finding (#2209, review of #2585). Filed, whatever the loop's settings now: the shadow's own issue
+# posted (``unlabelled``: posted, its labels unconfirmed), or ``duplicate`` (the reviewer's or
+# another shadow's copy filed). Maybe filed: ``uncertain`` (its POST may have landed: never
+# replayed, but a late, definite refusal shows it did not, F8), and a copy dropped only on such a
+# one (``MAYBE``, which ``asked_requests`` reads as ``uncertain``): a ruling's copy is recorded and
+# dropped beside it, and taken up again if that refusal comes (F9). Still to be filed:
+# ``recorded``, only while the loop files a shadow's requests (off, no sweep ever files it), and
+# ``posting``, a POST under way, whatever the setting, since it may land; a claim its sweep was
+# stopped after is ended by ``shadow_issues.settle_stale``, so that wait is bounded. ``denied``
+# never will be.
+_FILED = frozenset({"posted", "unlabelled", "duplicate"})
 
 
 def _standing(state: str, shadow_files: bool) -> str | None:  # also what the prompt lists
-    """``"filed"``, ``"waiting"`` or None (never to be filed) for a shadow request's state."""
+    """``"filed"``, ``"maybe"``, ``"waiting"`` or None (never to be filed) for a shadow
+    request's state, as ``asked_requests`` reads it."""
     if state in _FILED:
         return "filed"
+    if state == "uncertain":
+        return "maybe"
     return "waiting" if state == "posting" or state == "recorded" and shadow_files else None
 
 
 def _shadow_asked(loop: dict, sup, row, con=None) -> str | None:
     """Whether the shadow review this ruling was over asked, at its PR and head, for the same
     finding (#2209): a close title, or the same place cited first in both bodies. ``"filed"``
-    when such a request was filed (or may have been), whether or not the loop still files a
-    shadow's requests; ``"waiting"`` when the only ones are still to be filed (``_standing``), so
-    the ruling's copy waits for their outcome rather than being dropped first. ``None`` for
-    none, or none that will ever be filed. Read in ``con``'s transaction when given (F8)."""
+    when such a request was filed, whether or not the loop still files a shadow's requests;
+    ``"maybe"`` when it may have been (dropped, but taken up again if a late refusal shows it was
+    not: F8); ``"waiting"`` when the only ones are still to be filed (``_standing``), so the
+    ruling's copy waits for their outcome rather than being dropped first. ``None`` for none, or
+    none that will ever be filed. Read in ``con``'s transaction when given (F8)."""
     shadow = row["shadow_run"]
     if not shadow:
         return None
     place, files = _cited(row["body"]), config.shadow_file_issues(loop)
     where = (shadow, loop["repo"], int(row["pr"]), str(row["head"]))
     asked = shadow_filings.asked_requests(con, *where) if con else sup.shadow_requests(*where)
-    states = {(_standing(state, files), state) for title, body, state in asked
-              if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
-              or _same_place(place, _cited(body))}
-    # Filed only as `uncertain` is "maybe": dropped, but taken up again if a late refusal shows
-    # nothing was filed (review of #2585, F8).
-    kinds = {"maybe" if standing == "filed" and state == "uncertain" else standing
-             for standing, state in states}
+    kinds = {_standing(state, files) for title, body, state in asked
+             if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
+             or _same_place(place, _cited(body))}
     return next((kind for kind in ("filed", "maybe", "waiting") if kind in kinds), None)
 
 

@@ -12,7 +12,21 @@ import json
 import time
 
 from .. import run_supervisor
-from .shadow_filings import ShadowFilingRecords, asked_requests
+from .shadow_filings import MAYBE, ShadowFilingRecords, asked_requests
+
+def _earlier_standing(earlier, shadow_files: bool) -> tuple[bool, bool]:
+    """Whether an earlier request for a title will never be filed, and whether it is a shadow's
+    that may yet not be: still to be filed, or maybe filed (its POST's outcome unknown, or a copy
+    dropped on such a one), since a late refusal may yet show it never was (review of #2585, F9)."""
+    never = (earlier['state'] == 'denied' or earlier['state'] == 'recorded' and (
+        (earlier['seat'] == 'shadow' and not shadow_files)
+        or (earlier['seat'] == 'adjudicator' and earlier['verdict'] is None
+            and earlier['run_state'] not in run_supervisor.NOT_ENDED)))
+    due = earlier['seat'] == 'shadow' and (
+        earlier['state'] in ('recorded', 'posting', 'uncertain')
+        or earlier['state'] == 'duplicate' and earlier['error'] == MAYBE)
+    return never, due
+
 
 class ShadowIssueRecords(ShadowFilingRecords):
     """The shadow-issue methods of :class:`~diaktoros.run_supervisor.Supervisor`; ``_connect()``
@@ -42,7 +56,7 @@ class ShadowIssueRecords(ShadowFilingRecords):
                     or row['state'] not in ('launching', 'running')):
                 raise ValueError(f'{seat} run identity unavailable')
             earlier = con.execute(
-                'SELECT i.run_id, i.seq, i.state, r.seat, r.state AS run_state, g.verdict '
+                'SELECT i.run_id, i.seq, i.state, i.error, r.seat, r.state AS run_state, g.verdict '
                 'FROM shadow_issues i JOIN runs r ON r.id=i.run_id LEFT JOIN rulings g ON '
                 'g.run_id=i.run_id WHERE i.repo=? AND i.pr=? AND i.title_key=?',
                 (repo, number, key)).fetchone()
@@ -51,11 +65,7 @@ class ShadowIssueRecords(ShadowFilingRecords):
                     (run_id, fallback)).fetchone():
                 raise ValueError('an issue with this title was already asked for from this PR')
             if earlier is not None:
-                never = (earlier['state'] == 'denied' or earlier['state'] == 'recorded' and (
-                    (earlier['seat'] == 'shadow' and not shadow_files)
-                    or (earlier['seat'] == 'adjudicator' and earlier['verdict'] is None
-                        and earlier['run_state'] not in run_supervisor.NOT_ENDED)))
-                due = earlier['seat'] == 'shadow' and earlier['state'] in ('recorded', 'posting')
+                never, due = _earlier_standing(earlier, shadow_files)
                 if seat == 'adjudicator' and due and not never:
                     key = fallback                     # beside the shadow's, never in its place
                 elif seat != 'adjudicator' or not never:
