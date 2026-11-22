@@ -60,15 +60,25 @@ def gate(loop: dict, st, payload: dict) -> None:
     numbers = [pr.get("number") for pr in suite.get("pull_requests") or []
                if isinstance(pr, dict) and type(pr.get("number")) is int and pr["number"] > 0]
     note(st, head, numbers)
+    by_head: dict[str, list[str]] = {}
     with sweep_lock(st, LOCK_WAIT_S) as held:
-        acted = drain(loop, st) if held else []
+        if held:
+            drain(loop, st, by_head=by_head)
     if not held:
         silence(f"check_suite @ {head[:7]}: noted for the running watchdog sweep, which takes "
                 "it when it lets the lock go (or the next sweep does)", "accepted")
-    acted += handoff(loop, st)
-    if not acted:
+    handoff(loop, st, by_head=by_head)
+    # This delivery's record is its own commit's alone (review on #2577, F3): commits noted by
+    # other deliveries, taken here, are logged, never made this one's verdict.
+    for other, acted in by_head.items():
+        if other != head and acted:
+            log(f"check_suite @ {other[:7]}, noted by another delivery: " + "; ".join(acted))
+    if head not in by_head:
+        silence(f"check_suite @ {head[:7]}: noted; another holder of the sweep lock took it "
+                "and acts on it", "accepted")
+    if not by_head[head]:
         silence(f"check_suite @ {head[:7]}: not the base's head nor an open loop PR's head")
-    silence(f"check_suite @ {head[:7]}: " + "; ".join(acted), "accepted")
+    silence(f"check_suite @ {head[:7]}: " + "; ".join(dict.fromkeys(by_head[head])), "accepted")
 
 
 def note(st, head: str, numbers: list[int]) -> None:
@@ -80,30 +90,36 @@ def note(st, head: str, numbers: list[int]) -> None:
         st.kv_set(path, (noted + [{"head": head, "numbers": numbers}])[-NUDGES_MAX:])
 
 
-def drain(loop: dict, st, log=log) -> list[str]:
+def drain(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
     """Act on every noted suite, once per commit per take, under the sweep lock its caller
     holds: the handler that took it, or the watchdog's sweep as its last step. Notes written
     while it acts are taken next (review on #1992, F4), up to ``DRAIN_PASSES`` takes; any left
-    are ``handoff``'s once the lock is let go. What was acted on."""
-    acted = []
+    are ``handoff``'s once the lock is let go. What was acted on; ``by_head`` (if given) gets
+    each commit taken, with what was acted on for it, so a handler records its own alone."""
+    acted, by_head = [], {} if by_head is None else by_head
     for _ in range(DRAIN_PASSES):
         heads = _take(st)
         if not heads:
             break
         for head, numbers in heads.items():
+            mine = by_head.setdefault(head, [])
             try:
-                acted += act(loop, st, head, numbers)
+                done = act(loop, st, head, numbers)
             except Exception as exc:          # one unreadable commit does not drop the rest
                 log(f"check_suite @ {head[:7]} not acted on: {type(exc).__name__}: {exc}")
+                continue
+            acted += done
+            mine += done
     return acted
 
 
-def handoff(loop: dict, st, log=log) -> list[str]:
+def handoff(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
     """Run by whoever just let the sweep lock go (#1996): while notes are left, take the lock back
     without waiting and ``drain``. A note written before the release (its handler may have
     stopped waiting, trusting the holder) is seen here; one written after it finds the lock free
     for its own handler, or held by a holder that runs this in turn. ``HANDOFFS`` bounds it: what
-    is still noted then waits for the next sweep or delivery. What was acted on."""
+    is still noted then waits for the next sweep or delivery. What was acted on (``by_head``
+    as ``drain``'s)."""
     acted = []
     for _ in range(HANDOFFS):
         with st.locked():
@@ -113,7 +129,7 @@ def handoff(loop: dict, st, log=log) -> list[str]:
         with sweep_lock(st, 0) as held:
             if not held:                      # another holder: it runs this when it lets go
                 break
-            acted += drain(loop, st, log)
+            acted += drain(loop, st, log, by_head)
     return acted
 
 

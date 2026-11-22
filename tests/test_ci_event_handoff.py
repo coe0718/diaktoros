@@ -30,9 +30,10 @@ class Handoff(base.Handler):
     def chain(self, length):
         """Each act notes the next commit's suite, ``length`` commits in all: an act wrapper."""
         self.prs = {n: base.pr(number=n, head=h) for n, h in enumerate(HEADS[:length], start=10)}
-        act = ci_event.act
+        act, self.acts = ci_event.act, []
 
         def acting(loop, st, head, numbers):
+            self.acts.append(head)
             later = HEADS.index(head) + 1
             if later < length:
                 ci_event.note(st, HEADS[later], [10 + later])
@@ -47,9 +48,8 @@ class Handoff(base.Handler):
         acting = self.chain(7)
         with mock.patch.object(ci_event, "act", side_effect=acting):
             reason, decision = self.deliver(base.suite(head=HEADS[0], numbers=(10,)))
-        self.assertEqual(decision, "accepted")
-        for n in range(10, 17):
-            self.assertIn(f"#{n}", reason)
+        self.assertEqual((reason, decision), ("check_suite @ 0000000: CI read for #10", "accepted"))
+        self.assertEqual(self.acts, HEADS[:7])     # F3: the others acted on, not this record's
         self.assertEqual(self.left(), [])
 
     def test_a_stream_of_suites_is_bounded_and_what_is_left_stays_noted(self):
@@ -58,7 +58,7 @@ class Handoff(base.Handler):
         with mock.patch.object(ci_event, "act", side_effect=acting):
             reason, _ = self.deliver(base.suite(head=HEADS[0], numbers=(10,)))
         bound = ci_event.DRAIN_PASSES * (1 + ci_event.HANDOFFS)
-        self.assertEqual(reason.count("CI read for"), bound)
+        self.assertEqual((reason.count("CI read for"), len(self.acts)), (1, bound))
         self.assertEqual([e["head"] for e in self.left()], [HEADS[bound]])   # durable, not lost
         fd = os.open(self.st.dir / ci_event.SWEEP_LOCK, os.O_RDWR)
         self.addCleanup(os.close, fd)
@@ -87,6 +87,37 @@ class Handoff(base.Handler):
         self.assertEqual(self.deliver("handoff"), [])
         self.assertEqual(len(self.left()), 1)
         fcntl.flock(fd, fcntl.LOCK_UN)
+
+    def test_a_handed_off_head_does_not_become_this_deliverys_verdict(self):
+        # Review on #2577 (F3): this delivery's head is obsolete; at the drain/release boundary
+        # another delivery notes #7's current head. The handoff acts on that head, but this
+        # delivery's record stays its own: declined, for its own commit.
+        drain, injected = ci_event.drain, []
+
+        def draining(*args, **kw):
+            acted = drain(*args, **kw)
+            if not injected:                                             # just before release
+                injected.append(ci_event.note(self.st, base.HEAD, [7]))
+            return acted
+        with mock.patch.object(ci_event, "drain", side_effect=draining):
+            reason, decision = self.deliver(base.suite(head=base.OLD, numbers=(7,)))
+        self.assertEqual((reason, decision), ("check_suite @ bbbbbbb: not the base's head "
+                                              "nor an open loop PR's head", "declined"))
+        self.assertEqual([a[3] for a, _kw in self.queued], [base.HEAD])  # the handoff acted
+        self.assertEqual(self.left(), [])
+
+    def test_a_head_another_holder_took_is_not_declined_unread(self):
+        # The note is taken by another holder before this handler gets the lock: it read nothing
+        # for its head, so it records neither a verdict nor another head's results.
+        note = ci_event.note
+
+        def taken(st, head, numbers):
+            note(st, head, numbers)
+            ci_event._take(st)                                           # the other holder
+        with mock.patch.object(ci_event, "note", side_effect=taken):
+            reason, decision = self.deliver(base.suite())
+        self.assertEqual(decision, "accepted")
+        self.assertIn("another holder of the sweep lock took it", reason)
 
     def test_the_watchdog_hands_off_after_it_lets_the_lock_go(self):
         import importlib.util
