@@ -636,9 +636,13 @@ class Setup(unittest.TestCase):
         self.assertEqual([(f.read_bytes(), f.stat().st_mtime_ns) for f in files], before)
         self.assertEqual((self.ran, self.hermes.jobs), ([], jobs))
         # It stops before steps 4 to 6: no summary is printed and the record is not even read.
+        # Every read goes through handlers that catch Exception (``_resume_rows``,
+        # ``_print_onboarding``), so a raising stub would be swallowed (#1719): count the calls.
         self.assertNotIn("onboarding for", out)
-        with patch("diaktoros.onboarding.inspect", side_effect=AssertionError("record read")):
+        from diaktoros import onboarding
+        with patch.object(onboarding, "inspect", wraps=onboarding.inspect) as inspect:
             self.assertEqual(self.setup_cli(*self.flags("--dry-run", "--arm"))[0], 0)
+        self.assertEqual(inspect.call_args_list, [], "a --dry-run read the onboarding record")
 
     def test_resuming_leaves_unattended_fixer_push_as_it_was(self):
         loop = self.installed()
