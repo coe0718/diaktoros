@@ -51,6 +51,14 @@ class Window(unittest.TestCase):
         self.assertEqual(set(stats.LIVE_STATES), {*run_supervisor.NOT_ENDED, "uncertain"})
         self.assertEqual(set(stats.LIVE_STATES), set(explain.LIVE_TURN))
 
+    def test_a_new_supervisor_state_reaches_the_live_set(self):
+        # #2073 (review on #2574): a state added to NOT_ENDED is live in the report too.
+        import importlib
+        self.addCleanup(importlib.reload, stats)           # after the patch below is undone
+        with mock.patch.object(run_supervisor, "NOT_ENDED",
+                               (*run_supervisor.NOT_ENDED, "future_state")):
+            self.assertIn("future_state", importlib.reload(stats).LIVE_STATES)
+
     def test_summary(self):
         self.assertIsNone(stats.summary([]))
         got = stats.summary([10, 20, 30, 40, 1000])
