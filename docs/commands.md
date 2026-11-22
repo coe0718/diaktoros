@@ -2157,7 +2157,8 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   would (#1767), and `uncertain` (naming the cancel, the seat still held) after a write-ahead
   record. That cleanup touches only what the lost launch itself took: the seat claim and the
   marker carry the launch that took them, so a `retry` that has relaunched the run in the
-  meantime keeps its claim and its `adjudicating` marker, and a marker the lost launch never
+  meantime keeps its claim, its in-flight mark (cleared only together with the lost launch's
+  own claim, in one step) and its `adjudicating` marker, and a marker the lost launch never
   started (a gateway's, another run's) is left alone. An expired lease does
   not prove the turn stopped, so this happens only when the run's recorded process is provably
   gone (the check `reconcile` uses). A live or unrecorded process, or a fixer run with a push

@@ -538,7 +538,8 @@ class LoopState(FixAsks):
             return True
 
     def release_if(self, seat: str, key: str, head: str | None = None,
-                   run: str | None = None, attempt: str | None = None) -> bool:
+                   run: str | None = None, attempt: str | None = None,
+                   mark: str | None = None) -> bool:
         """Free a seat only for *this* PR's turn — never another PR's in-flight work.
 
         With ``head``, only a claim made for that head is freed: a late verdict on an older
@@ -547,6 +548,10 @@ class LoopState(FixAsks):
         reconciling it) must never free a newer run's claim on the same seat, PR and head.
         With ``attempt``, a claim stamped with another attempt of that run (its retry, #1767)
         is kept too; a claim from before attempts were stamped is matched by ``run`` alone.
+        With ``mark``, that in-flight mark is dropped along with the claim it belongs to, in
+        the same hold of the state lock: a retry's ``acquire`` and its ``inflight`` record
+        cannot land between the two, so the old attempt's release never clears the retry's
+        new mark (#1767). Nothing is cleared when the claim is kept.
         """
         with self.locked():
             data = _mapping(self._load(self.locks, {}))
@@ -563,6 +568,8 @@ class LoopState(FixAsks):
             if not data[seat]:
                 data.pop(seat, None)
             self._save(self.locks, data)
+            if mark:
+                self.inflight_clear(mark)      # reentrant: still the same lock hold
             return True
 
     def release_all(self, seat: str) -> int:

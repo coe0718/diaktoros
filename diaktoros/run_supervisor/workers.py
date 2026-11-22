@@ -781,9 +781,10 @@ def _release_claim(row, run_id: str) -> None:
             st = state_mod.state_for(loop)
             # Only the claim this run wrote: the ledger row left `uncertain` already, so a
             # newer run may already hold this seat/PR/head, and keeps its claim and mark.
-            if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'], run=run_id,
-                              attempt=claims.attempt_of(run_id, row['launch_intent']))
-                    and row['seat'] in claims.INFLIGHT_LABEL):
-                st.inflight_clear(f"{claims.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
+            # The mark goes in the same hold of the state lock as the claim (#1767): a retry
+            # that claims and marks the head in between would otherwise lose its new mark.
+            st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'], run=run_id,
+                          attempt=claims.attempt_of(run_id, row['launch_intent']),
+                          mark=claims.inflight_mark(row))
     except Exception:
         pass

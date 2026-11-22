@@ -424,10 +424,10 @@ class LostWorker(Base):
         sup.recover()
         self.assertEqual(sup.get('d')['state'], 'running')
 
-    def loop_state(self):
+    def loop_state(self, **extra):
         """A configured loop for REPO, with its state files under the test's directory."""
         from diaktoros import config, state as state_mod
-        loop = dict(LOOP, state_dir=str(self.root / 'state'))
+        loop = dict(LOOP, state_dir=str(self.root / 'state'), **extra)
         by_repo = patch.object(config, 'by_repo', return_value=loop)
         by_repo.start()
         self.addCleanup(by_repo.stop)
@@ -554,6 +554,65 @@ class LostWorker(Base):
         self.assertEqual(sup.get('d')['state'], 'cancelled')
         self.assertEqual(st.breach_get(1)['status'], 'adjudicating')
         self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
+
+    def retry_after_release(self, st, sup, run_id, retried, via_retry=True):
+        """Patch ``LoopState.release_if`` so that, the first time a release returns, the run is
+        relaunched (its new claim and in-flight mark taken, after an operator's ``retry`` when
+        ``via_retry``) before the caller goes on: the review's interleaving (F3 on #2600),
+        between the release and the mark's clear."""
+        from diaktoros import state as state_mod
+        real = state_mod.LoopState.release_if
+
+        def release_then_retry(this, *a, **kw):
+            released = real(this, *a, **kw)
+            if not retried:
+                retried['released'] = released
+                if via_retry:
+                    self.assertEqual(sup.retry(run_id), 'pending')
+                self.set_state('d', 'running', owner='w2', pid=os.getpid(),
+                               launch_intent=time.time() + 1, lease=time.time() + 600)
+                retried['claim'] = self.launch(st, sup.get('d'), start=False)[0]
+                retried['marked'] = st.inflight(retried['claim'][4])
+            return released
+        return patch.object(state_mod.LoopState, 'release_if', release_then_retry)
+
+    def check_late_cleanup_keeps_the_retrys_mark(self, seat):
+        """Review F3 on #2600: the old attempt's release and its mark's clear were two lock
+        holds, so a retry that claimed and marked the head between them lost its new mark, the
+        one the gates read to refuse a duplicate launch. Driven through ``recover()``."""
+        st = self.loop_state(unattended_fixer_push=True)     # a fixer's retry needs the opt-in
+        sup, run_id = self.lost(seat=seat)
+        self.assertIsNotNone(self.launch(st, sup.get('d'), start=False)[0])
+        retried = {}
+        with self.retry_after_release(st, sup, run_id, retried):
+            sup.recover()
+        mark = retried['claim'][4]
+        self.assertEqual(mark, f"{'review' if seat == 'reviewer' else 'fix'}:1:{HEAD}")
+        self.assertTrue(retried['released'], "the lost attempt's claim was released")
+        self.assertTrue(retried['marked'])
+        self.assertEqual(st.live_locks(seat).get(f'{REPO}#1', {}).get('attempt'),
+                         retried['claim'][6], "the retry's claim is kept")
+        self.assertTrue(st.inflight(mark), "the retry's in-flight mark is kept")
+
+    def test_recover_late_cleanup_keeps_a_retried_reviewers_in_flight_mark(self):
+        self.check_late_cleanup_keeps_the_retrys_mark('reviewer')
+
+    def test_recover_late_cleanup_keeps_a_retried_fixers_in_flight_mark(self):
+        self.check_late_cleanup_keeps_the_retrys_mark('fixer')
+
+    def test_a_workers_late_release_keeps_its_retrys_in_flight_mark(self):
+        # F3, the worker's own end (claims.release_seat, turns.py _production_finish): the
+        # same split release had the same window.
+        from diaktoros.run_supervisor import claims
+        st = self.loop_state()
+        sup, run_id = self.lost()
+        old = self.launch(st, sup.get('d'), start=False)[0]
+        retried = {}
+        with self.retry_after_release(st, sup, run_id, retried, via_retry=False):
+            claims.release_seat(old, 'failed')
+        self.assertTrue(retried['released'])
+        self.assertTrue(st.inflight(f'review:1:{HEAD}'), "the retry's in-flight mark is kept")
+        self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
 
 
 class Selection(Base):

@@ -61,6 +61,15 @@ PR_HOLD_SEATS = ('reviewer', 'fixer', 'adjudicator')
 INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
 
 
+def inflight_mark(row) -> str | None:
+    """The in-flight mark a run of ``row``'s seat holds on its PR's head while it runs (#98);
+    None for a seat that marks nothing. The one spelling ``claim_seat`` records and every
+    release (the worker's, ``recover``'s, an operator's reconcile) clears."""
+    if row['seat'] not in INFLIGHT_LABEL:
+        return None
+    return f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
+
+
 def attempt_of(run_id: str, launch_intent) -> str | None:
     """The one launch of run ``run_id`` that its ``launch_intent`` stamp names (#1767). A retry
     keeps the run id but is launched with a new stamp, so a seat claim or breach marker carrying
@@ -90,8 +99,7 @@ def claim_seat(loop: dict, row, budget: float):
         return None
     # The claim is written: from here on its release must stay reachable, whatever the mark
     # does (a failed mark write must not orphan the claim).
-    mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
-            if row['seat'] in INFLIGHT_LABEL else None)
+    mark = inflight_mark(row)
     if mark:
         try:
             st.inflight(mark, record=True)
@@ -108,9 +116,9 @@ def release_seat(claim, state: str | None) -> None:
         return
     st, seat, key, head, mark, run, attempt = claim
     try:
-        # Only this attempt's own claim; its mark goes with it. A newer run that has claimed the
-        # same seat/PR/head (#98), or this run's retry (#1767), keeps both.
-        if st.release_if(seat, key, head, run=run, attempt=attempt) and mark:
-            st.inflight_clear(mark)
+        # Only this attempt's own claim; its mark goes with it, in the same hold of the state
+        # lock. A newer run that has claimed the same seat/PR/head (#98), or this run's retry
+        # (#1767), keeps both: it cannot mark the head between the release and the clear.
+        st.release_if(seat, key, head, run=run, attempt=attempt, mark=mark)
     except Exception:
         pass
