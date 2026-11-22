@@ -55,16 +55,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      # build-data.py keeps the previous snapshot (and exits 0) when the API fails. The step is
-      # still bounded, and a hang or crash only costs the refresh: the deploy goes on with the
-      # checked-in data.json rather than holding the docs back.
+      - id: pages
+        uses: actions/configure-pages@v5
+      # The refresh lands in the artifact only, so the checked-in data.json can be older than
+      # what the site last published. build-data.py starts from whichever of the two was pushed
+      # later and writes that first, so an API failure, a timeout or a crash keeps the newest
+      # published figures. Never fatal: a failed refresh must not hold the docs back.
       - name: Refresh the launch page's release and statistics snapshot
-        run: python3 docs/site/build-data.py
+        run: |
+          curl -fsS --max-time 30 "$PAGES_URL/data.json" -o "$RUNNER_TEMP/deployed-data.json" \
+            || echo "::warning::no published data.json to start from"
+          python3 docs/site/build-data.py --previous "$RUNNER_TEMP/deployed-data.json"
         timeout-minutes: 5
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
       - uses: actions/jekyll-build-pages@v1
         with:
           source: ./

@@ -30,6 +30,23 @@ def top(text: str, key: str) -> list[str]:
     return out
 
 
+def step(job: str, name: str) -> str:
+    """One step of a job, from its ``- name:`` line to the next step."""
+    out: list[str] = []
+    for line in job.splitlines():
+        if re.match(r"\s+- ", line):
+            if out:
+                break
+            if line.strip() == "- name: " + name:
+                out.append(line)
+        elif out:
+            out.append(line)
+    return "\n".join(out)
+
+
+REFRESH = "Refresh the launch page's release and statistics snapshot"
+
+
 class DeploySite(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
@@ -40,13 +57,13 @@ class DeploySite(unittest.TestCase):
 
     def test_build_refreshes_the_snapshot_before_the_page_is_copied(self):
         build = self.jobs["build"]
-        refresh = build.find("run: python3 docs/site/build-data.py")
+        refresh = build.find("python3 docs/site/build-data.py")
         copy = build.find("cp -R docs/site/. site/")
         self.assertNotEqual(refresh, -1, "the build never runs build-data.py")
         self.assertNotEqual(copy, -1)
         self.assertLess(refresh, copy, "data.json must be refreshed before it is copied")
         # Authenticated, so the search counts do not hit the anonymous rate limit.
-        self.assertRegex(build, r"\n\s+GITHUB_TOKEN: \$\{\{ github\.token \}\}")
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", step(build, REFRESH))
 
     def test_a_published_release_redeploys_main(self):
         on = "\n".join(top(self.text, "on"))
@@ -60,6 +77,27 @@ class DeploySite(unittest.TestCase):
         self.assertRegex(redeploy, r"permissions:\n\s+actions: write")
         self.assertRegex(redeploy, r'--ref "\$DEFAULT_BRANCH"')
         self.assertIn("DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}", redeploy)
+
+    def test_the_refresh_is_bounded_and_never_fatal(self):
+        # Vex, PR #2570 r1 F2: a hung refresh must not stall the deploy, and a timed-out or
+        # crashed one must not fail the build.
+        refresh = step(self.jobs["build"], REFRESH)
+        self.assertRegex(refresh, r"\n        timeout-minutes: [1-9]\d?\n")
+        self.assertRegex(refresh, r"\n        continue-on-error: true\n")
+
+    def test_the_refresh_starts_from_the_published_snapshot(self):
+        # Vex, PR #2570 r1 F1: the refresh is artifact-only, so an outage must fall back to
+        # what the site last published, not the older checked-in file.
+        refresh = step(self.jobs["build"], REFRESH)
+        self.assertRegex(refresh, r'curl -fsS .*"\$PAGES_URL/data\.json" -o "\$RUNNER_TEMP/deployed-data\.json" \\\n\s+\|\| ')
+        self.assertIn('build-data.py --previous "$RUNNER_TEMP/deployed-data.json"', refresh)
+        self.assertIn("PAGES_URL: ${{ steps.pages.outputs.base_url }}", refresh)
+        self.assertRegex(self.jobs["build"], r"- id: pages\n\s+uses: actions/configure-pages@")
+
+    def test_the_dispatch_carries_a_token(self):
+        # gh refuses to run without one; the release redeploy would quietly never happen.
+        dispatch = step(self.jobs["redeploy"], "Deploy main again for the new release")
+        self.assertIn("GH_TOKEN: ${{ github.token }}", dispatch)
 
     def test_redeploy_dispatches_this_very_workflow(self):
         named = re.findall(r"gh workflow run (\S+)", self.jobs["redeploy"])
