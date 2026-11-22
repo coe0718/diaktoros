@@ -36,6 +36,16 @@ def _own(nodes):
                      if not isinstance(child, _SCOPES))
 
 
+def _runs_when_called(fn) -> bool:
+    """Whether calling ``fn`` runs its body: a generator's call only makes an iterator, and an
+    ``async def``'s only a coroutine, so a guard in either has not run (second review on #2587);
+    nor can a decorator (a cache, a wrapper that swallows the raise) be shown to run it."""
+    return not isinstance(fn, ast.AsyncFunctionDef) and all(
+        isinstance(d, ast.Name) and d.id in ('staticmethod', 'classmethod')
+        for d in fn.decorator_list) and not any(
+        isinstance(node, (ast.Yield, ast.YieldFrom)) for node in _own(fn.body))
+
+
 class Writers:
     def __init__(self, sources=None):
         """``sources``: ``(filename, text)`` pairs; every ``diaktoros/*.py`` when omitted."""
@@ -149,8 +159,8 @@ class Writers:
             if isinstance(call, ast.Call) and depth < 3 and any(
                     kw.arg == name and isinstance(kw.value, ast.Name) and kw.value.id == name
                     for kw in call.keywords):
-                found = [self.guard(name, callee, depth + 1)
-                         for callee in self.defs.get(self.name(call.func), [])]
+                found = [self.guard(name, callee, depth + 1) if _runs_when_called(callee)
+                         else None for callee in self.defs.get(self.name(call.func), [])]
                 if found and None not in found:
                     bounds.append(set().union(*found))
         return set.intersection(*bounds) if bounds else None

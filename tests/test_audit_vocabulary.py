@@ -72,10 +72,17 @@ SKIPPABLE = {
     'in a callee past an early return': "    check(role=role)\n" + _AUDIT,
     'in a callee called conditionally': "    loop and check(role=role)\n" + _AUDIT,
     'in a callee another of its name lacks': "    check(role=role)\n" + _AUDIT,
+    'in a generator callee': "    check(role=role)\n" + _AUDIT,
+    'in an async callee': "    check(role=role)\n" + _AUDIT,
+    'in a decorated callee': "    check(role=role)\n" + _AUDIT,
     'rebound after it': "    " + _GUARD.format(i='    ') + "    role = 'intruder'\n" + _AUDIT,
 }
 _CHECKS = {'in a callee past an early return':
            _CHECK.format(early="    if role == 'intruder':\n        return\n"),
+           # A call runs neither body: it makes an iterator or a coroutine (second review).
+           'in a generator callee': _CHECK.format(early='').replace("\n\n", "\n    yield\n\n"),
+           'in an async callee': "async " + _CHECK.format(early=''),
+           'in a decorated callee': "@functools.cache\n" + _CHECK.format(early=''),
            'in a callee another of its name lacks':
            _CHECK.format(early='') + "def check(*, role):\n    pass\n\n"}
 _CALLER = "\ndef call(loop):\n    write(loop, 'intruder')\n"
@@ -103,6 +110,19 @@ class SyntheticWriters(unittest.TestCase):
                 check = _CHECKS.get(shape, _CHECK.format(early=''))
                 roles, _ = synthetic(check + "def write(loop, role):\n" + body + _CALLER)
                 self.assertEqual(roles, {'intruder'})
+
+    def test_a_generator_guard_fails_the_full_vocabulary(self):
+        # Second review on #2587: beside every real writer, an unrun generator guard must not
+        # hide the role its writer records from the vocabulary assertion.
+        sources = [(str(path), path.read_text())
+                   for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
+        sources.append(('synthetic.py', _CHECK.format(early='').replace(
+            "def check(", "def check_gen_2587(").replace("\n\n", "\n    yield\n\n")
+            + "def write_gen_2587(loop, role):\n    check_gen_2587(role=role)\n" + _AUDIT
+            + "\ndef call_gen_2587(loop):\n    write_gen_2587(loop, 'intruder')\n"))
+        roles, _ = Writers(sources).written()
+        self.assertIn('intruder', roles)
+        self.assertNotEqual(roles, set(broker.AUDIT_ROLES))
 
     def test_a_guard_before_the_write_on_every_path_bounds_it(self):
         for body in ("    " + _GUARD.format(i='    ') + _AUDIT, "    check(role=role)\n" + _AUDIT,
