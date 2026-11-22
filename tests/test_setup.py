@@ -624,6 +624,67 @@ class Setup(unittest.TestCase):
         self.assertEqual(self.ran, ["arm"], out)
         self.assertIn("starting at the armed stage (stale: ", out)
 
+    def _record_live_turn_then_armed(self):
+        """identities/loop/model, ``live_turn`` at PR 7 head ``aaaa``, then ``armed``; the PR
+        head is read through ``self.head`` (#1713)."""
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.head = "a" * 40
+        patcher = patch.object(onboarding, "_live_head", lambda _loop, number: self.head)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.record_checks(loop)
+        onboarding.record(loop, "live_turn", "passed", "hermes dk selftest", "turn ok",
+                          pr=(7, self.head), runtime_file=self.runtime_file)
+        self.record(loop, "armed")
+        return loop
+
+    def test_a_stale_live_turn_alone_does_not_re_arm_unchanged_hooks(self):
+        from diaktoros import onboarding
+        loop = self._record_live_turn_then_armed()
+        self.head = "b" * 40                      # the PR moved on since the live turn
+        rows = onboarding.inspect(loop, runtime_file=self.runtime_file)
+        self.assertEqual((rows["live_turn"]["status"], rows["armed"]["status"]),
+                         ("stale", "stale"))   # onboard still shows the cascade
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, [], out)
+        self.assertIn("skipped arm: armed in the onboarding record", out)
+        self.hooks = "paused"                     # the hooks' own change still re-arms
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(self.ran, ["arm"], out)
+        self.assertIn("starting at the armed stage (stale: live_turn is stale", out)
+
+    def test_an_invalidated_armed_behind_a_stale_live_turn_still_re_arms(self):
+        """F1 of the review on #2571: ``live_turn`` re-recorded against another head marks
+        ``armed`` invalidated; the hooks still match, but that ``armed`` was shown against the
+        old live turn, so a later stale ``live_turn`` must not let setup skip ``arm``."""
+        from diaktoros import onboarding
+        loop = self._record_live_turn_then_armed()
+        self.head = "c" * 40
+        onboarding.record(loop, "live_turn", "passed", "hermes dk selftest", "turn ok",
+                          pr=(7, self.head), runtime_file=self.runtime_file)
+        self.head = "b" * 40                      # and then the PR moved on again
+        rows = onboarding.inspect(loop, runtime_file=self.runtime_file)
+        self.assertEqual((rows["live_turn"]["status"], rows["armed"]["status"],
+                          rows["armed"]["cause"], rows["armed"]["own"]),
+                         ("stale", "stale", "live_turn", "stale"))
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, ["arm"], out)
+        self.assertNotIn("skipped arm", out)
+        self.assertIn("starting at the armed stage (stale: live_turn is stale", out)
+
+    def test_an_earlier_stale_check_stage_still_re_arms(self):
+        self._record_live_turn_then_armed()
+        self.head = "b" * 40
+        data = json.loads(LOOP_FILE.read_text())    # the loop stage goes stale too (#1714)
+        data["host"] = "https://elsewhere.example"
+        LOOP_FILE.write_text(json.dumps(data))
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(self.ran, ["doctor", "selftest", "arm"], out)
+        self.assertIn("starting at the armed stage (stale: loop is stale", out)
+
     def test_a_dry_run_over_a_current_record_writes_nothing(self):
         loop = self.installed()
         self.record_checks(loop)

@@ -17,30 +17,31 @@ for that commit alone, under the sweep's per-loop lock, so the two never act on 
 A suite on any other commit (an older head, a branch with no loop PR) does nothing. Each suite is
 noted (``NUDGES``) before the lock is taken: a sweep that holds it acts on every note as its last
 step (``drain``, from ``watchdog.sweep_loop``), so a suite that finished after that sweep read CI
-still gets a read. The drain takes notes until none is left, so one written while it acts is not
-stranded when its own handler stops waiting. No delivery starts a turn the sweep would not have queued, and the sweep stays
-the backstop for one that never arrives.
+still gets a read. Whoever lets the lock go then looks for notes once more and, if any, takes it
+back without waiting (``handoff``, #1996), so a note whose handler stopped waiting just before
+the release is not left for the next sweep. Both are bounded (``DRAIN_PASSES``, ``HANDOFFS``):
+a stream of suites cannot hold the lock, and notes past the bound stay noted for the next sweep
+or delivery. No delivery starts a turn the sweep would not have queued, and the sweep stays the
+backstop for one that never arrives.
 """
 from __future__ import annotations
 
 import contextlib
 import fcntl
 import os
-import re
 import time
 
 from . import ci, ci_fix, config, gh, hostdirs, main_check, review_kick
+from .ci_nudges import NUDGES, NUDGES_MAX, _SHA, _take, note, taken  # noqa: F401
 from .util import log, register_lock, silence
 
 # The gateway gives a gate 30 seconds (``gate_failures``): wait this long for a running sweep's
 # lock, then leave the commit to that sweep, which reads CI itself.
 LOCK_WAIT_S = 20.0
-NUDGES = "ci-nudges.json"     # suites noted for the lock's holder, newest last
-NUDGES_MAX = 50
-DRAIN_PASSES = 5              # a drain's takes of the notes; any left wait for the next holder
+DRAIN_PASSES = 5              # a drain's takes of the notes; any left stay noted
+HANDOFFS = 3                  # times a holder that let the lock go takes it back for notes left
 # The watchdog's per-loop sweep lock (``watchdog.sweep_loop``), in the loop's state directory.
 SWEEP_LOCK = register_lock("sweep.lock")
-_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def gate(loop: dict, st, payload: dict) -> None:
@@ -55,57 +56,79 @@ def gate(loop: dict, st, payload: dict) -> None:
         silence("check_suite: payload has no head sha")
     numbers = [pr.get("number") for pr in suite.get("pull_requests") or []
                if isinstance(pr, dict) and type(pr.get("number")) is int and pr["number"] > 0]
-    note(st, head, numbers)
+    token = note(st, head, numbers)
+    by_head: dict[str, list[str]] = {}
     with sweep_lock(st, LOCK_WAIT_S) as held:
-        if not held:
-            silence(f"check_suite @ {head[:7]}: noted for the running watchdog sweep, which acts "
-                    "on it before it ends", "accepted")
-        acted = drain(loop, st)
-    if not acted:
+        if held:
+            drain(loop, st, by_head=by_head)
+            if token not in taken(st):
+                # Its note left the queue untaken (``NUDGES_MAX`` dropped it): read its own PRs
+                # here, as the drain would have (F4), even where a note for the same commit naming
+                # other PRs was taken. Past ``TAKEN_MAX`` this can repeat a holder's read of the
+                # commit, never a turn (``ci_fix`` keys it by head).
+                by_head.setdefault(head, []).extend(_act(loop, st, head, numbers, log))
+    if not held:
+        silence(f"check_suite @ {head[:7]}: noted for the running watchdog sweep, which takes "
+                "it when it lets the lock go (or the next sweep does)", "accepted")
+    handoff(loop, st, by_head=by_head)
+    # This delivery's record is its own commit's alone (review on #2577, F3): commits noted by
+    # other deliveries, taken here, are logged, never made this one's verdict.
+    for other, acted in by_head.items():
+        if other != head and acted:
+            log(f"check_suite @ {other[:7]}, noted by another delivery: " + "; ".join(acted))
+    if head not in by_head:
+        silence(f"check_suite @ {head[:7]}: noted; another holder of the sweep lock took it "
+                "and acts on it", "accepted")
+    if not by_head[head]:
         silence(f"check_suite @ {head[:7]}: not the base's head nor an open loop PR's head")
-    silence(f"check_suite @ {head[:7]}: " + "; ".join(acted), "accepted")
+    silence(f"check_suite @ {head[:7]}: " + "; ".join(dict.fromkeys(by_head[head])), "accepted")
 
 
-def note(st, head: str, numbers: list[int]) -> None:
-    """Note a finished suite for whoever holds the sweep lock next (``drain``)."""
-    path = st.dir / NUDGES
-    with st.locked():
-        noted = st.kv_get(path, [])
-        noted = noted if isinstance(noted, list) else []
-        st.kv_set(path, (noted + [{"head": head, "numbers": numbers}])[-NUDGES_MAX:])
-
-
-def drain(loop: dict, st, log=log) -> list[str]:
+def drain(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
     """Act on every noted suite, once per commit per take, under the sweep lock its caller
     holds: the handler that took it, or the watchdog's sweep as its last step. Notes written
-    while it acts are taken next (review on #1992, F4): their handler may have stopped waiting
-    for the lock. What was acted on."""
-    acted = []
+    while it acts are taken next (review on #1992, F4), up to ``DRAIN_PASSES`` takes; any left
+    are ``handoff``'s once the lock is let go. What was acted on; ``by_head`` (if given) gets
+    each commit taken, with what was acted on for it, so a handler records its own alone."""
+    acted, by_head = [], {} if by_head is None else by_head
     for _ in range(DRAIN_PASSES):
         heads = _take(st)
         if not heads:
             break
         for head, numbers in heads.items():
-            try:
-                acted += act(loop, st, head, numbers)
-            except Exception as exc:          # one unreadable commit does not drop the rest
-                log(f"check_suite @ {head[:7]} not acted on: {type(exc).__name__}: {exc}")
+            done = _act(loop, st, head, numbers, log)
+            acted += done
+            by_head.setdefault(head, []).extend(done)
     return acted
 
 
-def _take(st) -> dict[str, list[int]]:
-    """The noted suites, cleared: the PR numbers named for each commit."""
-    path = st.dir / NUDGES
-    with st.locked():
-        noted = st.kv_get(path, [])
-        st.kv_set(path, [])
-    heads: dict[str, list[int]] = {}
-    for entry in noted if isinstance(noted, list) else []:
-        head = entry.get("head") if isinstance(entry, dict) else None
-        if isinstance(head, str) and _SHA.fullmatch(head):
-            heads.setdefault(head, []).extend(n for n in entry.get("numbers") or []
-                                              if type(n) is int and n > 0)
-    return heads
+def _act(loop: dict, st, head: str, numbers: list[int], log=log) -> list[str]:
+    """``act``, with one unreadable commit logged (nothing acted on), not dropping the rest."""
+    try:
+        return act(loop, st, head, numbers)
+    except Exception as exc:
+        log(f"check_suite @ {head[:7]} not acted on: {type(exc).__name__}: {exc}")
+        return []
+
+
+def handoff(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
+    """Run by whoever just let the sweep lock go (#1996): while notes are left, take the lock back
+    without waiting and ``drain``. A note written before the release (its handler may have
+    stopped waiting, trusting the holder) is seen here; one written after it finds the lock free
+    for its own handler, or held by a holder that runs this in turn. ``HANDOFFS`` bounds it: what
+    is still noted then waits for the next sweep or delivery. What was acted on (``by_head``
+    as ``drain``'s)."""
+    acted = []
+    for _ in range(HANDOFFS):
+        with st.locked():
+            noted = st.kv_get(st.dir / NUDGES, [])
+        if not noted:
+            break
+        with sweep_lock(st, 0) as held:
+            if not held:                      # another holder: it runs this when it lets go
+                break
+            acted += drain(loop, st, log, by_head)
+    return acted
 
 
 def act(loop: dict, st, head: str, numbers: list[int]) -> list[str]:
@@ -132,7 +155,10 @@ def wake_held_reviews(loop: dict, head: str, prs: list[dict]) -> int:
     """Make the reviews held for CI at ``head`` due now and run the worker's recovery, which
     claims them: the claim re-reads CI and holds one whose checks still run (#241)."""
     from . import gate, run_supervisor
-    sup = run_supervisor.Supervisor(run_supervisor.production_ledger(), create=False)
+    db = run_supervisor.production_ledger()
+    if not os.path.exists(db):             # no ledger yet: no turn, so none held (#1997)
+        return 0
+    sup = run_supervisor.Supervisor(db, create=False)
     released = sum(sup.release_ci_holds(loop["repo"], pr["number"], head) for pr in prs)
     if released:
         gate.resume_isolated(loop)

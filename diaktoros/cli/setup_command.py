@@ -482,9 +482,21 @@ def _setup_arm(args, loop_id: str, admin: str, interactive: bool) -> int:
     return rc
 
 
+def _armed_current(rows: dict) -> bool:
+    """Whether the record covers ``arm``: ``armed`` reads ``passed``, or it is stale only
+    because ``live_turn`` (the stage before it) is stale while its own fingerprint, the hook
+    state, still matches (#1713). A new PR head says nothing about the hooks; any other
+    earlier stale stage, an invalidated entry or changed hooks still re-asks for arming."""
+    row = rows.get("armed") or {}
+    if _status(rows, "armed") == onboarding.PASSED:
+        return True
+    return (_status(rows, "armed") == onboarding.STALE and row.get("cause") == "live_turn"
+            and row.get("own") == onboarding.PASSED)
+
+
 def _arm_step(args, loop_id: str, admin: str, interactive: bool) -> int:
     rows = _resume_rows(config.load_id(loop_id))
-    if _status(rows, "armed") == onboarding.PASSED:
+    if _armed_current(rows):
         print("   ⏭  skipped arm: armed in the onboarding record, and the hooks are still "
               "as recorded")
         return 0
