@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import re
 
+from . import md_fences
+
 ISSUE_BODY_BYTES = 8000
 ISSUE_TITLE_BYTES = 256
 COMMENT_BYTES = 4000
@@ -33,11 +35,6 @@ _ANY_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*:?\s*$)")
 # An issue number is at most 10 digits: a longer run is no reference, so ``int`` never meets
 # one (past 4300 digits it raises: review on #1948).
 _STATUS = re.compile(r"\b(not met|met|deferred to #(\d{1,10}))\b", re.IGNORECASE)
-# A list line (``- x``, ``* x``, ``1. x``): its indent, its marker and the spaces after it, which
-# say where the item's content starts. A requirement item is a top-level one: a line indented
-# into an open item is a nested note (evidence), and a line with no marker is prose; neither
-# needs a status (``_top_items``).
-_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 # ``#N`` on its own: not ``owner/repo#N`` (another repository), ``&#N;`` (an HTML entity) or ``##``.
 _REFERENCE = re.compile(r"(?<![\w/&#])#(\d{1,10})\b")
 _DEFERRED = re.compile(r"\bdeferred to #(\d{1,10})\b", re.IGNORECASE)
@@ -250,33 +247,10 @@ def referenced_section(loop: dict, number: int, texts: list[str], closing,
             "words.\n\n" + "\n".join(rows))
 
 
-_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
-
-
-def _unfenced(lines: list[str]) -> list[str]:
-    """``lines`` with each fenced code block (its fences too) blanked, as Markdown renders it:
-    code, not items, statuses or headings (seventh review on #2573: a ``diff`` given as evidence
-    read as unmarked items). A block runs to a closing fence of its character at least as long,
-    or to the end, as an unclosed one does."""
-    out, fence = [], None
-    for line in lines:
-        found = _FENCE.match(line)
-        if fence is None and found and not (found.group(1)[0] == "`" and "`" in found.group(2)):
-            fence = found.group(1)
-        elif fence is not None and found and found.group(1)[0] == fence[0] \
-                and len(found.group(1)) >= len(fence) and not found.group(2).strip():
-            fence = None
-        elif fence is None:
-            out.append(line)
-            continue
-        out.append("")
-    return out
-
-
 def _section(body: str) -> list[str] | None:
     """The ``Requirements`` section's lines, blank ones kept and fenced code blanked
-    (``_unfenced``), or None when there is none."""
-    lines = _unfenced(body.splitlines())
+    (``md_fences.unfenced``), or None when there is none."""
+    lines = md_fences.unfenced(body.splitlines())
     for i, line in enumerate(lines):
         if HEADING.match(line):
             out = []
@@ -307,9 +281,8 @@ def _top_items(lines: list[str]) -> list[str]:
         if not line.strip():
             blank = True
             continue
-        found = _ITEM.match(line)
-        indent = len((found.group(1) if found else line[:len(line) - len(line.lstrip())])
-                     .expandtabs(4))
+        found = md_fences.ITEM.match(line)
+        indent = md_fences.indent(line)
         if found or blank:
             while open_items and indent < open_items[-1]:
                 open_items.pop()
@@ -317,13 +290,10 @@ def _top_items(lines: list[str]) -> list[str]:
             out.append(line)                  # the text of a top-level item's bare marker
         empty = False
         if found:
-            # A tab in the gap reaches the next stop from the marker's real column (fifth review).
-            start = indent + len(found.group(2))
-            gap = len((found.group(1) + found.group(2) + (found.group(3) or " ")).expandtabs(4)) - start
             if not open_items:
                 empty = found.group(3) is None
                 out += [] if empty else [line]
-            open_items.append(start + (gap if gap <= 4 else 1))
+            open_items.append(md_fences.item_col(found))
         blank = False
     return out
 

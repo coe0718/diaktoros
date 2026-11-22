@@ -16,7 +16,7 @@ def check(body: str, verdict: str = "APPROVE") -> str:
     return issue_facts.check(LOOP, 7, verdict, "## Requirements\n- first: met\n\n" + body)
 
 
-class Fences(unittest.TestCase):
+class Mocked(unittest.TestCase):
     def setUp(self):
         fake = tif.Fake()
         for name, fn in (("api", fake.api), ("issue_comments_read", fake.comments)):
@@ -24,6 +24,8 @@ class Fences(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
+
+class Fences(Mocked):
     def test_fenced_evidence_is_not_an_item(self):
         for body in (DIFF, DIFF.replace("```", "~~~~"), "  ```\n  - nested: code\n  ```\n",
                      "````md\n- a: x\n```\n- b: y\n````\n"):       # a shorter fence inside
@@ -44,6 +46,25 @@ class Fences(unittest.TestCase):
 
     def test_an_unclosed_fence_runs_to_the_end(self):
         self.assertEqual(check("```diff\n- old value\n- not met\n"), "")
+
+
+class IndentedFences(Mocked):
+    """Eighth review on #2573 (F8): a fence opens only up to three columns past the content column
+    of the list item it is in; more is indented code. And a block in a list item ends with the
+    item, so a real top-level item after it is read and, unmarked, refused."""
+
+    def test_an_indented_backtick_line_hides_no_real_item(self):
+        for body in ("    ```\n\n- second: export flag\n",              # Vex's case: in item one
+                     "Prose.\n\n    ```\n\n- second: export flag\n",   # after prose: code
+                     "  ```diff\n  - old\n\n- second: export flag\n"):  # unclosed, in item one
+            with self.subTest(body):
+                self.assertIn('"- second: export flag" has no status', check(body))
+
+    def test_a_fence_in_a_list_item_is_still_code(self):
+        for body in ("- two: met\n\n     ```\n     - nested: code\n     ```\n",
+                     "1. two: met\n\n   ```diff\n   - old value\n   ```\n"):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
 
 
 if __name__ == "__main__":
