@@ -249,6 +249,14 @@ class TurnHold:
         if busy:
             raise broker.BrokerDenied(f"{busy}: the merge waits for it")
 
+    def confirm(self) -> None:
+        """The hold is still this push's and nothing was claimed under it (F3 on #2576)."""
+        from .run_supervisor import merge_hold, production_ledger
+        why = merge_hold.confirm(production_ledger(), self.loop["repo"], self.number,
+                                 self.token, IN_FLIGHT)
+        if why:
+            raise broker.BrokerDenied(f"{why}: the merge waits for it")
+
     def release(self) -> None:
         if not self.token:
             return
@@ -305,6 +313,7 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
             loop, st, number, head, again) if isinstance(again, list) else None)
         if why:
             raise broker.BrokerDenied(f"{why}, read again before the push")
+        hold.confirm()
         if approval is not None and not identity:
             _record(st, new_head, {"number": number, "from": head, "review": approval.get("id"),
                                    "base": base, "at": time.time()})

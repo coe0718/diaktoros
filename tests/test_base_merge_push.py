@@ -10,6 +10,8 @@ Built on ``test_base_merge.Base``: real Git, a local bare remote, nothing on the
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import sqlite3
+import time
 import unittest
 from unittest import mock
 
@@ -133,6 +135,45 @@ class LateRuling(NotPushed, tbm.RuledBase):
             new = self.update()
         self.assertEqual(new, self.remote_head())
         self.assertEqual(self.carried(new)["review"], 21)
+
+
+class HoldLapses(NotPushed, tbm.Base):
+    """Review on #2576, F3: the reviews read after the hold is taken outlast ``HOLD_S``, so the
+    hold lapses and a turn is claimed at the head; the push checks its hold first and stops."""
+
+    def lapse_after_take(self, db, lapse, claim):
+        from diaktoros.run_supervisor import merge_hold
+        real = merge_hold.take
+
+        def take(*args, **kwargs):
+            got = real(*args, **kwargs)
+            with sqlite3.connect(db) as con:
+                if lapse:
+                    con.execute("UPDATE merge_holds SET created=?",
+                                (time.time() - merge_hold.HOLD_S - 1,))
+                if claim:
+                    now = time.time()
+                    con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, "
+                                "created, updated) VALUES ('r', 'd', ?, 7, ?, 'reviewer', "
+                                "'running', ?, ?)", (tbm.REPO, self.head, now, now))
+            con.close()
+            return got
+        return mock.patch.object(merge_hold, "take", side_effect=take)
+
+    def test_a_hold_that_lapsed_during_the_reads_stops_the_push(self):
+        from diaktoros import run_supervisor
+        for lapse, claim, said in ((True, False, "the merge hold lapsed"),
+                                   (True, True, "the merge hold lapsed"),
+                                   (False, True, "a reviewer turn is running")):
+            with self.subTest(lapse=lapse, claim=claim):
+                db = self.root / f"runs-{lapse}-{claim}.sqlite"
+                run_supervisor.Supervisor(db)
+                with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db), \
+                        self.lapse_after_take(db, lapse, claim), \
+                        mock.patch.object(base_merge, "log") as log:
+                    self.assertEqual(self.update(), "")
+                self.assert_not_pushed()
+                self.assertIn(said, str(log.call_args_list[-1]))
 
 
 class RealReady(tbm.Base):
