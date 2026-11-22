@@ -313,7 +313,7 @@ class Waits(Base):
         self.assert_waits()
 
 
-class Ruled(Base):
+class RuledBase(Base):
     """#2364 (seen on #2354): the adjudicator's approval on its ACCEPT ruling (#905) at the head.
     The sweep approves, then dismisses the change request it overruled, both at that head; a merge
     in between stranded the change request, and the new head went for a second ruling."""
@@ -343,6 +343,8 @@ class Ruled(Base):
         self.rows[0]["dismiss"] = "posted"
         self.reviews = [{**self.overruled, "state": "DISMISSED"}, self.ruled]
 
+
+class Ruled(RuledBase):
     def test_the_merge_waits_until_the_approval_and_dismissal_are_settled(self):
         self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews),
                          "the adjudicator's ACCEPT is still being acted on (dismiss: pending)")

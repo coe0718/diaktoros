@@ -185,6 +185,11 @@ def _review_waits(loop: dict, number: int, head: str, reviews) -> str:
     if not isinstance(reviews, list):
         return "its reviews could not be read"
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    if latest is None and any(gh.review_state(r) not in gate.NOT_VERDICTS
+                              for r in gate._verdicts_at(reviews, loop, head)):
+        # A verdict is here but none is provably the latest (an undated or unfamiliar one): a
+        # change request may stand, so the merge waits (review on #2576). No verdict: nothing.
+        return "its verdicts at the head cannot be ordered"
     if latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
         # The fixer answers it, or a ruling does at the cap (#1907): a merge would move the head
         # under either, and the merged head would be reviewed with the findings still open.

@@ -17,21 +17,27 @@ import test_base_merge as tbm
 from diaktoros import base_merge, ready, safe_push, state as state_mod
 
 
-class ReadAgain(tbm.Base):
-    """#2288: the reviews at the sweep's read were idle; something lands while the merge runs."""
+def during_merge(change):
+    """``change`` runs while the merge is built: after the sweep's read, before the push."""
+    real = safe_push._dry
 
-    def during_merge(self, change):
-        real = safe_push._dry
+    def dry(*args, **kwargs):
+        change()
+        return real(*args, **kwargs)
+    return mock.patch.object(safe_push, "_dry", side_effect=dry)
 
-        def dry(*args, **kwargs):
-            change()
-            return real(*args, **kwargs)
-        return mock.patch.object(safe_push, "_dry", side_effect=dry)
 
+class NotPushed:
     def assert_not_pushed(self):
         self.assertEqual(self.remote_head(), self.head)
         self.assertEqual(base_merge._records(self.loop), {})
         self.assertEqual(self.notices, [])
+
+
+class ReadAgain(NotPushed, tbm.Base):
+    """#2288: the reviews at the sweep's read were idle; something lands while the merge runs."""
+
+    during_merge = staticmethod(during_merge)
 
     def test_a_change_request_posted_while_the_merge_runs_stops_the_push(self):
         late = tbm.approval(self.head, review_id=12, state="CHANGES_REQUESTED",
@@ -47,6 +53,32 @@ class ReadAgain(tbm.Base):
         with self.during_merge(lambda: setattr(self, "reviews", None)):
             self.assertEqual(self.update(), "")
         self.assert_not_pushed()
+
+    def test_an_undated_change_request_posted_while_the_merge_runs_stops_the_push(self):
+        # Review on #2576, F1: an undated verdict leaves no provable latest one; it may be a
+        # change request still owed, so the push waits rather than reading it as none.
+        late = tbm.approval(self.head, review_id=12, state="CHANGES_REQUESTED", at=None)
+        with self.during_merge(lambda: self.reviews.append(late)), \
+                mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assert_not_pushed()
+        self.assertIn("verdicts at the head cannot be ordered, read again before the push",
+                      str(log.call_args_list[-1]))
+
+    def test_an_undated_verdict_at_the_sweeps_read_waits(self):
+        self.reviews.append(tbm.approval(self.head, review_id=12, state="CHANGES_REQUESTED", at=None))
+        with mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assert_not_pushed()
+        self.assertIn("cannot be ordered", str(log.call_args_list[-1]))
+
+    def test_a_head_with_no_verdict_still_merges(self):
+        # Only an indeterminate verdict waits: an unreviewed head is merged in, with nothing carried.
+        self.reviews = [tbm.approval(self.head, review_id=12, state="COMMENTED")]
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
+        self.assertIsNone(self.carried(new))
 
     def test_an_unchanged_review_list_still_pushes_and_carries(self):
         new = self.update()
@@ -78,6 +110,29 @@ class RecordFirst(tbm.Base):
                 self.update()
         self.assertEqual(self.remote_head(), self.head)
         self.assertEqual(self.notices, [])
+
+
+class LateRuling(NotPushed, tbm.RuledBase):
+    """Review on #2576, F2: settled at the sweep's read, the adjudicator's ACCEPT is acted on again
+    while the merge is built; the second read sees its write on the wire and stops the push."""
+
+    def test_a_ruling_write_on_the_wire_by_the_push_stops_it(self):
+        for state in ("posting", "uncertain"):
+            with self.subTest(state):
+                self.settle()
+                with during_merge(lambda: self.rows[0].__setitem__("dismiss", state)), \
+                        mock.patch.object(base_merge, "log") as log:
+                    self.assertEqual(self.update(), "")
+                self.assert_not_pushed()
+                self.assertIn(f"(dismiss: {state}), read again before the push",
+                              str(log.call_args_list[-1]))
+
+    def test_settled_at_both_reads_pushes_and_carries(self):
+        self.settle()
+        with during_merge(lambda: None):
+            new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertEqual(self.carried(new)["review"], 21)
 
 
 class RealReady(tbm.Base):
