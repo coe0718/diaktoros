@@ -246,8 +246,9 @@ def _escalation(loop: dict, number: int, head: str, marker,
     """An escalated or parked head waits for its ruling; once it is in, the decision is the
     operator's. With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
     The reason says which (#1245): a stale "awaiting" after the ruling misled. An upheld shadow
-    review the fixer answers waits on no person: the shadow line says so (#1353), while that
-    fixer turn has not ended unanswered (``_shadow_fix_ended``, #2263).
+    review the fixer answers waits on no person: the shadow line says so (#1353), or this one
+    with ``shadow.escalate`` off (#2269), while that fixer turn has not ended unanswered
+    (``_shadow_fix_ended``, #2263).
 
     A parked cap marker holds the head only while ``gate.breach_holds`` says so (#1468): a
     dismissed verdict or a raised cap ends it, as in the watchdog and ``explain``. ``spent`` is
@@ -263,6 +264,12 @@ def _escalation(loop: dict, number: int, head: str, marker,
             spent is None or gate.breach_holds(marker, head, spent, loop["cap"]))):
         return []
     ruled = explain._ruled(loop, number, head, marker)
+    if ruled == "REJECT" and gate.shadows.fixer_takes_upheld(loop, marker, head):
+        # #2269: ``shadow.escalate`` off, so no shadow hold: this line is the hold, and the fixer
+        # still answers the upheld findings (``queue_shadow_fix`` never reads the setting).
+        return _shadow_fix_ended(number, head, loop) or [(FAILURE, (
+            f"escalated: {gate.shadows.upheld_fix_line(head[:7], '', '')} (with "
+            "`shadow.escalate` off, this ruling's line is the hold)"))]
     if ruled:
         return [(FAILURE, f"escalated: the adjudicator ruled {ruled} at head {head[:7]}; a person "
                           "decides (merge, close, or push a new head)")]

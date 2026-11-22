@@ -103,14 +103,8 @@ def _next_approval(c) -> tuple[str, str] | None:
         if c.shadow_held.startswith("waiting on"):
             kind = "wait"
             action = f"{c.shadow_held} — head {c.short} is approved but held until it lands"
-        elif c.shadow_fix and c.shadow_turn[0] and not c.shadow_turn[1]:
-            kind, action = _shadow_fix_ended(c)        # ended, and no sweep re-arms it (#2262)
         elif c.shadow_fix:
-            kind = "fixer-push"
-            again = (f"the next armed watchdog sweep re-arms the {c.shadow_turn[0]} shadow-fix "
-                     "fixer turn, and " if c.shadow_turn[1] == "rearmed" else "")
-            action = (f"{c.shadow_held} — do not merge head {c.short}; {again}the fixer's turn on "
-                      "the upheld findings answers it")
+            kind, action = _upheld_next(c)
         else:
             kind = "operator"
             action = (f"your decision: {c.shadow_held} — do not merge head {c.short} until you have "
@@ -120,12 +114,29 @@ def _next_approval(c) -> tuple[str, str] | None:
         action = (f"{c.unlifted[0]} — once nothing holds it (a dismissal by the review's author, "
                   "a maintainer, or the sweep under `adjudicator_approves` for the reviewer's), a "
                   f"human merges head {c.short}")
-    elif c.approved:
+    elif c.approved and not c.ruled:      # a ruling holds it (#2269): ``_next_ruling`` says how
         kind = "none"
         action = f"nothing — head {c.short} is approved; a human merges it"
     else:
         return None
     return kind, action
+
+
+def _upheld_next(c) -> tuple[str, str]:
+    """Next event for an upheld shadow review the fixer takes: its push, or, once its turn ended
+    with no push and no sweep re-arms it, ``_shadow_fix_ended`` (#2262). The hold is the shadow
+    line, or the ruling's own line with ``shadow.escalate`` off (#2269)."""
+    if c.shadow_turn[0] and not c.shadow_turn[1]:
+        return _shadow_fix_ended(c)
+    again = (f"the next armed watchdog sweep re-arms the {c.shadow_turn[0]} shadow-fix "
+             "fixer turn, and " if c.shadow_turn[1] == "rearmed" else "")
+    return "fixer-push", (f"{_upheld_hold(c)} — do not merge head {c.short}; {again}the fixer's "
+                          "turn on the upheld findings answers it")
+
+
+def _upheld_hold(c) -> str:
+    """The line that holds an upheld head: the shadow hold, or with it off the ruling's (#2269)."""
+    return c.shadow_held or gate.shadows.upheld_fix_line(c.short, *c.shadow_turn[:2])
 
 
 def _shadow_fix_ended(c) -> tuple[str, str]:
@@ -149,8 +160,8 @@ def _shadow_fix_ended(c) -> tuple[str, str]:
         kind, step = "operator", _reconcile_first(c, why)
     else:
         kind, step = "operator", f"`retry` has nothing to re-arm for it ({why or 'not offered'})"
-    # The hold (``c.shadow_held``) already names the ended turn (#2263 review F1).
-    return kind, (f"{c.shadow_held} — do not merge head {c.short}: {step}; or fix it by hand, "
+    # The hold (``_upheld_hold``) already names the ended turn (#2263 review F1).
+    return kind, (f"{_upheld_hold(c)} — do not merge head {c.short}: {step}; or fix it by hand, "
                   "push, and re-request review")
 
 
@@ -214,6 +225,8 @@ def _next_ruling(c) -> tuple[str, str] | None:
         kind = "retry"
         action = (f"retry adjudicator delivery for head {c.short} on the next armed watchdog sweep "
                   "after checking the current head and review cap — no ruling is underway yet")
+    elif c.upheld_fix:         # #2269: ``shadow.escalate`` off; the fixer still answers it
+        kind, action = _upheld_next(c)
     elif c.ruled:
         kind = "operator"
         action = (f"your decision: the adjudicator ruled {c.ruled} at head {c.short} (its comment is "
