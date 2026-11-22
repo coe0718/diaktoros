@@ -37,7 +37,7 @@ _STATUS = re.compile(r"\b(not met|met|deferred to #(\d{1,10}))\b", re.IGNORECASE
 # say where the item's content starts. A requirement item is a top-level one: a line indented
 # into an open item is a nested note (evidence), and a line with no marker is prose; neither
 # needs a status (``_top_items``).
-_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\S")
+_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 # ``#N`` on its own: not ``owner/repo#N`` (another repository), ``&#N;`` (an HTML entity) or ``##``.
 _REFERENCE = re.compile(r"(?<![\w/&#])#(\d{1,10})\b")
 _DEFERRED = re.compile(r"\bdeferred to #(\d{1,10})\b", re.IGNORECASE)
@@ -276,8 +276,9 @@ def _top_items(lines: list[str]) -> list[str]:
     at least that far is nested in it (evidence), any other ends it. So a list indented as a whole
     is still top level, a bullet under ``1. item`` needs three spaces to nest, and an item that
     dedents is the new level. Prose after a blank line, not indented into the open item, ends it
-    too; prose with no blank line before it is the item's own text."""
-    open_items, blank, out = [], False, []
+    too; prose with no blank line before it is the item's own text. A marker alone on its line
+    starts an item whose text is the next line, indented past it (fourth review)."""
+    open_items, blank, out, empty = [], False, [], False
     for line in lines:
         if not line.strip():
             blank = True
@@ -288,10 +289,14 @@ def _top_items(lines: list[str]) -> list[str]:
         if found or blank:
             while open_items and indent < open_items[-1]:
                 open_items.pop()
+        if empty and not found and not blank and open_items and indent >= open_items[-1]:
+            out.append(line)                  # the text of a top-level item's bare marker
+        empty = False
         if found:
+            gap = len((found.group(3) or " ").expandtabs(4))
             if not open_items:
-                out.append(line)
-            gap = len(found.group(3).expandtabs(4))
+                empty = found.group(3) is None
+                out += [] if empty else [line]
             open_items.append(indent + len(found.group(2)) + (gap if gap <= 4 else 1))
         blank = False
     return out
