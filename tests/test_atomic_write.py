@@ -66,6 +66,7 @@ CALLERS = {
     # their pruned files through it.
     "diaktoros/util.py::append_keeping",
     "docs/site/publish-history.py::_write", "docs/site/publish-stats.py::publish",
+    "docs/site/build-data.py::_write",
 }
 BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile",
            "shutil.move"}
