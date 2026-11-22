@@ -560,6 +560,10 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         return _held_step(row, loop_id)
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
+        if run_supervisor.LIMIT_WAIT in str(row.get('error') or ''):
+            # #2608: the wait for GitHub's reset spends none of the retry limit's attempts.
+            return (f"read again in {due}s, after GitHub's rate limit resets (no attempt spent; "
+                    "a start still depends on host eligibility)")
         return (f"attempt {(row['retries'] or 0) + 1} of {run_supervisor.MAX_RETRIES} due in {due}s "
                 "(recorded earliest recheck on the next event or armed watchdog sweep; "
                 "a start still depends on host eligibility)")

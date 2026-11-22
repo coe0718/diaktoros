@@ -86,6 +86,11 @@ CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8
 RETRY_BASE = 120.0
 RETRY_CAP = 3600.0
+# #2608: a claim read that failed while GitHub's rate limit was spent waits for the reset (plus
+# this margin), spending no attempt; for at most LIMIT_WAIT_MAX after the row was queued.
+LIMIT_WAIT = "waiting for the GitHub API limit to reset"
+LIMIT_MARGIN_S = 30.0
+LIMIT_WAIT_MAX = 6 * 3600.0
 # What a turn's output leaves in ``runs.detail`` (#1658): the sandbox is discarded, so the last
 # 8 KB of stdout (the agent's own closing text) and 2 KB of stderr are kept, redacted. The one
 # place the split is named: ``output_detail``, the fixture worker's file tail and the production

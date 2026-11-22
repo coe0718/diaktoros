@@ -41,6 +41,7 @@ OUTCOMES = ("spent", "free", "limited", "unsent", "error")
 
 _counts: Counter = Counter()   # (hour, login, method, shape, outcome) -> calls
 _limits: dict = {}             # login -> the newest rate-limit headers seen, with when
+_spent: dict = {}              # login -> the reset of a limit seen spent (#2608), in any process
 _pending = 0
 _name = ""
 _registered = False
@@ -112,19 +113,45 @@ def record(login: str, method: str, path: str, result: str, headers: dict | None
     """Count one call; never raises, and does nothing in a process that keeps no count."""
     global _pending
     try:
+        seen = {k: (headers or {}).get(f"x-ratelimit-{k}") for k in LIMIT_HEADERS}
+        _note_spent(login, seen)
         if not _writable():
             return
-        hour = int(time.time() // 3600 * 3600)
-        _counts[(hour, login, method, shape(path), result)] += 1
-        seen = {k: (headers or {}).get(f"x-ratelimit-{k}") for k in LIMIT_HEADERS}
         if seen["used"] is not None:
             _limits[login] = {**seen, "at": time.time()}
+        hour = int(time.time() // 3600 * 3600)
+        _counts[(hour, login, method, shape(path), result)] += 1
         _register()
         _pending += 1
         if _pending >= FLUSH_EVERY:
             flush()
     except Exception:  # noqa: BLE001 - a count must never fail a call
         return
+
+
+def _note_spent(login: str, seen: dict) -> None:
+    """Keep, per login, the reset of a limit GitHub says is spent; forget it once GitHub
+    answers with calls left. Kept even where nothing is counted (a worker): ``limited_until``."""
+    if seen["remaining"] is None:
+        return
+    try:
+        if str(seen["remaining"]) == "0":
+            _spent[login] = float(seen["reset"])
+        else:
+            _spent.pop(login, None)
+    except (TypeError, ValueError):
+        _spent.pop(login, None)
+
+
+def limited_until(now: float | None = None) -> float | None:
+    """When the rate limit this process last saw spent resets (epoch seconds), or None.
+
+    A login whose newest answer had no calls left (``remaining`` 0) and a reset still ahead names
+    that reset. With several, the latest: a read that failed while any of them was spent waits
+    for all of them (#2608)."""
+    now = time.time() if now is None else now
+    resets = [reset for reset in _spent.values() if reset > now]
+    return max(resets) if resets else None
 
 
 def _writable() -> bool:

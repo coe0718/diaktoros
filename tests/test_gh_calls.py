@@ -31,9 +31,11 @@ class Counted(unittest.TestCase):
             self.addCleanup(shutil.rmtree, kept, True)
         gh_calls._counts.clear()
         gh_calls._limits.clear()
+        gh_calls._spent.clear()
         self.addCleanup(gh_calls._counts.clear)
         self.addCleanup(gh_calls._limits.clear)
-        test, self.used = self, 100
+        self.addCleanup(gh_calls._spent.clear)
+        test, self.used, self.reset = self, 100, int(time.time()) + 900
 
         class Api(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -75,6 +77,7 @@ class Counted(unittest.TestCase):
                 if self.path.endswith("/limited"):
                     self.send_response(403)
                     self.send_header("X-RateLimit-Remaining", "0")
+                    self.send_header("X-RateLimit-Reset", str(test.reset))
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
@@ -247,6 +250,20 @@ class Counted(unittest.TestCase):
         with mock.patch.object(gh_cache, "_WRITES", False):
             self.get("/repos/owner/one/pulls/7")
             gh_calls.flush()
+        self.assertFalse(gh_calls.directory().exists())
+
+    def test_a_spent_limit_names_its_reset_even_where_nothing_is_counted(self):
+        # #2608: a claim read refused by the spent limit waits for this reset instead of
+        # spending an attempt; workers that count nothing must still know it.
+        with mock.patch.object(gh_cache, "_WRITES", False):
+            self.assertIsNone(gh_calls.limited_until())
+            self.get("/repos/owner/one/pulls/7")                      # 4,899 calls left
+            self.assertIsNone(gh_calls.limited_until())
+            self.assertIsNone(self.get("/repos/owner/one/pulls/7/limited").data)
+            self.assertEqual(gh_calls.limited_until(), float(self.reset))
+            self.assertIsNone(gh_calls.limited_until(now=self.reset + 1))   # the reset passed
+            self.get("/repos/owner/one/pulls/8")                      # calls left again
+            self.assertIsNone(gh_calls.limited_until())
         self.assertFalse(gh_calls.directory().exists())
 
     def test_a_worker_counts_only_into_a_directory_the_host_made(self):

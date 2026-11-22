@@ -433,8 +433,18 @@ class ClaimAndLaunch:
         """Settle a row whose claim-time read failed, and commit. Bounded like a failed turn
         (#53): back off, then fail with the reason and a notice. Pre-write, so `retry` (or a
         new event) re-arms it."""
-        retries = (current['retries'] or 0) + 1
         reason = _claim_read_reason(error)
+        if (until := self._limit_wait(current, now)) is not None:
+            # #2608: the read App ran out of calls. Not a fault of this run: it waits for the
+            # reset, spending no attempt (a 35-minute outage outlasted the whole backoff).
+            con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?, updated=? "
+                        "WHERE id=?", (until, f'{reason} — {run_supervisor.LIMIT_WAIT} at '
+                                       f'{time.strftime("%H:%MZ", time.gmtime(until))}'[:600],
+                                       now, row['id']))
+            con.execute('COMMIT')
+            self._refresh_check(None, row, 'waiting')
+            return
+        retries = (current['retries'] or 0) + 1
         if retries < run_supervisor.MAX_RETRIES:
             self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
             con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
@@ -449,6 +459,18 @@ class ClaimAndLaunch:
         # #1786: a read that failed for good ends the shadow; a backed-off one is still open.
         self._refresh_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
                                    else 'failed')
+
+    @staticmethod
+    def _limit_wait(current, now: float) -> float | None:
+        """When a failed claim read should next be tried if GitHub's rate limit is spent: just
+        after its reset. None when it isn't spent, or the row has waited past
+        ``LIMIT_WAIT_MAX`` since it was queued, so a limit that never comes back still ends it
+        through the ordinary backoff and retry limit."""
+        from .. import gh_calls
+        reset = gh_calls.limited_until(now)
+        if reset is None or now - (current['created'] or now) > run_supervisor.LIMIT_WAIT_MAX:
+            return None
+        return reset + run_supervisor.LIMIT_MARGIN_S
 
     def _claim_commit(self, row, read: _ClaimRead):
         """Settle one candidate under the writer lock from what its read found: claim it
