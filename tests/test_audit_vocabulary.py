@@ -159,6 +159,23 @@ class SyntheticWriters(unittest.TestCase):
         with self.assertRaises(Unresolved):
             synthetic(head + "role='reviewer', operation='review', **{'role': 'intruder'})\n")
 
+    def test_a_variable_bound_other_than_by_plain_assignment_fails_the_full_vocabulary(self):
+        # Fifth review on #2587: ``role += '_intruder'`` recorded an unlisted role while the
+        # resolver read only ``role = 'reviewer'``. Any binding it cannot read now fails it.
+        sources = [(str(path), path.read_text())
+                   for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
+        call = "    _audit(loop, 'acme/w', 1, 'a' * 40, '', role, operation, 'x')\n"
+        for binding in ("role += '_intruder'", "operation += '_intruder'",
+                        "for role in ('intruder',): pass", "role, x = 'intruder', 1"):
+            with self.subTest(binding), self.assertRaises(Unresolved):
+                Writers(sources + [('synthetic.py', "def write_aug_2587(loop):\n"
+                                    "    role = 'reviewer'\n    operation = 'review'\n"
+                                    f"    {binding}\n" + call)]).written()
+        roles, _ = Writers(sources + [('synthetic.py', "def write_aug_2587(loop):\n"   # control
+                                       "    role = 'reviewer'\n    operation = 'review'\n"
+                                       + call)]).written()
+        self.assertEqual(roles, set(broker.AUDIT_ROLES))
+
     def test_a_guard_before_the_write_on_every_path_bounds_it(self):
         for body in ("    " + _GUARD.format(i='    ') + _AUDIT, "    check(role=role)\n" + _AUDIT,
                      "    try:\n        check(role=role)\n    except ValueError:\n        raise\n"

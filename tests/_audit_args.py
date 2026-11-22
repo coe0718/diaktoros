@@ -24,6 +24,24 @@ def _expanded(node, name, where):
     raise Unresolved(where)
 
 
+def bindings(name, nodes) -> int:
+    """How many of ``nodes`` (a function's own) bind ``name``: each store of it (``+=``, a loop
+    or ``with`` target, unpacking as much as ``name = …``), an import or ``except`` as it; a
+    ``global`` or ``nonlocal`` counts as unbounded. The resolver reads only a plain ``name = …``,
+    so any other binding fails it closed (fifth review on #2587)."""
+    count = 0
+    for node in nodes:
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
+            count += 1
+        elif isinstance(node, ast.alias) and (node.asname or node.name) == name:
+            count += 1
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            count += 1
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            count += 1_000
+    return count
+
+
 def passed(call, index, name, where):
     """The node ``call`` passes for parameter ``name`` (at ``index``, or keyword-only when
     ``None``): an explicit keyword, a positional argument, or a key of a ``**`` expansion it can

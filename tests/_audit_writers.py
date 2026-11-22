@@ -18,7 +18,7 @@ import ast
 import itertools
 from pathlib import Path
 
-from _audit_args import Unresolved, passed
+from _audit_args import Unresolved, bindings, passed
 
 ROOT = Path(__file__).resolve().parents[1]
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -183,6 +183,8 @@ class Writers:
         values = set()
         assigned = [node.value for node in self.body(fn) if isinstance(node, ast.Assign)
                     and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)]
+        if bindings(name, _own(fn.body)) > len(assigned):
+            raise Unresolved(where)    # ``+=``, a loop or ``with`` target, unpacking (fifth review)
         for value in assigned:
             values |= self.strings(value, fn, depth + 1)
         args = fn.args
