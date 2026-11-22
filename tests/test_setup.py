@@ -611,6 +611,21 @@ class Setup(unittest.TestCase):
         self.assertIn("starting at the loop stage (failed)", out)
         self.assertNotIn("skipped doctor", out)
 
+    def test_a_failed_watchdog_check_is_rerun_by_the_next_setup(self):
+        # #1718: a selftest --no-model that failed only on a step-6 host check (here the
+        # watchdog's cron job) records the loop stage failed, so setup runs step 4 again.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        checks = [(name, "pass") for name in onboarding.required_checks("loop", loop)]
+        onboarding.record(loop, "loop", "passed", "hermes dk selftest", "loop",
+                          checks=checks + [("cron:job", "fail")],
+                          runtime_file=self.runtime_file)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (failed)", out)
+        self.assertNotIn("skipped doctor", out)
+
     def test_an_armed_record_skips_arm_even_with_arm_and_a_changed_hook_state_runs_it(self):
         loop = self.installed()
         self.record_checks(loop)

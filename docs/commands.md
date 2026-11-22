@@ -494,6 +494,11 @@ Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). 
 checks were never recorded (verified by hand, or before #1617) runs every step as before. The
 record does not know about `doctor`: a `runtime:*` problem `doctor` alone finds is not seen
 while the record is current, so run `hermes dk doctor` yourself after changing the host.
+Every check `selftest --no-model` can fail belongs to a stage (#1718): a ❌ in the repo hooks
+(`hooks:signature`, `hook:<id>`, `app-webhook`), the gateway, the state directory, the
+watchdog's cron shim or job (`cron:*`) or the observer route records `loop` as `failed`, so the
+next `setup` runs step 4 again. Only `inputs:changed` is not a stage's check: it marks the stage
+whose inputs changed as failed instead.
 What does make the record stale (#1714): a change to the loop's own settings (a `set` or an
 edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_check`, ...)
 makes `loop` stale, and a new token or App key written into the same credential file makes

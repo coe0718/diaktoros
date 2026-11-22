@@ -63,8 +63,13 @@ FAILURE_SCOPE = {
     # The loop stage fingerprints the loop's settings (``host`` included, #1714), so a failed
     # check of what those settings point at keeps it from ``passed`` too: the gateway, each
     # repo hook's signature (``hooks:signature``, ``hook:<id>``) and the App's webhook.
+    # #1718: so do the host-side checks of selftest's step 6 (the state directory, the
+    # watchdog's cron shim and job, the observer route): ``setup`` skips ``selftest --no-model``
+    # while identities, loop and model are current, so every check that run can FAIL must keep
+    # one of those three from ``passed``. (``build:*`` runs only with ``--pr``, which setup never
+    # passes.)
     "loop": ("runtime:", "bwrap:", "sandbox:", "ledger", "gateway", "hooks:", "hook:",
-             "app-webhook"),
+             "app-webhook", "state_dir", "cron:", "observer"),
     "model": ("seat:", "model:"),
     "live_turn": ("broker:", "turn:"),
     "armed": ("arm:",),

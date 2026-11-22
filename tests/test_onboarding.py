@@ -386,6 +386,24 @@ class Review1(Fixture):
                 if name != "arm:hooks" and not name.startswith(("github:r", "github:f", "seat:")):
                     self.assertIn(name, emitted, f"{stage}: selftest never emits {name}")
 
+    def test_every_check_selftest_can_fail_belongs_to_a_stage(self):                      # 1718
+        # setup skips `selftest --no-model` while identities, loop and model are current, so a
+        # FAIL of any check that run makes must keep one of those stages from `passed`.
+        # `inputs:changed` is handled by record_selftest itself (it stores the stage failed).
+        import re
+        from diaktoros import selftest
+        source = Path(selftest.__file__).read_text()
+        emitted = set(re.findall(r'report\.add\([^,]+,\s*f?"([a-z_:-]+)', source))
+        emitted |= {"state_dir", "cron:shim", "cron:job", "gateway"}    # doctor's, via _from_doctor
+        scopes = tuple(p for stage in ("identities", "loop", "model", "live_turn")
+                       for p in onboarding.FAILURE_SCOPE[stage])
+        exempt = {"inputs:changed"}
+        orphans = sorted(name for name in emitted - exempt if not name.startswith(scopes)
+                         and not name.startswith("build:"))   # only with --pr, never setup's run
+        self.assertEqual(orphans, [])
+        ok = LOOP_OK + [("hooks:signature", "fail")]
+        self.assertEqual(onboarding.stage_status("loop", "passed", ok, loop=self.loop), "failed")
+
     def test_a_healthy_loop_report_passes_and_containment_trouble_does_not(self):          # F4
         self.assertEqual(onboarding.stage_status("loop", "passed", LOOP_OK, loop=self.loop),
                          "passed")
