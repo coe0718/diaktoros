@@ -18,12 +18,10 @@ import ast
 import itertools
 from pathlib import Path
 
+from _audit_args import Unresolved, passed
+
 ROOT = Path(__file__).resolve().parents[1]
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef)
-
-
-class Unresolved(AssertionError):
-    pass
 
 
 def _own(nodes):
@@ -52,15 +50,28 @@ class Writers:
         if sources is None:
             sources = [(str(path), path.read_text())
                        for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
-        self.defs, self.calls, self.consts = {}, {}, {}
+        self.defs, self.calls, self.consts, self.audits = {}, {}, {}, []
         for filename, text in sources:
             tree = ast.parse(text, filename)
+            # A bare ``_audit(...)`` in a module with its own ``_audit`` (``safe_push``'s, which
+            # takes a record dict) calls that one: its records are read as dicts (``written``).
+            own = any(isinstance(node, _SCOPES) and node.name == '_audit'
+                      and 'role' not in [a.arg for a in node.args.args + node.args.kwonlyargs]
+                      for node in tree.body)
+            self.audits += [(call, fn) for call, fn in self._audit_calls(tree)
+                            if not (own and isinstance(call.func, ast.Name))]
             for node in tree.body:
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple):
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             self.consts[target.id] = node.value
             self._index(tree, None)
+
+    def _audit_calls(self, node, fn=None):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and self.name(child.func) == '_audit':
+                yield child, fn
+            yield from self._audit_calls(child, child if isinstance(child, _SCOPES) else fn)
 
     def _index(self, node, fn):
         for child in ast.iter_child_nodes(node):
@@ -183,11 +194,10 @@ class Writers:
         index = positional.index(name) if name in positional else None
         default = self._default(fn, name)
         for call, caller in self.calls.get(fn.name, []):
-            passed = next((kw.value for kw in call.keywords if kw.arg == name), None)
-            if passed is None and index is not None and index < len(call.args):
-                passed = call.args[index]
-            if passed is not None:
-                values |= self.strings(passed, caller, depth + 1)
+            given = passed(call, index, name,
+                           f'{caller.name if caller else "<module>"}:{call.lineno}')
+            if given is not None:
+                values |= self.strings(given, caller, depth + 1)
             elif default is not None:
                 values |= self.strings(default, fn, depth + 1)
         return values
@@ -204,10 +214,14 @@ class Writers:
         """``(roles, operations)`` every audit writer can record: each ``_audit(…, role,
         operation, login)`` call and each record dict naming a role, an operation and a login."""
         roles, operations = set(), set()
-        for call, fn in self.calls.get('_audit', []):
-            if len(call.args) >= 7:
-                roles |= self.strings(call.args[5], fn)
-                operations |= self.strings(call.args[6], fn)
+        for call, fn in self.audits:
+            where = f'{fn.name if fn else "<module>"}:{call.lineno}'
+            # By position, keyword or ``**`` expansion: one the guard cannot read fails it.
+            for index, name, found in ((5, 'role', roles), (6, 'operation', operations)):
+                node = passed(call, index, name, where)
+                if node is None:
+                    raise Unresolved(where)
+                found |= self.strings(node, fn)
         for defs in self.defs.values():
             for fn in defs:
                 for node in self.body(fn):

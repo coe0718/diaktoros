@@ -124,6 +124,23 @@ class SyntheticWriters(unittest.TestCase):
         self.assertIn('intruder', roles)
         self.assertNotEqual(roles, set(broker.AUDIT_ROLES))
 
+    def test_a_role_passed_by_keyword_or_expansion_fails_the_full_vocabulary(self):
+        # Third review on #2587: ``**dict(role=role, ...)`` was skipped (fewer than seven
+        # positional arguments), so an unlisted role passed the full vocabulary assertion.
+        sources = [(str(path), path.read_text())
+                   for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
+        head = "def write_kw_2587(loop, role):\n    _audit(loop, 'acme/w', 1, 'a' * 40, '', "
+        call = "\ndef call_kw_2587(loop):\n    write_kw_2587(loop, 'intruder')\n"
+        for args in ("**dict(role=role, operation='review', login='x'))\n",
+                     "**{'role': role, 'operation': 'review', 'login': 'x'})\n",
+                     "role=role, operation='review', login='x')\n"):
+            with self.subTest(args=args):
+                roles, _ = Writers(sources + [('synthetic.py', head + args + call)]).written()
+                self.assertIn('intruder', roles)
+        for args in ("**opts)\n", "*rest)\n"):          # an expansion it cannot read fails it
+            with self.subTest(args=args), self.assertRaises(Unresolved):
+                Writers(sources + [('synthetic.py', head + args + call)]).written()
+
     def test_a_guard_before_the_write_on_every_path_bounds_it(self):
         for body in ("    " + _GUARD.format(i='    ') + _AUDIT, "    check(role=role)\n" + _AUDIT,
                      "    try:\n        check(role=role)\n    except ValueError:\n        raise\n"
