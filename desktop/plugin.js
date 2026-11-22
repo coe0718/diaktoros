@@ -150,9 +150,10 @@ async function readView(path, kind) {
       ? (value.eligible ? word(value.head) : (value.head === '' || word(value.head)))
       : (value.eligible ? sha(value.head) : (value.head === '' || sha(value.head)))))
   // A withheld recorded head arrives as '' (the backend never echoes a malformed one): admitted,
-  // and read as unknown, so one bad ledger row cannot blank the whole list.
+  // and read as unknown, so one bad ledger row cannot blank the whole list. Any other head is a
+  // short SHA or an issue seat's word (#2475), never free text painted verbatim.
   const run = value => object(value) && count(value.pr) && value.pr > 0 &&
-    text(value.seat) && typeof value.head === 'string' && text(value.state) &&
+    text(value.seat) && (value.head === '' || sha(value.head) || value.head === 'issue') && text(value.state) &&
     ['pending', 'claimed', 'launching', 'running', 'waiting', 'uncertain', 'failed',
       'cancelled'].includes(value.state) &&
     typeof value.why === 'string' && retry(value.retry)
@@ -1719,6 +1720,11 @@ function DrawerDeps({ loop, pr, d }) {
       const waived = data.waivers_available ? involved(data.waivers) : []
       if (data.waivers_available === false) body.push(jsx(Muted, { text: 'Waiver history unavailable · not read.' }, 'waivers-unavailable'))
       if (waived.length) body.push(jsx('div', { children: waiverRows(waived) }, 'waivers'))
+      // The host lists the first 50 waivers only (#2476): say so here, as for declared ones.
+      const unread = data.waivers_available ? data.waivers_total - data.waivers.length : 0
+      if (unread > 0) body.push(jsx(Muted, { text: waived.length
+        ? 'Only ' + data.waivers.length + ' of ' + data.waivers_total + ' waivers were read; #' + n + ' may have more.'
+        : 'None of the ' + data.waivers.length + ' waivers read involve #' + n + '; ' + unread + ' more were not read.' }, 'waivers-cut'))
     }
   }
   return jsx(Section, { title: 'Issue dependencies', children: jsx('div', { role: 'region', 'aria-label': 'Drawer issue dependencies', className: 'flex min-w-0 flex-col gap-2', children: body }) })
