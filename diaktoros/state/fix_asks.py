@@ -98,7 +98,8 @@ class FixAsks:
         done: list[bool] = []
 
         def change(data):
-            ask = data["open"].get(str(number)) or {}
+            ask = data["open"].get(str(number))
+            ask = ask if isinstance(ask, dict) else {}     # a junk entry reads as none (#80)
             if expect is not None and ask != expect:
                 return
             data["handoff"][str(number)] = {"kind": ask.get("kind", ""), "text": ask.get("text", ""),
