@@ -1241,7 +1241,7 @@ def main():
 
 def _worker(a) -> None:
     """The spawned worker (``_fixture-worker`` / ``_production-worker``): run one claim, then
-    linger for CI. Its stderr is the worker log the host opened for it, cut at WORKER_LOG_MAX
+    linger for CI; one spawned for a settling row waits that row out first (#2569). Its stderr is the worker log the host opened for it, cut at WORKER_LOG_MAX
     (#2302)."""
     # A worker never creates host state (create=False, hostdirs.ensure). If the ledger or a
     # state dir is gone, replaced or unusable, before or during the run, it logs one line
@@ -1264,7 +1264,10 @@ def _worker(a) -> None:
                              child_timeout=a.timeout, create=False)
         settle_repo = envnames.get("SETTLE_REPO")      # spawned for a settling row (#2569)
         if settle_repo:
+            # Its settling row first: a claim of another turn could outlast that row's window,
+            # and no other worker waits for it (#2582 review).
             sup.settle_repos = frozenset({settle_repo})
+            sup.linger_for_ci()
         sup._run_one()
         sup.linger_for_ci()
     except (HostStateGone, sqlite3.DatabaseError) as exc:

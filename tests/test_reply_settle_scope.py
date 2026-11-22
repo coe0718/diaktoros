@@ -22,6 +22,7 @@ BASE, REPO, row = base.BASE, base.REPO, settle.row
 
 from diaktoros import envnames, run_supervisor  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, workers  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 
 OTHER = "other/repo"
 
@@ -112,6 +113,19 @@ class SpawnedFor(Scoped):
         self.spawn.assert_called_once_with()
         self.assertEqual(self.sup.settle_repos, frozenset())
 
+    def test_a_rearmed_settling_row_spawns_its_worker_for_that_repo(self):
+        # A failed reply row redelivered is rearmed with its window; the fresh submitter's
+        # worker must be told the repo, or nothing waits for the row (#2582 review F2).
+        self.assertEqual(self.submit(120), "enqueued")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', retry_at=NULL, "
+                        "error='worker exited before launch'")
+        self.spawn.reset_mock()
+        self.assertEqual(self.submit(120), "rearmed")
+        self.spawn.assert_called_once_with(settle_repo=REPO)
+        self.assertEqual(row(self.db, "d")["error"], run_supervisor.SETTLE_HOLD)
+        self.assertTrue(self.worker(REPO).settling())       # the row its worker waits for
+
     def test_the_spawned_worker_is_handed_the_repo(self):
         sup = Supervisor(self.db, fixture_mode=True, fixture_command=["true"])
         spawn = workers.WorkerLifecycle._spawn          # the real one, its process faked
@@ -123,6 +137,11 @@ class SpawnedFor(Scoped):
         self.assertNotIn(workers.SETTLE_REPO_ENV, plain)
 
 
+def worker_args(db) -> argparse.Namespace:
+    return argparse.Namespace(operation="_fixture-worker", db=str(db),
+                              command=json.dumps(["true"]), capacity=json.dumps({}),
+                              lease=30.0, timeout=30.0)
+
 
 class WorkerEntry(base.Base):
     """The spawned worker process reads its repo before it claims and lingers."""
@@ -130,9 +149,7 @@ class WorkerEntry(base.Base):
     def run_worker(self, env: dict) -> frozenset:
         seen = []
         Supervisor(self.db)                     # the host made the ledger; a worker never does
-        args = argparse.Namespace(operation="_fixture-worker", db=str(self.db),
-                                  command=json.dumps(["true"]), capacity=json.dumps({}),
-                                  lease=30.0, timeout=30.0)
+        args = worker_args(self.db)
         with mock.patch.dict(os.environ, {envnames.name("TEST_FIXTURE"): "1", **env}), \
                 mock.patch.object(run_supervisor.waits, "cap_stderr"), \
                 mock.patch.object(Supervisor, "_run_one"), \
@@ -146,6 +163,43 @@ class WorkerEntry(base.Base):
 
     def test_any_other_worker_has_no_settling_repo(self):
         self.assertEqual(self.run_worker({}), frozenset())
+
+    def order(self, env: dict) -> list:
+        calls = []
+        Supervisor(self.db)
+        args = worker_args(self.db)
+        with mock.patch.dict(os.environ, {envnames.name("TEST_FIXTURE"): "1", **env}), \
+                mock.patch.object(run_supervisor.waits, "cap_stderr"), \
+                mock.patch.object(Supervisor, "_run_one", lambda sup: calls.append("claim")), \
+                mock.patch.object(Supervisor, "linger_for_ci",
+                                  lambda sup: calls.append("linger")):
+            run_supervisor._worker(args)
+        return calls
+
+    def test_a_settle_worker_waits_for_its_row_before_it_claims_another_turn(self):
+        # #2582 review F1: claiming first, a long turn of another repo could outlast the
+        # settling row's window, and no other worker waits for that row.
+        self.assertEqual(self.order({workers.SETTLE_REPO_ENV: REPO}),
+                         ["linger", "claim", "linger"])
+        self.assertEqual(self.order({}), ["claim", "linger"])
+
+    def test_its_settling_row_is_released_before_its_claim(self):
+        submitter = Supervisor(self.db, fixture_mode=True, fixture_command=["true"])
+        with mock.patch.object(Supervisor, "_spawn"):
+            submitter.submit("d1", REPO, 99, BASE, "issue_fixer", turn_key="issue-fix:reply-d1",
+                             settle=30)
+            submitter.submit("d9", OTHER, 5, BASE, "reviewer", turn_key="review:d9")
+        settle.fall_due(self.db, "d1")
+        seen = []
+        args = worker_args(self.db)
+        with mock.patch.dict(os.environ, {envnames.name("TEST_FIXTURE"): "1",
+                                          workers.SETTLE_REPO_ENV: REPO}), \
+                mock.patch.object(run_supervisor.waits, "cap_stderr"), \
+                mock.patch.object(Supervisor, "_spawn"), \
+                mock.patch.object(Supervisor, "_run_one",
+                                  lambda sup: seen.append(row(self.db, "d1")["state"])):
+            run_supervisor._worker(args)
+        self.assertEqual(seen, ["pending"])             # recovered, not left waiting
 
 
 if __name__ == "__main__":
