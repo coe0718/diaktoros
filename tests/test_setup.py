@@ -655,6 +655,26 @@ class Setup(unittest.TestCase):
         self.assertEqual(self.ran, ["arm"], out)
         self.assertIn("starting at the armed stage (stale: live_turn is stale", out)
 
+    def test_an_invalidated_armed_behind_a_stale_live_turn_still_re_arms(self):
+        """F1 of the review on #2571: ``live_turn`` re-recorded against another head marks
+        ``armed`` invalidated; the hooks still match, but that ``armed`` was shown against the
+        old live turn, so a later stale ``live_turn`` must not let setup skip ``arm``."""
+        from diaktoros import onboarding
+        loop = self._record_live_turn_then_armed()
+        self.head = "c" * 40
+        onboarding.record(loop, "live_turn", "passed", "hermes dk selftest", "turn ok",
+                          pr=(7, self.head), runtime_file=self.runtime_file)
+        self.head = "b" * 40                      # and then the PR moved on again
+        rows = onboarding.inspect(loop, runtime_file=self.runtime_file)
+        self.assertEqual((rows["live_turn"]["status"], rows["armed"]["status"],
+                          rows["armed"]["cause"], rows["armed"]["own"]),
+                         ("stale", "stale", "live_turn", "stale"))
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, ["arm"], out)
+        self.assertNotIn("skipped arm", out)
+        self.assertIn("starting at the armed stage (stale: live_turn is stale", out)
+
     def test_an_earlier_stale_check_stage_still_re_arms(self):
         self._record_live_turn_then_armed()
         self.head = "b" * 40
