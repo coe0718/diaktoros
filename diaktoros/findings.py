@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 
 STATES = ("fixed", "open", "withdrawn")
 MISSED = "missed earlier"
@@ -68,12 +69,14 @@ def category_of(rest: str) -> str:
     return name if name in CATEGORIES else "other"
 
 
-def order(fid) -> tuple[int, str]:
+def order(fid) -> tuple[int, str, str]:
     """A finding id's sort key: in number order at any length, and never raising (``int`` refuses
-    '²' and a run past 4,300 digits), so no id the parser accepts is dropped to sort it (review on
-    #2589, F6)."""
-    digits = str(fid)[1:]
-    return len(digits), digits
+    a run past 4,300 digits), so no id the parser accepts is dropped to sort it (review on #2589,
+    F6). Its digits are read as the parser reads them (``\\d``: any decimal digit, '٣' as 3) and
+    leading zeroes do not count (F7); the id itself settles a tie (F0001 and F1)."""
+    raw = str(fid)[1:]
+    number = "".join(str(unicodedata.decimal(ch, ch)) for ch in raw).lstrip("0") or "0"
+    return len(number), number, raw
 
 
 def open_ids(entry: dict) -> list[str]:

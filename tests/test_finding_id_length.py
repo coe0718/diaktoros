@@ -53,6 +53,16 @@ class Checks(unittest.TestCase):
         self.assertEqual(sorted(entry["findings"], key=findings.order), want)
         self.assertEqual(sorted(want, key=history.findings_mod.order), want)
 
+    def test_padded_and_unicode_ids_keep_number_order_beside_long_ones(self):
+        # F7: '٣' is 3 and F0001 is 1, as the parser reads them, not digit count or code point.
+        ids = ("F10", "F\u0663", LONG[0], "F2", "F0001", "F1")
+        entry = findings.apply({}, "h1", "".join(f"{fid} [correctness]: src/a.py:1: x\n"
+                                                 for fid in ids))
+        want = ["F0001", "F1", "F2", "F\u0663", "F10", LONG[0]]
+        self.assertEqual(sorted(entry["findings"]), sorted(ids))   # the parser took each one
+        self.assertEqual(findings.open_ids(entry), want)
+        self.assertEqual([line.split()[0] for line in findings.lines(entry)], want)
+
     def test_answers_to_a_long_open_id_are_listed_and_checked(self):
         # ``open_ids`` now hands these ids on; the answers section and refusal sort them too.
         entry = findings.apply({}, "h1", f"F2 [correctness]: src/a.py:1: x\n{LONG[1]} [x]: y\n")
