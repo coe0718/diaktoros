@@ -231,12 +231,12 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
             login: str | None = None) -> Response:
     """One REST call with its HTTP status and response headers. No logging, no interpretation.
 
-    ``fetch`` is this without the status: most callers only need "did it work". The watchdog's
-    health check needs the rest — a 401 (the token is dead) and a 502 (GitHub is) ask different
-    things of the operator, and the token's expiry arrives only as a response header.
+    ``fetch`` is this without the status. The watchdog's health check needs the rest: a 401 (the
+    token is dead) and a 502 (GitHub is) ask different things of the operator, and the token's
+    expiry arrives only as a response header.
 
-    Budgeted (#75): inside a gate or a watchdog sweep each call gets at most what is left of the
-    budget, and a call that fails because the budget ran out raises ``GateBudgetExceeded``.
+    Budgeted (#75): in a gate a call gets what the budget has left after its token (#2578);
+    failing as it runs out raises ``GateBudgetExceeded``.
     """
     timeout = _budgeted(method, path)
     _LAST.status = None
@@ -260,6 +260,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         _LAST.unsent = True             # no credential: the request was never built or sent
         gh_calls.record(who, method, path, "unsent")
         return Response(None, str(exc))
+    timeout = min(timeout, _budgeted(method, path))     # less what the token took
     # #1646: a GET asks whether its stored answer changed; a 304 is free on the rate limit.
     cached = gh_cache.lookup(who, path) if method == "GET" else None
     data = json.dumps(body).encode() if body is not None else None
