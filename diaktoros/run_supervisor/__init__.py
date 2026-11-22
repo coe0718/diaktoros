@@ -1262,6 +1262,8 @@ def _worker(a) -> None:
             sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
                              capacity=json.loads(a.capacity), lease_seconds=a.lease,
                              child_timeout=a.timeout, create=False)
+        if os.environ.get(workers.SETTLE_REPO_ENV):     # spawned for a settling row (#2569)
+            sup.settle_repos = frozenset({os.environ[workers.SETTLE_REPO_ENV]})
         sup._run_one()
         sup.linger_for_ci()
     except (HostStateGone, sqlite3.DatabaseError) as exc:
