@@ -18,7 +18,7 @@ import ast
 import itertools
 from pathlib import Path
 
-from _audit_args import Unresolved, bindings, passed
+from _audit_args import Unresolved, bindings, module_bindings, passed
 
 ROOT = Path(__file__).resolve().parents[1]
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -52,8 +52,12 @@ class Writers:
             sources = [(str(path), path.read_text())
                        for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
         self.defs, self.calls, self.consts, self.audits = {}, {}, {}, []
-        for filename, text in sources:
-            tree = ast.parse(text, filename)
+        trees = [ast.parse(text, filename) for filename, text in sources]
+        # A guard's list is a module tuple only if nothing anywhere binds its name again (seventh
+        # review on #2587): ``ALLOWED += ('intruder',)`` or another module's ``ALLOWED``. A
+        # name bound more than once is not a constant, so a guard naming it fails closed.
+        bound = module_bindings(trees)
+        for tree in trees:
             # A bare ``_audit(...)`` in a module with its own ``_audit`` (``safe_push``'s, which
             # takes a record dict) calls that one: its records are read as dicts (``written``).
             own = any(isinstance(node, _SCOPES) and node.name == '_audit'
@@ -64,7 +68,7 @@ class Writers:
             for node in tree.body:
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple):
                     for target in node.targets:
-                        if isinstance(target, ast.Name):
+                        if isinstance(target, ast.Name) and bound[target.id] == 1:
                             self.consts[target.id] = node.value
             self._index(tree, None)
 
