@@ -265,6 +265,13 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
 # and reads any other as ``unknown`` (#2293); a test pins the writers and the page to this list.
 AUDIT_ROLES = ("reviewer", "fixer", "triage", "adjudicator", "issue_fixer", "reader",
                "review_only_update", "update_behind")
+# Every operation those writers record, read and pinned the same way (#2404).
+AUDIT_OPERATIONS = ("review", "push", "answers", "labels", "comment", "open_pr", "request_review",
+                    "issue_comment", "file_issue", "ruling_comment", "issue_branch",
+                    "update_branch", "labels_failed", "ruled_approval", "ruled_dismissal",
+                    "file_shadow_issue", "file_ruling_issue", "shadow_issue_labels",
+                    "shadow_issue_labels_missing", "ruling_issue_labels",
+                    "ruling_issue_labels_missing")
 
 
 def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
