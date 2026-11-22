@@ -18,6 +18,8 @@ def compare(rows: dict, since: float, until: float) -> list[dict]:
     latest = sp.approvals(rows)
     shadows: dict = {}
     for row in rows["shadows"]:
+        if not since <= row["created"] < until:   # the window the row's dates describe (#2290)
+            continue
         verdict = sp._VERDICT.get(str(row["verdict"]), "other")
         shadows.setdefault((row["pr"], row["head"]), set()).add(verdict)
     per: dict[str, dict] = {}
