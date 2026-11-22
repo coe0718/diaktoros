@@ -43,6 +43,15 @@ def api(path):
         return json.load(resp)
 
 
+def _util():
+    """The plugin's helpers (standard library only), from the checkout this runs in."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from diaktoros import util
+    return util
+
+
 def _rel_time(iso):
     """Human 'xh ago' for an ISO-8601 timestamp; mirrors the page's relTime."""
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
@@ -96,10 +105,7 @@ def _load(path):
 
 
 def _pushed(snap):
-    try:
-        return datetime.fromisoformat(snap["pushed_at"].replace("Z", "+00:00"))
-    except (KeyError, AttributeError, TypeError, ValueError):
-        return None
+    return _util().iso_epoch(snap.get("pushed_at"))
 
 
 def base_snapshot(previous=None):
@@ -177,12 +183,8 @@ def refresh(data):
 
 
 def _write(data):
-    """Replace OUT whole: a reader never sees half a file."""
-    tmp = OUT + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, OUT)
+    """Whole or not at all, through the repo's one publishing helper (#2159)."""
+    _util().atomic_write(OUT, json.dumps(data, indent=2) + "\n", mode=0o644)
 
 
 def main(argv=None):
