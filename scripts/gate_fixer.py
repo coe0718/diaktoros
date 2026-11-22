@@ -75,7 +75,7 @@ def _escalate_instead(loop: dict, st, number: int, pr_head: str, prior: int, pr:
     if pending:
         _take_pending_escalation(loop, st, number, pr_head, prior, pending)
     # #2548: the ids recorded before this review, so a state line reads as the broker read it.
-    known = findings.recorded_before(st.findings_get(number), review.get("body"))
+    known = findings.recorded_before(st.findings_get(number), review.get("id"))
     cited = issue_facts.cited_own_work(loop, number, pr.get("body"),
                                        (pr.get("head") or {}).get("ref"), review.get("body"), known)
     if not cited:

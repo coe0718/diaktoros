@@ -98,9 +98,19 @@ class Cycle(te.Base):
         # ``fixed-size`` read as the state ``fixed`` (review on #2573).
         review = "F1 [correctness]: fixed-size buffer breaks #12\nF2: fixed in #12\n"
         earlier = {"findings": {"F2": {"state": "open", "text": "src/a.py:1: x"}}}
-        self.st.findings_put(7, findings.apply(earlier, HEAD, review))
+        self.st.findings_put(7, findings.apply(earlier, HEAD, review, review=6))
         self.assertEqual(self.st.findings_get(7)["findings"]["F1"]["state"], "open")
         self.assert_escalated(review, self.pr("Closes #12"), "#12")
+
+    def test_2573_an_earlier_finding_with_this_reviews_state_text_goes_to_the_fixer(self):
+        # F6: an earlier review raised F2 with the very text of this review's state line for it.
+        # Its id, not its text, says it was recorded before: a state, as the broker read it.
+        line = "F2 [correctness]: fixed in #12 by removing validation at src/a.py:3"
+        review = f"F1 [correctness]: src/a.py:9: unrelated new\n{line}\n"
+        self.st.findings_put(7, findings.apply({}, HEAD, line + "\n", review=5))
+        self.st.findings_put(7, findings.apply(self.st.findings_get(7), HEAD, review, review=6))
+        self.assertEqual(self.st.findings_get(7)["findings"]["F2"]["state"], "fixed")
+        self.assert_to_the_fixer(review, self.pr("Closes #12"))
 
     # -- once per head, and explained --------------------------------------------------------
 
@@ -155,9 +165,11 @@ class Matcher(unittest.TestCase):
 
     def test_2573_recorded_before_drops_only_this_reviews_own_new_ids(self):
         review = "F1: fixed-size buffer\nF2: fixed in #12\n"
-        entry = findings.apply({"findings": {"F2": {"state": "open", "text": "x"}}}, "h", review)
-        self.assertEqual(sorted(findings.recorded_before(entry, review)), ["F2"])
-        self.assertEqual(sorted(findings.recorded_before(entry, "F1: fixed\n")), ["F1", "F2"])
+        entry = findings.apply({"findings": {"F2": {"state": "open", "text": "x"}}}, "h", review,
+                               review=6)
+        self.assertEqual(sorted(findings.recorded_before(entry, 6)), ["F2"])
+        self.assertEqual(sorted(findings.recorded_before(entry, 7)), ["F1", "F2"])
+        self.assertEqual(sorted(findings.recorded_before(entry, None)), ["F1", "F2"])
         self.assertEqual(findings.recorded_before({}, None), {})
 
     def test_unreadable_inputs_read_as_nothing(self):

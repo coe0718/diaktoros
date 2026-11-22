@@ -26,7 +26,7 @@
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 157,
-    "diaktoros/broker/ipc.py::RunBroker._dispatch": 316,
+    "diaktoros/broker/ipc.py::RunBroker._dispatch": 313,
     "diaktoros/broker/issues.py::IssueWrites._issue_fix_write": 134,
     "diaktoros/cli/apply_command.py::_apply": 113,
     "diaktoros/cli/identity_command.py::cmd_identity": 120,

@@ -734,15 +734,21 @@ class RunBroker(broker_issues.IssueWrites):
             if pending is not None:
                 self._kick_review(pending, head)
         if operation == 'review':
-            try:
-                from .. import findings
-                findings.record(self._loop, self.scope.number, self.scope.head, body)
-            except Exception:
-                pass  # the review is already written; state is best effort
+            self._record_findings(body, result)
             from .. import merge_check
             merge_check.refresh_quietly(self._loop, self.scope.number)   # #1163: a new verdict
         self.completed = True
         return result
+
+    def _record_findings(self, body: str, result) -> None:
+        """Record the review's findings, with its own id, so the gate tells the ids it raised
+        (#2573, F6). Best effort: the review is already written."""
+        try:
+            from .. import findings
+            findings.record(self._loop, self.scope.number, self.scope.head, body,
+                            review=result.get("id") if isinstance(result, dict) else None)
+        except Exception:
+            pass
 
     def _human_paths_check(self) -> tuple[str, str]:
         """``(refusal, held)`` for an APPROVE under ``human_paths`` (#478):

@@ -188,6 +188,9 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertEqual((got["findings"]["F1"]["state"], got["findings"]["F2"]["state"]),
                          ("fixed", "open"))
         self.assertEqual(got["last_head"], HEAD)
+        # #2573, F6: the new finding keeps the id of the review that raised it; F1 has none.
+        self.assertEqual((got["findings"]["F1"].get("review"), got["findings"]["F2"]["review"]),
+                         (None, 9))
 
     def test_a_restated_finding_that_was_answered_must_deal_with_the_answer_through_the_broker(self):
         # #703: the enforcing entry point. Removing the call in findings.check turns this red.
