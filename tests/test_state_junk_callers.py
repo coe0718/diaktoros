@@ -92,9 +92,11 @@ class Callers(unittest.TestCase):
                                      "armed_since": time.time()})
         with mock.patch.object(transition.gh, "reviews_read", return_value=([], None)):
             self.assertIsNone(transition.record(self.st.loop, self.st, 7, HEAD, "main"))
-        self.assertEqual(list(self.st.watch()), ["armed_since"])
-        self.write("watchdog.json", {"x": {}, "heads": {}})          # a key no writer stamps
-        self.assertEqual(self.st.watch(), {"heads": {}})
+        # An object a reader indexes into reads as absent; a stamp is kept as stored, junk too,
+        # so a sweep that saves the file back unchanged (a failed listing) erases nothing.
+        self.assertEqual(sorted(self.st.watch()), ["armed_since", "last_run"])
+        self.write("watchdog.json", {"x": {}, "armed_since": [1], "heads": {}})  # x: no writer
+        self.assertEqual(self.st.watch(), {"armed_since": [1], "heads": {}})
 
     def test_override_checked_keeps_only_merged_heads(self):
         self.write(state.LoopState.OVERRIDE_CHECKED_FILE,

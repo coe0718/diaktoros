@@ -206,9 +206,11 @@ def _findings_entry(entry) -> dict | None:
 
 
 # ``watchdog.json``'s keys, each with the JSON type its writers give it (``scripts/watchdog.py``,
-# ``watch_health``, ``watch_mode``, ``watch_stacked``, ``stale_approval``): another key, or a value
-# of another type, is junk and reads as absent (#2303). A new key is added here, or it is dropped
-# on its first read (``tests/test_state_junk_callers.py`` checks the writers against this).
+# ``watch_health``, ``watch_mode``, ``watch_stacked``, ``stale_approval``). A key no writer
+# stamps, or an object key holding junk (its readers index into it), reads as absent (#2303); a
+# new key is added here, or it is dropped on its first read (``test_state_junk_callers`` checks
+# the code against this). A stamp is kept as stored, junk too: the watchdog validates its own (a
+# junk ``armed_since`` re-arms), and a sweep whose listing fails saves the file back unchanged.
 WATCH_KEYS = {"last_run": str, "armed_since": float, "gate_failure_seen": float,
               **dict.fromkeys(("alerts", "github_alerts", "github_read", "head_history", "heads",
                                "open_prs", "review_kicks", "stacked_wait", "stale_approvals"),
@@ -216,10 +218,7 @@ WATCH_KEYS = {"last_run": str, "armed_since": float, "gate_failure_seen": float,
 
 
 def _watch_value(key: str, value) -> bool:
-    kind = WATCH_KEYS.get(key)
-    if kind is float:
-        return finite_time(value) is not None
-    return kind is not None and isinstance(value, kind)
+    return key in WATCH_KEYS and (WATCH_KEYS[key] is not dict or isinstance(value, dict))
 
 
 def _seat(data: dict, seat: str) -> dict:
