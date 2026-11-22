@@ -217,6 +217,14 @@ waiting for one. An ask (above) is resumed by its own rules instead.
 With `comment_webhook` on (#680), the reply wakes it, or resumes an ask, when it is posted
 instead of at the next sweep.
 
+A turn a reply woke, or an answered ask resumed, settles first (#2248): it is queued to start
+`reply_settle_seconds` later (default 120; `0` starts it at once). A maintainer who replies "Fixed
+on main" and closes the issue a few seconds later costs no turn: when the run falls due, its
+pre-launch read finds the issue closed and ends it `cancelled` before any model runs. Status
+shows the run as held, settling after a maintainer's reply. A turn that ends because its issue
+was closed, before launch or at its write, is logged, never sent as an observer notice; any other
+denial still is. A turn a fix label queues starts at once, as before.
+
 An issue is **plan-first** when it carries the `plan-first` label or its body is longer than
 4,000 characters. It must have an approved plan before any PR: the broker refuses `open_pr` until
 a maintainer posts `/loop approve`, and the fixer's prompt says so. `hermes dk continue` applies
