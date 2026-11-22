@@ -4,10 +4,13 @@
 The page prefers live API data in the browser; this script refreshes the
 checked-in snapshot used as the offline/API-outage fallback.
 
-The Pages deploy workflow runs this before publishing so the launch page's
-statistics (release, stars, PR/issue counts, commit activity, last push)
-are read from the repository at build time instead of typed by hand. Safe to run locally; on API failure
-the previous snapshot is kept.
+The Pages deploy workflow (.github/workflows/deploy-site.yml) runs this
+before publishing, on every push to main and every published release, so
+the launch page's statistics (release, stars, PR/issue counts, commit
+activity, last push) are read from the repository at build time instead of
+typed by hand. The refreshed file goes into the deployed artifact only;
+nothing is committed. Safe to run locally; on API failure the previous
+snapshot is kept.
 """
 import json
 import os

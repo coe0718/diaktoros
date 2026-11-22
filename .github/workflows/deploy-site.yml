@@ -7,10 +7,20 @@ name: Deploy site to Pages
 # One artifact holds both halves: the docs rendered by the same Jekyll build Pages used
 # (README and docs/*.md → /docs/*.html, so existing links keep working), then the launch
 # page from docs/site/ laid over the root.
+#
+# The launch page's fallback figures (docs/site/data.json: release, stars, PR counts) are
+# refreshed by docs/site/build-data.py at build time, into the artifact only: nothing is
+# committed back. The page still prefers live GitHub figures in the browser; data.json is what it
+# shows when that fetch fails. The "New in v0.x" section is hand-written prose and stays manual.
 
 on:
   push:
     branches: [main]
+  # A new release must reach data.json without a push. The github-pages environment only
+  # accepts deployments from main, so a release does not build here (its ref is the tag): the
+  # `redeploy` job asks for a fresh run of this workflow on main instead.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -26,11 +36,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # workflow_dispatch is the one event GITHUB_TOKEN may start a run with, so this needs no
+  # other credential. The new run queues behind this one in the `pages` group.
+  redeploy:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Deploy main again for the new release
+        run: gh workflow run deploy-site.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
   build:
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # build-data.py keeps the previous snapshot (and exits 0) when the API fails. The step is
+      # still bounded, and a hang or crash only costs the refresh: the deploy goes on with the
+      # checked-in data.json rather than holding the docs back.
+      - name: Refresh the launch page's release and statistics snapshot
+        run: python3 docs/site/build-data.py
+        timeout-minutes: 5
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - uses: actions/jekyll-build-pages@v1
         with:
           source: ./
