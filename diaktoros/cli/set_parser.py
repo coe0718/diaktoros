@@ -47,6 +47,8 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
                         help="minutes an in-flight mark blocks a second run at the same head")
     change.add_argument("--turn-budget", type=int,
                         help="seconds one isolated seat turn may run (loop default)")
+    change.add_argument("--reply-settle-seconds", type=int, metavar="N",
+                        help="seconds a fix turn a maintainer's reply woke waits first (0 = at once)")
     for flag, text in (
             ("--attribution", "sign what the loop posts ('Automated by Diaktoros'); off stops it"),
             ("--review-only-update", "push a clean merge of the base into a review-only "
