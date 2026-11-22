@@ -103,6 +103,34 @@ class OnePoller(Volume):
         successor.linger_for_ci(sleep=self.sleeper())   # it takes the lock and polls the row
         successor.recover.assert_called()
 
+    def test_a_row_held_while_the_poller_stops_is_still_polled(self):
+        # Review of #2612, round 3: the poller reads no waiting row and is about to let the lock
+        # go; another worker holds a row then, finds the lock taken and leaves. The poller reads
+        # again once it has released the lock, so the row is polled, by it.
+        self.s.held_for_ci = True
+        real, raced, left = self.s._polled_due, [], []
+
+        def polled_due():
+            due = real()
+            if due is None and not raced:
+                raced.append(1)
+                other = self.sup(production_claim=True)
+                self.hold('raced', 2, due_in=10, sup=other)  # written before it tries the lock
+                other.held_for_ci = True
+                other.recover = Mock()
+                other.linger_for_ci(sleep=lambda seconds: self.fail('the other worker polled'))
+                left.append(not other.recover.called)
+            return due
+        self.s._polled_due = polled_due
+        self.s.recover = Mock(side_effect=self.rehold_due)
+        spawned = []
+        self.s._spawn = lambda: spawned.append(1)
+        with patch.object(run_supervisor, 'POLLER_MAX_S', 200.0):
+            self.s.linger_for_ci(sleep=self.sleeper())
+        self.assertEqual((raced, left), ([1], [True]))
+        self.s.recover.assert_called()                      # the raced row was polled
+        self.assertEqual(spawned, [1])                      # and handed over at the cap
+
     def test_a_poller_that_found_nothing_due_hands_nothing_over(self):
         self.hold('one', 1, due_in=10 * 60)             # a backoff past the window: the sweep's
         spawned = []
@@ -176,16 +204,16 @@ class _Done(Exception):
 
 
 class ThirtyHeldPRs(Volume):
-    """The 2026-11-22 workload, reproduced: 30 reviewer turns held for CI (due 3 s apart), the
-    reviewer seat busy with another turn (capacity 1), CI still running for 10 minutes. Every
-    worker a poll starts runs at once, while the worker that started it still lingers, which
-    is how they overlapped. GitHub reads are counted by path shape, as ``gh_calls`` counts
+    """The 2026-11-22 workload, reproduced: 30 reviewer turns held for CI (due 3 s apart) while
+    the reviewer seat is busy with another turn (capacity 1) for 10 minutes and CI keeps running.
+    Every worker a poll starts runs at once, while the worker that started it still lingers,
+    which is how they overlapped. GitHub reads are counted by path shape, as ``gh_calls`` counts
     them: each held row's poll is the PR plus its check runs and statuses.
 
-    With the code before #2609 this workload starts a worker for nearly every poll and each of
-    them polls again (the counts are in the PR); the bounds below are what it does now. The
-    decisions are the same: no turn starts while the seat is busy, none fails or is cancelled,
-    and once CI is green and the seat frees, every one of the 30 is reviewed."""
+    Then the busy turn ends, through the supervisor's own completion (``complete_uncertain``,
+    then ``recover``, as a finished turn's worker does), with CI green: nothing else is driven,
+    and the 30 are reviewed by the workers that wake starts, each finished turn starting the
+    next. The same test on ``origin/main``'s supervisor gives the counts before #2609 (in the PR)."""
     SPAN = 600.0
     MAX_WORKERS = 400           # the old code passes this long before the span ends
 
@@ -198,8 +226,8 @@ class ThirtyHeldPRs(Volume):
             self.hold(f'pr{n}', n, due_in=3 * n)
         self.s.submit('busy', 'o/r', 99, HEAD, 'reviewer')
         with ledger.connect(self.db) as con:
-            con.execute("UPDATE runs SET state='running', lease=? WHERE delivery='busy'",
-                        (self.now[0] + 10 ** 6,))
+            con.execute("UPDATE runs SET state='running', owner='busy-owner', lease=? "
+                        "WHERE delivery='busy'", (self.now[0] + 10 ** 6,))
 
     def api(self, loop, path, *args, **kwargs):
         shape = '/'.join('N' if part.isdigit() else part for part in path.split('?')[0].split('/'))
@@ -230,11 +258,10 @@ class ThirtyHeldPRs(Volume):
 
     def sleep(self, seconds):
         self.now[0] += seconds
-        if self.now[0] > self.start + self.SPAN:
+        if self.now[0] > self.until:
             raise _Done
 
-    def run_span(self):
-        self.start = self.now[0]
+    def drive(self, step):
         with patch('diaktoros.config.by_repo', return_value=self.loop), \
              patch('diaktoros.gh.api', side_effect=self.api), \
              patch('diaktoros.gh.reviews', side_effect=lambda *a, **k: self.calls.update(
@@ -244,7 +271,7 @@ class ThirtyHeldPRs(Volume):
              patch.object(run_supervisor.Supervisor, '_ci_poll_defers', return_value=False,
                           create=True):
             try:
-                self.worker(held=True)
+                step()
             except _Done:
                 pass
 
@@ -253,30 +280,33 @@ class ThirtyHeldPRs(Volume):
             return collections.Counter(row[0] for row in con.execute(
                 "SELECT state FROM runs WHERE delivery LIKE 'pr%'"))
 
+    def release(self):
+        """The busy turn ends as a finished turn's worker ends it: completion, then recover()."""
+        sup = self.sup(production_claim=True)
+        sup._spawn = self.worker
+        busy = sup.get('busy')
+        sup.complete_uncertain(busy['id'], 'busy-owner', 0, None, stopped=True, retry=False,
+                               detail=None)
+        sup.recover()
+
     def test_thirty_held_prs_cost_one_poller_and_no_read_while_the_seat_is_busy(self):
-        self.run_span()
-        reads = sum(self.calls.values())
-        print(f"\n#2609 workload, {int(self.now[0] - self.start)} s: {self.workers} worker(s), "
-              f"{reads} GitHub reads: {dict(self.calls)}")
-        self.assertLessEqual(self.workers, 30 + 1)   # the first, and one per row first due
-        self.assertEqual(reads, 0)                              # the seat never freed
+        start = self.now[0]
+        self.until = start + self.SPAN
+        self.drive(lambda: self.worker(held=True))
+        self.now[0] = max(self.now[0], self.until)         # the whole 10 minutes pass
+        busy_reads, busy_workers = sum(self.calls.values()), self.workers
+        print(f"\n#2609 workload, {int(self.now[0] - start)} s busy: {busy_workers} worker(s), "
+              f"{busy_reads} GitHub reads: {dict(self.calls)}")
+        self.assertLessEqual(busy_workers, 30 + 1)          # the first, and one per row first due
+        self.assertEqual(busy_reads, 0)                     # the seat never freed
         states = self.states()
         self.assertEqual(set(states) - {'pending', 'waiting'}, set())   # none started or failed
         self.assertEqual(sum(states.values()), 30)
 
-        # CI goes green and the busy turn ends: every one of the 30 is reviewed, in turn.
+        # The busy turn ends with CI green: the workers its completion starts review all 30.
         self.ci_running = False
-        with ledger.connect(self.db) as con:
-            con.execute("UPDATE runs SET state='succeeded' WHERE delivery='busy'")
-            con.execute("UPDATE runs SET retry_at=0 WHERE state='waiting'")
-        with patch('diaktoros.config.by_repo', return_value=self.loop), \
-             patch('diaktoros.gh.api', side_effect=self.api), \
-             patch('diaktoros.gh.reviews', return_value=[]), \
-             patch.object(run_supervisor.Supervisor, '_ci_hold_reason', self.ci_reason,
-                          create=True):
-            self.s.recover()
-            for _ in range(40):
-                self.s._run_one()
+        self.until = self.now[0] + self.SPAN
+        self.drive(self.release)
         self.assertEqual(self.states(), {'succeeded': 30})
 
 
