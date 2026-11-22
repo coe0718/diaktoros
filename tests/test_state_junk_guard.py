@@ -6,7 +6,8 @@ module spells, once through a name built at run time (found by watching the call
 
 F2: a reader that returns junk (``fix_handoff`` returning a string), or that declares no return
 type, or a writer that rewrites junk into another shape instead of healing it, fails the walk.
-The real class passes it (``test_state_junk_all``).
+The real class passes it (``test_state_junk_all``). Past one file's top level, and across files:
+``tests/test_state_junk_guard_deep.py``.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -52,45 +53,50 @@ def failures_of(failures: list[str], method: str) -> list[str]:
 
 
 class TheWalkCatches(unittest.TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
+        """``LoopState`` with a mixin from a module of its own, as a new feature would add one,
+        and a walk of it and of ``LoopState`` (each discovered once, then reused)."""
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
-        self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
-
-    def future_class(self):
-        """``LoopState`` with a mixin from a module of its own, as a new feature would add one."""
-        source = self.root / "future_mixin.py"
+        cls.addClassCleanup(temp.cleanup)
+        root = Path(temp.name)
+        source = root / "future_mixin.py"
         source.write_text(FUTURE)
         spec = importlib.util.spec_from_file_location("future_mixin", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return type("FutureLoopState", (module.FutureMixin, state.LoopState),
-                    {"__module__": module.__name__})
+        cls.future = type("FutureLoopState", (module.FutureMixin, state.LoopState),
+                          {"__module__": module.__name__})
+        cls.future_walk = walk.Walk(cls.future, root / "future")
+        cls.real_walk = walk.Walk(state.LoopState, root / "real")
+        cls.future_walk.discover()                # now, before any test patches LoopState
+        cls.real_walk.discover()
 
     def test_a_new_mixins_files_are_found_and_planted(self):
-        future = self.future_class()
+        future = self.future
         self.assertIn("future_state", walk.public_methods(future))
-        found = walk.Walk(future, self.root / "find").discover()
+        found = self.future_walk.discover()
         for name in ("future-state.json", "future-built.json", "future-log.json"):
             self.assertIn(name, found)
         self.assertIn("future-state.json", walk.spelled_json(future))       # by its module
         self.assertNotIn("future-built.json", walk.spelled_json(future))    # only by watching
-        real = walk.Walk(state.LoopState, self.root / "real").discover()
+        real = self.real_walk.discover()
         self.assertNotIn("future-state.json", real)
 
     def test_a_new_method_raising_on_its_own_junk_file_fails_the_walk(self):
-        failures = walk.Walk(self.future_class(), self.root / "walk").run(
+        failures = self.future_walk.run(
             ["future_state", "future_built"])
         for method in ("future_state", "future_built"):
-            raised = failures_of(failures, method)
-            self.assertTrue(raised and all("raised TypeError" in f for f in raised), failures)
+            raised = [f for f in failures_of(failures, method) if "raised TypeError" in f]
             self.assertEqual(len(raised), sum(not isinstance(s, dict) for s in walk.SHAPES))
+            # An object of junk is returned as stored, not read as a missing file (#2589 F2).
+            self.assertEqual(len(failures_of(failures, method)), len(raised) + 1, failures)
 
     def test_a_writer_that_wraps_junk_instead_of_healing_fails_the_walk(self):
-        failures = walk.Walk(self.future_class(), self.root / "walk").run(["future_wrap"])
+        failures = self.future_walk.run(["future_wrap"])
         self.assertTrue(failures, "a junk file rewritten as a list passed")
-        self.assertTrue(all("rewrote future-log.json as a list, not healed" in f
-                            for f in failures), failures)
+        self.assertTrue(all("rewrote future-log.json, which holds a list at the top level"
+                            in f for f in failures), failures)
 
     def test_a_reader_returning_junk_fails_the_walk(self):
         # The review's mutation (F2): fix_handoff returns a string. With its declared type kept
@@ -99,7 +105,7 @@ class TheWalkCatches(unittest.TestCase):
         def unhealed(self, number: int) -> "dict | None":
             return "unhealed junk"
         with mock.patch.object(state.LoopState, "fix_handoff", unhealed):
-            failures = walk.Walk(state.LoopState, self.root / "a").run(["fix_handoff"])
+            failures = self.real_walk.run(["fix_handoff"])
         self.assertEqual(len(failures), len(walk.SHAPES), failures)
         self.assertTrue(all("returned 'unhealed junk', not dict | None" in f
                             for f in failures), failures)
@@ -110,7 +116,7 @@ class TheWalkCatches(unittest.TestCase):
             raw = self._load(self.dir / "fix-asks.json", None)
             return raw if raw is not None and not isinstance(raw, dict) else None
         with mock.patch.object(state.LoopState, "fix_handoff", leaky):
-            failures = walk.Walk(state.LoopState, self.root / "b").run(["fix_handoff"])
+            failures = self.real_walk.run(["fix_handoff"])
         self.assertTrue(any("read junk as 'junk', not as a missing file (None)" in f
                             for f in failures), failures)
         self.assertTrue(any("returned ['a', 1], not dict | None" in f for f in failures),
@@ -120,7 +126,7 @@ class TheWalkCatches(unittest.TestCase):
         # The review's literal stub: no annotation, so its result could not be checked at all.
         with mock.patch.object(state.LoopState, "fix_handoff",
                                lambda self, number: "unhealed junk"):
-            failures = walk.Walk(state.LoopState, self.root / "c").run(["fix_handoff"])
+            failures = self.real_walk.run(["fix_handoff"])
         self.assertEqual(len(failures), len(walk.SHAPES), failures)
         self.assertTrue(all("declares no return type" in f for f in failures), failures)
 

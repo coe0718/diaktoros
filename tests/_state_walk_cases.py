@@ -8,10 +8,13 @@ HEAD = "a" * 40
 KEY = "acme/widgets#7"
 NEVER = "never"
 SCALARS = [None, "junk", 7, True]        # a top level no state file holds: read as missing
+LIST = ["a", 1]
+FLAT = {"7": "junk", "8": ["x"], "reviewer": "junk", KEY: "junk", "open": "junk", "count": "junk",
+        "approved": "junk", "handoff": "junk", "last_failure": "junk", "entries": "junk"}
+# The shapes that hold no valid entry (no object at any key): read exactly as a missing file.
+EMPTY = [*SCALARS, LIST, FLAT]
 SHAPES = [
-    *SCALARS, ["a", 1],
-    {"7": "junk", "8": ["x"], "reviewer": "junk", KEY: "junk", "open": "junk", "count": "junk",
-     "approved": "junk", "handoff": "junk", "last_failure": "junk", "entries": "junk"},
+    *EMPTY,
     {"7": {"at": NEVER, "head": 7, "rounds": "x", "findings": {"F": {"state": "open"},
                                                               "Fx": "junk", "F1": "junk"}},
      "reviewer": {KEY: {"at": NEVER, "head": 5, "run": 3}}, KEY: {"at": NEVER},
@@ -22,6 +25,9 @@ SHAPES = [
     {"7": {HEAD: {"at": NEVER}, "findings": "junk", "last_head": 7}, "reviewer": [],
      "open": {"7": {"comment_id": "x", "run": 3}}, "count": {"7": None}},
 ]
+# Strings the shapes plant that no valid state holds: a file a call rewrites keeps none of them
+# where the call writes (unless its own clean write holds one too, such as an argument "x").
+JUNK_STRINGS = frozenset({"junk", "x", NEVER, "Infinity"})
 ARGS = {
     "seat": "reviewer", "key": KEY, "number": 7, "issue": 7, "pr": 8, "prerequisite": 8,
     "head": HEAD, "base_sha": HEAD, "entry": {"head": HEAD}, "data": {}, "default": {},
@@ -42,6 +48,12 @@ SKIP: dict[str, str] = {}
 ANY_SHAPE = {
     "kv_get": "the key-value API (#1088) returns the JSON at a caller's own path, or the "
               "default when unreadable; each caller checks the shape it keeps there",
+}
+# Each EMPTY shape reads as a missing file: the method returns what it returns with no file. The
+# exceptions, for a method whose result keeps a valid part of such a shape: the shapes, and why.
+KEEPS = {
+    "dep_waits": ([LIST], "1 in ['a', 1] is a valid issue number: the junk 'a' is dropped, the "
+                          "wait on issue 1 kept"),
 }
 # Methods with no return annotation, and the return type the walk holds them to.
 HINTS = {"review_only_conflict": tuple[dict, str, bool] | None}

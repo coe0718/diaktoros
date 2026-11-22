@@ -27,6 +27,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import threading
 import time
 import uuid
@@ -175,6 +176,50 @@ def _delivery_in_flight(marker: dict, now: float | None = None) -> bool:
 def _mapping(raw) -> dict:
     """A state file's top level as a dict: a file that is not a mapping holds nothing (#80)."""
     return raw if isinstance(raw, dict) else {}
+
+
+def _kept(raw, keep: Callable[[str, object], bool]) -> dict:
+    """A keyed state file's top level with only the entries ``keep(key, value)`` accepts (#2303):
+    a malformed entry reads as absent, as in a missing file, and the well-formed ones beside it
+    stay. Each reader passes the shape its own writers produce."""
+    return {key: value for key, value in _mapping(raw).items() if keep(key, value)}
+
+
+def _breach_marker(_key: str, marker) -> bool:
+    """A breach marker as ``breach_deliver`` writes it: an object naming the head it holds."""
+    return isinstance(marker, dict) and isinstance(marker.get("head"), str) and bool(marker["head"])
+
+
+def _findings_entry(entry) -> dict | None:
+    """A ``findings.json`` entry as ``findings.apply`` writes it (#475): an object whose
+    ``findings`` maps an id to a finding object. None for a junk entry; a junk ``findings`` field,
+    or a junk finding in it, reads as absent (#2303), so the next review records over it instead
+    of raising in ``findings.apply`` on every review of the PR from then on."""
+    if not isinstance(entry, dict):
+        return None
+    found = entry.get("findings")
+    if found is None or (isinstance(found, dict)
+                         and all(isinstance(item, dict) for item in found.values())):
+        return entry
+    return {**entry, "findings": {fid: item for fid, item in found.items()
+                                  if isinstance(item, dict)} if isinstance(found, dict) else {}}
+
+
+# ``watchdog.json``'s keys, each with the JSON type its writers give it (``scripts/watchdog.py``,
+# ``watch_health``, ``watch_mode``, ``watch_stacked``, ``stale_approval``): another key, or a value
+# of another type, is junk and reads as absent (#2303). A new key is added here, or it is dropped
+# on its first read (``tests/test_state_junk_callers.py`` checks the writers against this).
+WATCH_KEYS = {"last_run": str, "armed_since": float, "gate_failure_seen": float,
+              **dict.fromkeys(("alerts", "github_alerts", "github_read", "head_history", "heads",
+                               "open_prs", "review_kicks", "stacked_wait", "stale_approvals"),
+                              dict)}
+
+
+def _watch_value(key: str, value) -> bool:
+    kind = WATCH_KEYS.get(key)
+    if kind is float:
+        return finite_time(value) is not None
+    return kind is not None and isinstance(value, kind)
 
 
 def _seat(data: dict, seat: str) -> dict:
@@ -647,7 +692,10 @@ class LoopState(FixAsks):
             return junk
 
     def queue_all(self) -> dict:
-        return _mapping(self._load(self.pending, {}))
+        """Every seat's queue, ``{seat: {key: entry}}``. A seat that is not an object reads as
+        absent (#2303). An entry is kept as stored, junk too, so ``status`` can name one
+        ``mark_at`` cannot age before the drain drops it (``queue_drop_unreadable``)."""
+        return _kept(self._load(self.pending, {}), lambda _seat, items: isinstance(items, dict))
 
     def queue_pop(self, seat: str, key: str) -> None:
         with self._queue_lock():
@@ -942,12 +990,12 @@ class LoopState(FixAsks):
             return True
 
     def breach_all(self) -> dict:
-        return _mapping(self._load(self.breach, {}))
+        return _kept(self._load(self.breach, {}), _breach_marker)
 
     # -- watchdog memory ----------------------------------------------------
 
     def watch(self) -> dict:
-        return _mapping(self._load(self.watch_file, {}))
+        return _kept(self._load(self.watch_file, {}), _watch_value)
 
     def watch_save(self, data: dict) -> None:
         self._save(self.watch_file, data)
@@ -1350,8 +1398,10 @@ class LoopState(FixAsks):
     # -- numbered review findings (#475) --------------------------------------
 
     def findings_all(self) -> dict:
-        raw = self._load(self.dir / "findings.json", {})
-        return raw if isinstance(raw, dict) else {}
+        """PR number -> its findings entry; a junk entry, field or finding reads as absent."""
+        return {key: kept for key, entry in _mapping(self._load(self.dir / "findings.json",
+                                                                {})).items()
+                if key.isdigit() and (kept := _findings_entry(entry)) is not None}
 
     def findings_get(self, number: int) -> dict:
         entry = self.findings_all().get(str(number))
@@ -1373,8 +1423,9 @@ class LoopState(FixAsks):
         reader, #1323); it is no longer read, so those merges are read once more after an
         upgrade; nor is ``override-checked-v2.json``, which marked approvals read at once (#1761,
         see ``overrides``). That is safe: an override record is written once per PR and head."""
-        raw = self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {})
-        return raw if isinstance(raw, dict) else {}
+        return _kept(self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {}),
+                     lambda key, head: key.isdigit() and isinstance(head, str)
+                     and re.fullmatch(r"[0-9a-f]{40}", head) is not None)
 
     OVERRIDE_CHECKED_FILE = "override-checked-v3.json"
 

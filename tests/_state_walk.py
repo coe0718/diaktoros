@@ -3,182 +3,153 @@
 
 **Which files.** The union of (a) every ``*.json`` name spelled in a module that defines a class in
 the class's MRO or a function bound on it (so a new mixin's module is scanned too), and (b) every
-``*.json`` file in the state dir that a method touches when it is called on an empty state dir:
-the walk records ``exists``/``open``/``read_text`` of such a path and any file a call creates, so a
-name built at run time is found as well. ``observations.json`` and ``kv.json`` (the key-value
-API's path) are always in it. Each junk shape is planted in all of them at once.
+``*.json`` file in the state dir that a method touches (``exists``/``open``/``read_text``, or
+creates), so a name built at run time is found as well: first on an empty state dir, then, until
+no new name turns up, on a dir where every file found holds what the methods wrote there, so a
+file read only on a branch another file's data opens is found too. ``observations.json`` and
+``kv.json`` (the key-value API's path) are always in it. Each junk shape is planted in all of
+them at once. A file a call touches on junk that was not planted (a branch only junk opens) is
+planted on a further pass, and one still unplanted after ``ROUNDS`` passes fails the walk.
 
 **What is checked** for each call on junk (``Walk.check``): it does not raise (except a
 ``RAISES`` entry's own exception); its result conforms to the method's declared return type (its
 annotation, or its ``HINTS`` entry: a method that declares none fails, since what it returns on
-junk could not be checked); on a top level no state file holds (null, a string, a number, a
-bool) it returns exactly what it returns on a missing file, as #80's readers do; and a file it
-rewrote is well-formed JSON of the top-level type the method's own clean call writes there (a
-dict or a list when it writes none): healed, never junk kept. The cases are in
-``tests/_state_walk_cases.py``.
+junk could not be checked); on a shape that holds no valid entry (``EMPTY``: a scalar top level,
+a list of junk, an object of junk scalars) it returns exactly what it returns on a missing file,
+as #80's readers do, whatever the top-level type (a ``KEEPS`` entry names a shape that holds a
+valid part for one method); and a file it rewrote holds every path the method's own clean call
+writes there, of the same JSON type and with none of the planted junk strings
+(``JUNK_STRINGS``) left at it (an object or a list, and not the junk as it was, when it writes
+none): healed, never junk kept. The cases are in ``tests/_state_walk_cases.py``.
 """
 from __future__ import annotations
 
-import ast
-import builtins
 import contextlib
 import inspect
 import json
-import math
 import os
-import re
 from pathlib import Path
-import types
-import typing
-from unittest import mock
 
 from diaktoros import state
 from _state_walk_cases import (  # noqa: F401 - re-exported for the tests
-    ANY_SHAPE, ARGS, HEAD, HINTS, KEY, LOCK, METHOD_ARGS, NEVER, RAISES, SCALARS, SHAPES, SKIP,
-    new_loop)
+    ANY_SHAPE, ARGS, EMPTY, FLAT, HEAD, HINTS, JUNK_STRINGS, KEEPS, KEY, LIST, LOCK, METHOD_ARGS,
+    NEVER, RAISES, SCALARS, SHAPES, SKIP, new_loop)
+from _state_walk_oracle import (  # noqa: F401 - re-exported for the tests
+    conforms, healing, kind, plain, returns, strings)
+from _state_walk_trace import (  # noqa: F401 - re-exported for the tests
+    call, public_methods, source_files, spelled_json, touches)
 
-
-def public_methods(cls=state.LoopState) -> list[str]:
-    return sorted(name for name, _ in inspect.getmembers(cls, inspect.isfunction)
-                  if not name.startswith("_"))
-
-
-def source_files(cls) -> set[Path]:
-    """The modules that define ``cls``'s MRO classes and every function bound on it."""
-    found = set()
-    for owner in [*cls.__mro__[:-1],
-                  *(inspect.unwrap(f) for _, f in inspect.getmembers(cls, inspect.isfunction))]:
-        with contextlib.suppress(TypeError, OSError):
-            found.add(Path(inspect.getsourcefile(owner)))
-    return found
-
-
-def spelled_json(cls) -> set[str]:
-    names = set()
-    for path in source_files(cls):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        names |= {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)
-                  and isinstance(n.value, str) and n.value.endswith(".json")
-                  and n.value != ".json" and "/" not in n.value and " " not in n.value}
-    return names
-
-
-@contextlib.contextmanager
-def touches(folder: Path):
-    """The ``*.json`` names in ``folder`` read, probed or created inside the block."""
-    seen, before = set(), set(os.listdir(folder))
-
-    def note(path):
-        with contextlib.suppress(TypeError):
-            path = Path(os.fsdecode(path))
-            if path.parent == folder and path.name.endswith(".json"):
-                seen.add(path.name)
-
-    def spy(real):
-        def wrapper(*args, **kwargs):
-            note(args[0])
-            return real(*args, **kwargs)
-        return wrapper
-    patches = [mock.patch.object(Path, name, spy(getattr(Path, name)))
-               for name in ("exists", "is_file", "open", "read_text", "read_bytes")]
-    patches += [mock.patch.object(os.path, name, spy(getattr(os.path, name)))
-                for name in ("exists", "lexists", "isfile")]
-    patches.append(mock.patch.object(builtins, "open", spy(builtins.open)))
-    with contextlib.ExitStack() as stack:
-        for patch in patches:
-            stack.enter_context(patch)
-        yield seen
-    seen |= {n for n in set(os.listdir(folder)) - before if n.endswith(".json")}
-
-
-def call(st, name: str):
-    method = getattr(st, name)
-    kwargs = {}
-    for param in inspect.signature(method).parameters.values():
-        if param.default is not param.empty or param.kind in (param.VAR_POSITIONAL,
-                                                              param.VAR_KEYWORD):
-            continue
-        own = METHOD_ARGS.get(name, {})
-        kwargs[param.name] = (own[param.name] if param.name in own
-                              else st.dir / "kv.json" if param.name == "path"
-                              else ARGS[param.name])
-    result = method(**kwargs)
-    if hasattr(result, "__enter__"):                 # a lock: take it and let it go
-        with result:
-            pass
-        return LOCK
-    return result
-
-
-def conforms(value, hint) -> bool:
-    """Whether ``value`` is of the return annotation ``hint`` (unions, generics, finite floats)."""
-    origin, args = typing.get_origin(hint), typing.get_args(hint)
-    if hint is None or hint is type(None):
-        return value is None
-    if origin in (typing.Union, types.UnionType):
-        return any(conforms(value, arg) for arg in args)
-    if hint is float:
-        return type(value) in (int, float) and math.isfinite(value)
-    if hint in (int, str):
-        return type(value) is hint
-    if origin is tuple:
-        return (isinstance(value, tuple) and len(value) == len(args)
-                and all(conforms(v, a) for v, a in zip(value, args)))
-    if origin is list:
-        return isinstance(value, list) and all(conforms(v, args[0]) for v in value)
-    return isinstance(value, origin or hint)
-
-
-def returns(cls, name: str):
-    """The method's resolved return annotation (or its ``HINTS`` entry), else
-    ``inspect.Signature.empty``."""
-    if name in HINTS:
-        return HINTS[name]
-    try:
-        return typing.get_type_hints(inspect.unwrap(getattr(cls, name))).get(
-            "return", inspect.Signature.empty)
-    except Exception:  # noqa: BLE001 - unresolvable: reported as no declared return type
-        return inspect.Signature.empty
+ROUNDS = 4          # discovery rounds on seeded dirs, and junk passes, before failing closed
+_MISSING = object()
 
 
 class Walk:
-    """One class's walk: ``discover`` on an empty state dir, then ``run`` every shape."""
+    """One class's walk: ``discover`` the state files, then ``run`` every shape."""
 
     def __init__(self, cls, root: Path):
-        self.cls, self.root, self.clean, self.writes, self.used = cls, root, {}, {}, set()
+        self.cls, self.root, self.made = cls, root, 0
+        self.clean, self.wrote, self.samples, self.strays, self.files = {}, {}, {}, set(), None
 
-    def fresh(self, name: str):
-        st = self.cls(new_loop(self.root / name))
+    def methods(self, only=None) -> list[str]:
+        return [n for n in public_methods(self.cls)
+                if n not in SKIP and (only is None or n in only)]
+
+    def trace(self, name: str, seed: dict):
+        """Call ``name`` on a fresh state dir holding ``seed`` (file -> JSON):
+        ``(outcome, touched, written)``, the call's ``("ok", result)`` or ``("raised", exc)``,
+        the ``*.json`` names it touched, and each file it (re)wrote: its JSON, or ``_MISSING``
+        when it is not JSON."""
+        self.made += 1
+        st = self.cls(new_loop(self.root / f"{self.made}-{name}"))
         st.dir.mkdir(parents=True, exist_ok=True)
-        return st
+        folder, before = os.fspath(st.dir), {}
+        for file, value in seed.items():
+            path = os.path.join(folder, file)
+            with open(path, "wb") as out:
+                out.write(text := json.dumps(value).encode())
+            os.utime(path, ns=(0, 0))              # so any write, in place too, moves it
+            before[file] = (text, _stamp(path))
+        with touches(st.dir) as seen:
+            try:
+                outcome = ("ok", call(st, name))
+            except Exception as exc:  # noqa: BLE001 - recorded: the caller decides
+                outcome = ("raised", exc)
+        written = {}
+        for file in (f for f in os.listdir(folder) if f.endswith(".json")):
+            path, (was, stamp) = os.path.join(folder, file), before.get(file, (None, None))
+            if stamp is not None and stamp == _stamp(path):
+                continue
+            with open(path, "rb") as source:
+                if was == (now := source.read()):
+                    continue
+            try:
+                written[file] = json.loads(now)
+            except ValueError:
+                written[file] = _MISSING
+        return outcome, seen, written
+
+    def sample(self, file: str, value) -> bool:
+        """Fold a value a call wrote into ``file``'s valid sample; whether it gained a part."""
+        have = self.samples.get(file, _MISSING)
+        if isinstance(have, dict) and isinstance(value, dict):
+            new = {**value, **have}
+        elif isinstance(have, list) and isinstance(value, list):
+            new = have + [v for v in value if v not in have]
+        elif have is _MISSING or (have in ({}, []) and value not in ({}, [])):
+            new = value
+        else:
+            return False
+        grew = have is _MISSING or (kind(new) != kind(have) or len(new) > len(have))
+        self.samples[file] = new
+        return grew
+
+    def clean_call(self, name: str) -> set[str]:
+        """Call ``name`` on an empty dir: record its result and writes; the names it touched."""
+        self.clean[name], seen, written = self.trace(name, {})
+        self.wrote = {key: value for key, value in self.wrote.items() if key[0] != name}
+        for file, value in written.items():
+            self.wrote[(name, file)] = value
+            if value is not _MISSING:
+                self.sample(file, value)
+        return seen
 
     def discover(self) -> list[str]:
-        for name in public_methods(self.cls):
-            if name in SKIP:
-                continue
-            st = self.fresh(f"clean-{name}")
-            with touches(st.dir) as seen:
-                try:
-                    self.clean[name] = ("ok", call(st, name))
-                except Exception as exc:  # noqa: BLE001 - recorded: a clean raise is reported
-                    self.clean[name] = ("raised", exc)
-            self.used |= seen
-            for file in seen & set(os.listdir(st.dir)):
-                with contextlib.suppress(ValueError):
-                    kind = type(json.loads((st.dir / file).read_text()))
-                    self.writes.setdefault((name, file), set()).add(kind)
-        self.files = sorted(self.used | spelled_json(self.cls)
-                            | {state.OBSERVATIONS_FILE, "kv.json"})
+        """The state files: every name the class's modules spell, and every file a method
+        touches: on an empty dir, then, round after round until no method touches a new name,
+        with each file it touched holding what the methods wrote there (so a file read only
+        when another holds data is found too). Records each clean call's result and writes.
+        Done once per walk; ``run`` reuses it."""
+        if self.files is not None:
+            return self.files
+        touched = {name: self.clean_call(name) for name in self.methods()}
+        todo = set(touched)
+        for _ in range(ROUNDS):
+            again, grown = set(), set()
+            for name in sorted(todo):
+                seed = {f: self.samples[f] for f in sorted(touched[name] & set(self.samples))}
+                if not seed:
+                    continue
+                _, seen, written = self.trace(name, seed)
+                if seen - touched[name]:
+                    touched[name] |= seen
+                    again.add(name)
+                grown |= {f for f, value in written.items()
+                          if value is not _MISSING and self.sample(f, value)}
+            todo = again | {name for name, seen in touched.items() if seen & grown}
+            if not todo:
+                break
+        self.files = sorted(set().union(spelled_json(self.cls), *touched.values(),
+                                        {state.OBSERVATIONS_FILE, "kv.json"}))
         return self.files
 
-    def check(self, name: str, shape, st, before: dict) -> list[str]:
-        allowed = RAISES[name][0] if name in RAISES else ()
-        try:
-            result = call(st, name)
-        except allowed:
-            return []
-        except Exception as exc:  # noqa: BLE001 - the failure is the finding
-            return [f"raised {type(exc).__name__}: {exc}"]
+    def check(self, name: str, shape, files) -> tuple[list[str], set[str]]:
+        """The call's problems with ``shape`` planted in every one of ``files``, and the
+        ``*.json`` names it touched."""
+        (status, result), seen, written = self.trace(name, dict.fromkeys(files, shape))
+        if status == "raised":
+            allowed = RAISES[name][0] if name in RAISES else ()
+            problem = f"raised {type(result).__name__}: {result}"
+            return ([] if isinstance(result, allowed) else [problem]), seen
         problems, hint = [], returns(self.cls, name)
         status, clean = self.clean.get(name, ("raised", None))
         if name in ANY_SHAPE or result is LOCK:
@@ -188,40 +159,57 @@ class Walk:
                             "what it returns on junk cannot be checked")
         elif not conforms(result, hint):
             problems.append(f"returned {result!r}, not {hint}")
-        if status == "ok" and shape in SCALARS and _plain(result) != _plain(clean):
-            problems.append(f"read junk as {result!r}, not as a missing file ({clean!r})")
-        for path, was in before.items():
-            now = path.read_bytes() if path.exists() else was
-            if now == was:
-                continue
-            try:
-                kind = type(json.loads(now))
-            except ValueError:
-                problems.append(f"left {path.name} unreadable")
-                continue
-            healed = self.writes.get((name, path.name)) or {dict, list}
-            if kind not in healed:
-                problems.append(f"rewrote {path.name} as a {kind.__name__}, not healed")
-        return problems
+        keeps = KEEPS.get(name, ([], ""))[0]
+        if (status == "ok" and shape in EMPTY and shape not in keeps
+                and plain(result) != plain(clean)):
+            problems.append(f"read junk as {result!r:.90}, not as a missing file ({clean!r:.40})")
+        for file, now in sorted(written.items()):
+            problems += ([f"left {file} unreadable"] if now is _MISSING
+                         else self.healed(name, file, now, shape))
+        return problems, seen
+
+    def healed(self, name: str, file: str, now, shape) -> list[str]:
+        """A rewritten file's problems: it carries what the method writes on a missing file,
+        with none of the planted junk where the method writes (any object or list when the
+        method writes nothing there on a missing file, but never the junk left as it was)."""
+        clean = self.wrote.get((name, file), _MISSING)
+        if clean is _MISSING:
+            if not isinstance(now, (dict, list)):
+                return [f"rewrote {file} as a {type(now).__name__}, not healed"]
+            return [f"rewrote {file} with the junk as it was"] if now == shape else []
+        if plain(now) == plain(clean):
+            return []
+        junk = set(JUNK_STRINGS) - strings(clean)
+        return [f"rewrote {file}, which {p}" for p in healing(now, clean, junk)]
 
     def run(self, only=None) -> list[str]:
         """Every ``method[shape]: problem``; empty when every method (or each one in ``only``)
-        survives every shape."""
-        files, failures = self.discover(), []
-        for name in public_methods(self.cls):
-            if name in SKIP or (only is not None and name not in only):
-                continue
-            for n, shape in enumerate(SHAPES):
-                st = self.fresh(f"{name}-{n}")
-                before = {}
-                for file in files:
-                    (st.dir / file).write_text(json.dumps(shape))
-                    before[st.dir / file] = (st.dir / file).read_bytes()
-                failures += [f"{name}[{shape!r:.30}]: {p}"
-                             for p in self.check(name, shape, st, before)]
-        return failures
+        survives every shape. A file a call touched on junk that was not planted (read on a
+        branch only junk opens) is planted on a further pass; one still unplanted after
+        ``ROUNDS`` passes is a failure (closed, never a silent pass)."""
+        known, files, self.strays = self.files, set(self.discover()), set()
+        if known is not None:            # again, so a method patched since discovery is its own
+            for name in self.methods(only):
+                files |= self.clean_call(name)
+        for _ in range(ROUNDS):
+            failures, strays = [], set()
+            for name in self.methods(only):
+                for shape in SHAPES:
+                    problems, seen = self.check(name, shape, sorted(files))
+                    strays |= seen - files
+                    failures += [f"{name}[{shape!r:.30}]: {p}" for p in problems]
+            if not strays:
+                return failures
+            self.strays |= strays
+            files |= strays
+        return failures + [f"{file}: touched on junk, and still not planted after {ROUNDS} "
+                           "passes, so never fuzzed" for file in sorted(strays)]
 
 
-def _plain(value):
-    """``value`` with its timestamps masked, for comparing two calls a moment apart."""
-    return re.sub(r"[0-9]+(?:[.][0-9]+)?", "#", json.dumps(value, sort_keys=True, default=repr))
+def _stamp(path: str):
+    """What tells a rewrite apart without reading the file: a replace makes a new inode, and
+    any write moves the mtime off the epoch the seed was stamped with."""
+    with contextlib.suppress(OSError):
+        stat = os.stat(path)
+        return stat.st_ino, stat.st_mtime_ns, stat.st_size
+    return None
