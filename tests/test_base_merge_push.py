@@ -176,6 +176,52 @@ class HoldLapses(NotPushed, tbm.Base):
                 self.assertIn(said, str(log.call_args_list[-1]))
 
 
+class LockWait(NotPushed, tbm.Base):
+    """Review on #2576, F3 again: ``confirm`` waits for the writer lock (up to
+    ``ledger.LOCK_WAIT_S``) and the hold lapses meanwhile, while a reviewer turn is claimed and
+    finishes. Its clock is read once the lock is held, so the lapse stops the push."""
+
+    def test_a_hold_that_lapses_while_confirm_waits_for_the_lock_stops_the_push(self):
+        import contextlib
+        from types import SimpleNamespace
+
+        from diaktoros import run_supervisor
+        from diaktoros.run_supervisor import merge_hold
+        db, skew, armed = self.root / "runs.sqlite", [0.0], []
+        run_supervisor.Supervisor(db)
+        real_take, real_connect = merge_hold.take, merge_hold.ledger.connect
+
+        def take(*args, **kwargs):
+            got = real_take(*args, **kwargs)
+            now = time.time()            # a reviewer turn claimed and finished under the wait
+            with contextlib.closing(sqlite3.connect(db)) as con, con:
+                con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, created,"
+                            " updated) VALUES ('r', 'd', ?, 7, ?, 'reviewer', 'succeeded', ?, ?)",
+                            (tbm.REPO, self.head, now, now))
+            armed.append(True)
+            return got
+
+        def lapse_at_lock(sql):          # the lock is granted only after the hold has lapsed
+            if armed and sql.startswith("BEGIN IMMEDIATE"):
+                skew[0] = merge_hold.HOLD_S + 1
+
+        @contextlib.contextmanager
+        def connect(*args, **kwargs):
+            with real_connect(*args, **kwargs) as con:
+                con.set_trace_callback(lapse_at_lock)
+                yield con
+        clock = SimpleNamespace(time=lambda: time.time() + skew[0])
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db), \
+                mock.patch.object(merge_hold, "take", side_effect=take), \
+                mock.patch.object(merge_hold.ledger, "connect", connect), \
+                mock.patch.object(merge_hold, "time", clock), \
+                mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assertEqual(armed, [True])
+        self.assert_not_pushed()
+        self.assertIn("the merge hold lapsed", str(log.call_args_list[-1]))
+
+
 class RealReady(tbm.Base):
     """#2292: no mock of ``ready.assess_kinds``: its reason for a behind, approved, green head is
     the one ``base_merge.source`` sets aside, so the approval carries."""

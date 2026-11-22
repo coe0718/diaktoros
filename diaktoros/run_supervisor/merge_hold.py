@@ -32,11 +32,12 @@ _LIVE = "released IS NULL AND created > ?"
 
 def take(db, repo: str, pr: int, head: str, states: tuple) -> tuple[str, str]:
     """``(token, '')`` once held; ``('', what is in flight)`` when a turn of the PR is in one of
-    ``states``, or another push holds it. An unreadable ledger is not idle."""
-    now = time.time()
+    ``states``, or another push holds it. An unreadable ledger is not idle. Its clock is read
+    once the writer lock is held, as ``confirm``'s is."""
     try:
         with ledger.connect(db, timeout=ledger.LOCK_WAIT_S, isolation_level=None) as con:
             con.execute("BEGIN IMMEDIATE")
+            now = time.time()
             marks = ",".join("?" * len(states))
             row = con.execute(f"SELECT seat, state FROM runs WHERE repo=? AND pr=? AND state IN "
                               f"({marks}) LIMIT 1", (repo, pr, *states)).fetchone()
@@ -60,11 +61,13 @@ def confirm(db, repo: str, pr: int, token: str, states: tuple) -> str:
     """Right before the push (review on #2576, F3): ``''`` when this push's hold is still live
     and no turn of the PR is in ``states``, and the hold's window is restarted for the push; else
     why not. The reads after ``take`` may outlast ``HOLD_S``, and a lapsed hold holds nothing: a
-    turn may have been claimed at the head the push would move."""
-    now = time.time()
+    turn may have been claimed at the head the push would move. The clock is read once the
+    writer lock is held (F3, again): taking it may wait up to ``ledger.LOCK_WAIT_S``, and a hold
+    that lapsed meanwhile, a turn claimed and finished in that gap, is lapsed, not renewed."""
     try:
         with ledger.connect(db, timeout=ledger.LOCK_WAIT_S, isolation_level=None) as con:
             con.execute("BEGIN IMMEDIATE")
+            now = time.time()
             mine = con.execute(f"SELECT 1 FROM merge_holds WHERE repo=? AND pr=? AND token=? "
                                f"AND {_LIVE}", (repo, pr, token, now - HOLD_S)).fetchone()
             marks = ",".join("?" * len(states))
