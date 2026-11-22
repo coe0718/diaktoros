@@ -15,8 +15,8 @@ from test_site_data import load_module
 
 
 class SnapshotBaseTests(unittest.TestCase):
-    """Vex, PR #2570 round 1: the deploy refreshes into its artifact only, so
-    a failed refresh must keep the newest published snapshot, and a read
+    """Vex, PR #2570 rounds 1-3: the deploy refreshes into its artifact only,
+    so a failed refresh must keep the newest snapshot it can find, and a read
     that fails half-way must not leave new figures beside old ones."""
     OLD = {"version": "v1", "stars": 1, "prs_merged": 2,
            "pushed_at": "2026-01-01T00:00:00Z"}
@@ -112,6 +112,26 @@ class SnapshotBaseTests(unittest.TestCase):
         _, failed = self.main(self.down, checked_in=data)
         self.assertEqual(failed["refreshed_at"], data["refreshed_at"], "a failure keeps the stamp")
 
+    def test_the_cached_snapshot_survives_a_failed_fetch_and_outage(self):
+        # Vex, PR #2570 r3: the published file unreachable and the API down at
+        # once must not publish the older checked-in file over newer figures.
+        cached = self.tmp / "cached.json"
+        cached.write_text(json.dumps(dict(self.NEW, refreshed_at="2026-02-03T10:00:00Z")))
+        argv = ["--previous", str(self.tmp / "unfetched.json"), "--previous", str(cached)]
+        _, data = self.main(self.down, argv=argv)
+        self.assertEqual(data["version"], "v2")
+
+    def test_the_freshest_of_every_snapshot_wins(self):
+        snaps = {"a": dict(self.NEW, version="va", refreshed_at="2026-02-03T00:00:00Z"),
+                 "b": dict(self.NEW, version="vb", refreshed_at="2026-02-05T00:00:00Z"),
+                 "c": dict(self.NEW, version="vc", refreshed_at="2026-02-04T00:00:00Z")}
+        argv = []
+        for name, snap in snaps.items():
+            (self.tmp / name).write_text(json.dumps(snap))
+            argv += ["--previous", str(self.tmp / name)]
+        _, data = self.main(self.down, argv=argv)
+        self.assertEqual(data["version"], "vb")
+
     def test_the_newest_snapshot_is_on_disk_before_any_read(self):
         # The deploy bounds the step: a refresh killed mid-read still
         # publishes the newest snapshot, not the checked-in one.
@@ -122,8 +142,9 @@ class SnapshotBaseTests(unittest.TestCase):
         self.assertEqual(json.loads((self.tmp / "data.json").read_text())["version"], "v2")
 
     def test_a_bad_argument_is_refused(self):
-        code, data = self.main(self.down, argv=["--previos", "x"])
-        self.assertEqual((code, data), (2, self.OLD))
+        for argv in (["--previos", "x"], ["--previous", "x", "--previous"]):
+            code, data = self.main(self.down, argv=argv)
+            self.assertEqual((code, data), (2, self.OLD))
 
 
 

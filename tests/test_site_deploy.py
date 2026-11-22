@@ -94,6 +94,23 @@ class DeploySite(unittest.TestCase):
         self.assertIn("PAGES_URL: ${{ steps.pages.outputs.base_url }}", refresh)
         self.assertRegex(self.jobs["build"], r"- id: pages\n\s+uses: actions/configure-pages@")
 
+    def test_the_last_snapshot_is_cached_for_the_next_deploy(self):
+        # Vex, PR #2570 r3: when the published file cannot be fetched either, the build cache's
+        # copy is what keeps an outage from publishing the older checked-in file.
+        build = self.jobs["build"]
+        key = r"key: site-data-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}"
+        restore = build.find("uses: actions/cache/restore@")
+        save = build.find("uses: actions/cache/save@")
+        refresh, keep = build.find("- name: " + REFRESH), build.find("- name: Keep this snapshot")
+        self.assertTrue(-1 < restore < refresh < keep < save, (restore, refresh, keep, save))
+        self.assertEqual(len(re.findall(key, build)), 2)
+        self.assertRegex(build[restore:refresh], r"\n\s+restore-keys: site-data-\n")
+        self.assertEqual(re.findall(r"path: (.*site-data)\n", build),
+                         ["${{ runner.temp }}/site-data"] * 2)
+        self.assertIn('--previous "$RUNNER_TEMP/site-data/data.json"', step(build, REFRESH))
+        self.assertIn('cp docs/site/data.json "$RUNNER_TEMP/site-data/"',
+                      step(build, "Keep this snapshot for the next deploy"))
+
     def test_the_dispatch_carries_a_token(self):
         # gh refuses to run without one; the release redeploy would quietly never happen.
         dispatch = step(self.jobs["redeploy"], "Deploy main again for the new release")

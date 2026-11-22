@@ -108,32 +108,40 @@ def _stamp(snap, key):
     return _util().iso_epoch(snap.get(key))
 
 
-def base_snapshot(previous=None):
+def _newer(snap, than):
+    """Whether ``snap`` is shown fresher than ``than``.
+
+    Freshness is ``refreshed_at``, stamped by every successful refresh, not
+    ``pushed_at``: stars, counts and releases change without a push (Vex,
+    PR #2570 r2). A stamped snapshot beats an unstamped or earlier one; only
+    two snapshots written before the stamp existed compare a strictly later
+    ``pushed_at``.
+    """
+    mine, theirs = _stamp(than, "refreshed_at"), _stamp(snap, "refreshed_at")
+    if theirs is not None:
+        return mine is None or theirs >= mine
+    if mine is not None:
+        return False
+    pushed, was = _stamp(snap, "pushed_at"), _stamp(than, "pushed_at")
+    return pushed is not None and (was is None or pushed > was)
+
+
+def base_snapshot(previous=()):
     """The snapshot a refresh starts from, and keeps when the API fails.
 
     The deploy refreshes into the artifact only, so the checked-in file can
-    be older than what the site last published. ``previous`` (the deployed
-    data.json, when the workflow could fetch it) wins unless the checked-in
-    file is shown newer: an outage then keeps the newest published figures
-    rather than rolling them back (Vex, PR #2570 r1).
-
-    Freshness is ``refreshed_at``, stamped by every successful refresh, not
-    ``pushed_at``: stars, counts and releases change without a push (r2).
-    A deployed snapshot that carries it beats a checked-in one that does
-    not, or carries an earlier one. Only two snapshots written before the
-    stamp existed fall back to a strictly later ``pushed_at``.
+    be older than what the site last published. Each ``previous`` file (the
+    published data.json, and the build cache's copy of the last snapshot)
+    beats it when shown fresher, so an outage keeps the newest figures
+    rather than rolling them back, even when the published file cannot be
+    fetched either (Vex, PR #2570 r1, r3).
     """
-    checked_in = _load(OUT) or {}
-    deployed = _load(previous) if previous else None
-    if not deployed:
-        return checked_in
-    mine, theirs = _stamp(checked_in, "refreshed_at"), _stamp(deployed, "refreshed_at")
-    if theirs is not None:
-        return deployed if mine is None or theirs >= mine else checked_in
-    if mine is not None:
-        return checked_in
-    pushed, was = _stamp(deployed, "pushed_at"), _stamp(checked_in, "pushed_at")
-    return deployed if pushed is not None and (was is None or pushed > was) else checked_in
+    best = _load(OUT) or {}
+    for path in previous:
+        snap = _load(path)
+        if snap and _newer(snap, best):
+            best = snap
+    return best
 
 
 def refresh(data):
@@ -202,11 +210,11 @@ def _write(data):
 
 
 def main(argv=None):
-    """``build-data.py [--previous DEPLOYED_DATA_JSON]``"""
+    """``build-data.py [--previous SNAPSHOT_JSON]...``"""
     argv = list(argv or [])
-    previous = argv[1] if argv[:1] == ["--previous"] and len(argv) == 2 else None
-    if argv and previous is None:
-        print("usage: build-data.py [--previous DEPLOYED_DATA_JSON]", file=sys.stderr)
+    previous = argv[1::2]
+    if argv[::2] != ["--previous"] * len(previous):
+        print("usage: build-data.py [--previous SNAPSHOT_JSON]...", file=sys.stderr)
         return 2
     prev = base_snapshot(previous)
     # Written first, so a step killed mid-refresh (the deploy bounds it)
