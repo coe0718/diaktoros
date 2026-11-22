@@ -134,6 +134,16 @@ class Export(unittest.TestCase):
         self.assertEqual(rows["glm"]["approve_share"], 0.0)
         self.assertEqual(rows["glm"]["first"], "2026-09-21")
 
+    def test_a_shadow_outside_the_window_is_not_counted_in_a_model_row(self):
+        con = sqlite3.connect(self.db)                       # #2290: PR 8's shadow, long before
+        con.execute("UPDATE shadow_reviews SET created=? WHERE run_id='s8'", (T - 100000,))
+        con.commit()
+        con.close()
+        data = stats_public.collect(self.loop, self.db, T, T + 1000, listing=listing,
+                                    with_models=True)
+        terra = {row["model"]: row for row in data["models"]}["terra"]
+        self.assertEqual((terra["shadowed_approvals"], terra["shadow_disagreed"]), (1, 1))
+
     def test_no_ledger_yet_is_an_empty_export(self):
         data = stats_public.collect(self.loop, self.db.parent / "none.db", 0, T, listing=listing)
         self.assertEqual((data["stopped"]["count"], data["window"]["turns"]), (0, 0))
