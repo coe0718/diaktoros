@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from diaktoros import broker, config, fix_hold, gh  # noqa: E402
+from diaktoros import broker, config, fix_hold, gate, gh  # noqa: E402
 from diaktoros.cli import operations  # noqa: E402
 import test_continue_run as tcr  # noqa: E402
 from test_issue_fix import issue  # noqa: E402
@@ -29,13 +29,14 @@ class StrandedPlan(tcr.Continue):
     def labelled(self):
         return issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
 
-    def post_plan_said(self, live, comments, error=""):
-        """``--post-plan`` through the CLI: ``(exit code, what it printed)``."""
+    def post_plan_said(self, live, comments, error="", post=None):
+        """``--post-plan`` through the CLI: ``(exit code, what it printed)``. ``post`` replaces
+        the comment POST (default: it lands as comment 500)."""
         args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=False, post_plan=True)
         out = io.StringIO()
         with mock.patch.object(gh, "fetch", self.fetch_with(live)), self.real_policy(live), \
                 mock.patch.object(gh, "issue_comments_read", lambda loop, n: (comments, error)), \
-                mock.patch.object(broker, "post_issue_comment", self.plan_comment), \
+                mock.patch.object(broker, "post_issue_comment", post or self.plan_comment), \
                 mock.patch.object(config, "load_id", return_value=self.loop), \
                 mock.patch.object(operations, "_ledger_path", return_value=self.db), \
                 contextlib.redirect_stdout(out):
@@ -85,6 +86,42 @@ class StrandedPlan(tcr.Continue):
         self.assertEqual(self.writes, ["plan_comment", "plan_comment"])
         self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
         self.assertNotIn("pending", st.fix_ask_open()[12])
+
+    def test_a_fresh_plan_never_adopts_the_dropped_plans_comment(self):
+        """Review on #2579, F1/F2: the old plan landed (500) and a maintainer approved it (501),
+        then the branch moved and the reservation was dropped. Back on the ledger's head, a fresh
+        `--post-plan` loses its POST's response too, though it landed (502). The retry adopts
+        502, its own, not 500; and the approval before 502 does not approve the fresh plan."""
+        st = self.lost_plan(self.labelled())
+        old = {"id": 500, "user": {"login": "fix"}, "body": self.posted}
+        approve = {"id": 501, "user": {"login": "Jeremy"}, "body": fix_hold.APPROVE}
+        self.branch_sha = "e" * 40
+        self.assertEqual(self.post_plan_said(self.labelled(), [old, approve])[0], 2)
+        self.assertEqual(st.fix_ask_open(), {})
+        self.branch_sha = tcr.NEW
+
+        def lost(loop, **kw):
+            self.writes.append("plan_comment")
+            self.posted = kw["body"]
+            raise broker.BrokerDenied("GitHub comment write did not return a successful response")
+        self.assertEqual(self.post_plan_said(self.labelled(), [old, approve], post=lost)[0], 2)
+        self.assertTrue(st.fix_ask_open()[12]["pending"])
+        self.assertNotEqual(self.posted, old["body"])          # its own marker, not the old one
+        fresh = {"id": 502, "user": {"login": "fix"}, "body": self.posted}
+        on_issue = [old, approve, fresh]
+        code, said = self.post_plan_said(self.labelled(), on_issue)
+        self.assertEqual(code, 0, said)
+        self.assertEqual(self.writes, ["plan_comment"] * 2)    # adopted, not posted a third time
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 502)
+        with mock.patch.object(gh, "issue_comments_read", lambda loop, n: (on_issue, "")), \
+                mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: None):
+            fix_hold.sweep_asks(self.loop, st, [])
+        self.assertFalse(st.fix_plan_approved(12))             # 501 approved the dropped plan
+        on_issue.append({**approve, "id": 503})                # control: one after 502 does
+        with mock.patch.object(gh, "issue_comments_read", lambda loop, n: (on_issue, "")), \
+                mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: None):
+            fix_hold.sweep_asks(self.loop, st, [])
+        self.assertTrue(st.fix_plan_approved(12))
 
     def test_status_and_explain_name_the_whole_post_plan_command(self):
         """A pending reservation's `status`/`explain` line names a command the CLI accepts:

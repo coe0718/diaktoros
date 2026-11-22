@@ -508,7 +508,8 @@ class Continue(Base):
                 mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: None):
             fix_hold.sweep_asks(self.loop, st, [])
         self.assertFalse(st.fix_plan_approved(12))                    # unconfirmed: not resolved
-        self.assertTrue(self.posted.startswith(continue_run.plan_marker(self.run_id)))
+        self.assertTrue(self.posted.startswith(continue_run.plan_marker(
+            self.run_id, st.fix_ask_open()[12]["claim"])))
         self.assertEqual(self.post_plan_with(labelled, on_issue[:1]), 0)
         self.assertEqual(self.writes, ["plan_comment"])                  # adopted, not reposted
         self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)

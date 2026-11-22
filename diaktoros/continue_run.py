@@ -238,14 +238,17 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                           f"{run_id}` opens the PR"]
 
 
-def plan_marker(run_id: str) -> str:
-    """The hidden first line that ties a posted plan comment to its run, so a retry finds it."""
-    return f"<!-- diaktoros plan of run {run_id} -->"
+def plan_marker(run_id: str, claim: str = "") -> str:
+    """The hidden first line that ties a posted plan comment to its run's reservation (``claim``,
+    review on #2579), so a retry finds it and a later reservation never adopts it."""
+    return f"<!-- diaktoros plan of run {run_id}{f' claim {claim}' if claim else ''} -->"
 
 
-def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tuple[int | None, str]:
-    """``(id, "")`` of the oldest comment by ``login`` carrying ``run_id``'s ``plan_marker``,
-    ``(None, "")`` when there is none, ``(None, why)`` when the comments are unreadable."""
+def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str,
+                        claim: str = "") -> tuple[int | None, str]:
+    """``(id, "")`` of the oldest comment by ``login`` carrying the ``plan_marker`` of ``run_id``'s
+    reservation ``claim``, ``(None, "")`` when there is none, ``(None, why)`` when the comments
+    are unreadable."""
     comments, error = gh.issue_comments_read(loop, number)
     if comments is None:
         return None, error or "unreadable"
@@ -253,7 +256,8 @@ def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tup
                           key=lambda c: c["id"]):
         user = comment.get("user")
         author = str(user.get("login") or "") if isinstance(user, dict) else ""
-        if author.casefold() == login.casefold() and plan_marker(run_id) in str(comment.get("body") or ""):
+        if author.casefold() == login.casefold() and plan_marker(run_id, claim) in str(
+                comment.get("body") or ""):
             return comment["id"], ""
     return None, ""
 
@@ -283,7 +287,8 @@ def _release_plan_ask(loop: dict, st, number: int, run_id: str, keep_adopted: bo
                 return ""
             st.fix_ask_drop(number, run=run_id)
             return f"closed run {run_id}'s plan ask on issue #{number}: the plan is not needed now"
-        comment, error = _adopt_plan_comment(loop, number, config.seat_login(loop, "fixer"), run_id)
+        comment, error = _adopt_plan_comment(loop, number, config.seat_login(loop, "fixer"), run_id,
+                                             str(ask.get("claim") or ""))
         recover = (f"; to ask again, check `hermes dk continue --loop {loop['id']} --run {run_id} "
                    "--dry-run` and, once it is refused only for want of a plan, run `--post-plan` "
                    "again to post a fresh plan" if keep_adopted else "")
@@ -309,11 +314,11 @@ def _post_claimed_plan(loop: dict, st, fix: dict, login: str, run_id: str, ask: 
     number, again = fix["number"], "; the plan ask stays reserved: run `--post-plan` again"
     comment = None
     if ask.get("reconcile"):
-        comment, error = _adopt_plan_comment(loop, number, login, run_id)
+        comment, error = _adopt_plan_comment(loop, number, login, run_id, str(ask.get("claim") or ""))
         if error:
             return f"no plan posted: the issue's comments are unreadable ({error}){again}"
     if comment is None:
-        body = f"{plan_marker(run_id)}\n{fix_hold.posted_ask('plan', ask['text'])}"
+        body = f"{plan_marker(run_id, str(ask.get('claim') or ''))}\n{fix_hold.posted_ask('plan', ask['text'])}"
         try:
             comment = broker.post_issue_comment(loop, repo=fix["repo"], number=number,
                                                 login=login, body=body)
