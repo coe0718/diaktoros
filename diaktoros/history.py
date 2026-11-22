@@ -251,4 +251,4 @@ def _findings(tracked: dict, number: int, rounds: list, reviews: list,
 
 
 def _fnum(fid: str) -> int:
-    return int(fid[1:]) if fid[1:].isdigit() else 0
+    return int(fid[1:]) if fid[1:].isascii() and fid[1:].isdigit() else 0

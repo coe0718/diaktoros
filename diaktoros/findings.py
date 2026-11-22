@@ -306,7 +306,7 @@ def record(loop: dict, number: int, head: str, body: str) -> None:
 def lines(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
     out = []
-    for fid in sorted(found, key=lambda k: int(k[1:]) if k[1:].isdigit() else 0):
+    for fid in sorted(found, key=lambda k: int(k[1:]) if k[1:].isascii() and k[1:].isdigit() else 0):
         item = found[fid]
         if isinstance(item, dict):
             out.append(f"{fid} {item.get('state', '?')}"

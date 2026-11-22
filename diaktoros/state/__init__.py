@@ -260,6 +260,12 @@ def read_record(st, name: str, unreadable: Callable[[str], None] | None = None) 
     return data
 
 
+def _numbered(key) -> bool:
+    """A key ``int`` reads as a PR or issue number: ASCII digits, since ``isdigit`` also takes
+    characters such as '²' that ``int`` refuses (fourth review on #2589)."""
+    return isinstance(key, str) and key.isascii() and key.isdigit()
+
+
 def _deps_number(key) -> int:
     """A dependency record's key: a positive issue number written plainly, else ``ValueError``."""
     if not isinstance(key, str) or not (key.isascii() and key.isdigit()) or key[0] == "0":
@@ -1025,7 +1031,7 @@ class LoopState(FixAsks):
     def pr_holds(self) -> dict:
         raw = self._load(self.dir / "held-prs.json", {})
         return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
-                if str(k).isdigit() and isinstance(v, dict)}
+                if _numbered(k) and isinstance(v, dict)}
 
     def pr_hold_set(self, number: int, hold: dict) -> bool:
         """Record the hold; True when the PR was not held before (a hold began)."""
@@ -1048,7 +1054,7 @@ class LoopState(FixAsks):
     def scope_holds(self) -> dict:
         raw = self._load(self.dir / "held-scope.json", {})
         return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
-                if str(k).isdigit() and isinstance(v, dict)}
+                if _numbered(k) and isinstance(v, dict)}
 
     def scope_hold_set(self, number: int, hold: dict) -> bool:
         """Record the hold; True when it is new or its head or files changed (say it once)."""
@@ -1096,7 +1102,7 @@ class LoopState(FixAsks):
         raw = self._load(self.dir / "held-fixes.json", {})
         out = {}
         for key, pr in (raw.items() if isinstance(raw, dict) else ()):
-            if str(key).isdigit() and type(pr) is int:
+            if _numbered(key) and type(pr) is int:
                 out[int(key)] = pr
         return out
 
@@ -1126,7 +1132,7 @@ class LoopState(FixAsks):
         raw = self._load(self.dir / "late-triage.json", {})
         out = {}
         for key, entry in (raw.items() if isinstance(raw, dict) else ()):
-            if str(key).isdigit() and isinstance(entry, dict) and isinstance(
+            if _numbered(key) and isinstance(entry, dict) and isinstance(
                     entry.get("at"), (int, float)) and not isinstance(entry.get("at"), bool):
                 out[int(key)] = {"at": float(entry["at"]), "outcome": str(entry.get("outcome"))[:80]}
         return out
@@ -1205,8 +1211,8 @@ class LoopState(FixAsks):
         raw = self._load(path, {})
         out: dict = {}
         for key, deps in (raw.items() if isinstance(raw, dict) else ()):
-            if str(key).isdigit() and isinstance(deps, dict):
-                kept = {int(a): v for a, v in deps.items() if str(a).isdigit() and isinstance(v, dict)}
+            if _numbered(key) and isinstance(deps, dict):
+                kept = {int(a): v for a, v in deps.items() if _numbered(a) and isinstance(v, dict)}
                 if kept:
                     out[int(key)] = kept
         return out
@@ -1400,7 +1406,7 @@ class LoopState(FixAsks):
         """PR number -> its findings entry; a junk entry, field or finding reads as absent."""
         return {key: kept for key, entry in _mapping(self._load(self.dir / "findings.json",
                                                                 {})).items()
-                if key.isdigit() and (kept := _findings_entry(entry)) is not None}
+                if _numbered(key) and (kept := _findings_entry(entry)) is not None}
 
     def findings_get(self, number: int) -> dict:
         entry = self.findings_all().get(str(number))
@@ -1423,7 +1429,7 @@ class LoopState(FixAsks):
         upgrade; nor is ``override-checked-v2.json``, which marked approvals read at once (#1761,
         see ``overrides``). That is safe: an override record is written once per PR and head."""
         return _kept(self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {}),
-                     lambda key, head: key.isdigit() and isinstance(head, str)
+                     lambda key, head: _numbered(key) and isinstance(head, str)
                      and re.fullmatch(r"[0-9a-f]{40}", head) is not None)
 
     OVERRIDE_CHECKED_FILE = "override-checked-v3.json"

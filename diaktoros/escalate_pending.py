@@ -93,4 +93,4 @@ def prune(st, open_numbers) -> list[int]:
         dropped = [k for k, v in memory.items() if k not in keep or not _live(v, now)]
         if dropped:
             st.kv_set_strict(_path(st), {k: v for k, v in memory.items() if k not in dropped})
-    return [int(k) for k in dropped if k.isdigit()]
+    return [int(k) for k in dropped if k.isascii() and k.isdigit()]

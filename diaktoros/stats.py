@@ -588,7 +588,7 @@ def escalations(db: Path, repo: str, since: float, until: float,
     markers = {}
     for key, marker in (breaches or {}).items():
         prefix, _, number = str(key).rpartition("#")
-        if prefix == repo and number.isdigit() and isinstance(marker, dict):
+        if prefix == repo and number.isascii() and number.isdigit() and isinstance(marker, dict):
             markers[int(number)] = marker
 
     def by(pr: int, head: str) -> str:
@@ -670,7 +670,7 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
     models = {(row["pr"], row["head"]): row["model"] for row in reviews}   # the latest wins
     counts, by_model, undated = Counter(), {}, 0
     for number, entry in (tracked or {}).items():
-        if not str(number).isdigit() or not isinstance(entry, dict):
+        if not (str(number).isascii() and str(number).isdigit()) or not isinstance(entry, dict):
             continue
         pr = int(number)
         for item in (entry.get("findings") or {}).values():

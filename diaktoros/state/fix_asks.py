@@ -18,7 +18,7 @@ class FixAsks:
         out = {}
         for name in ("open", "count", "handoff"):
             part = raw.get(name)
-            out[name] = ({str(k): v for k, v in part.items() if str(k).isdigit()
+            out[name] = ({str(k): v for k, v in part.items() if str(k).isascii() and str(k).isdigit()
                           and (name == "count") == (type(v) is int)}
                          if isinstance(part, dict) else {})
         approved = raw.get("approved")

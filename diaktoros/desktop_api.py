@@ -957,7 +957,7 @@ def _findings(loop: dict, pr: int) -> list[dict]:
                     "head": stats.recorded_head(item.get("head")),
                     "at": float(at) if isinstance(at, (int, float)) else None,
                     "missed": bool(item.get("missed"))})
-    out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isdigit() else 0)
+    out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isascii() and item["id"][1:].isdigit() else 0)
     return out
 
 
