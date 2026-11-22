@@ -25,25 +25,33 @@ def done(**answer):
 
 # An error raised while Hermes reads a profile may quote a credential this program never sees (an
 # upstream echoing the key it rejected, a pool key before it is returned, a key from the .env an
-# older Hermes loads), so no message leaves as written (#2374): text() keeps the error's class, the
-# ``code`` and ``provider`` Hermes attaches when they are plain names, and the head of the few
-# Hermes messages built from a provider's name alone. plain() is for an error raised before any
-# credential is loaded: importing Hermes, and describe's reads of config.yaml, whose values that
-# mode answers with anyway.
-SAFE_MESSAGES = (r"No usable credentials found for provider '[\w.:-]{1,64}'\.",
-                 r"Unknown provider '[\w.:-]{1,64}'\.",
-                 r"provider '[\w.:-]{1,64}' is disabled in config")
+# older Hermes loads), and an error's shape proves nothing about who built it, so no part of one
+# leaves unless it is a value this program already knows (#2374): text() keeps the error's class,
+# its ``code`` when Hermes defines that code, its ``provider`` when it names the profile's
+# provider, and a Hermes message built from that name alone. plain() is for an error raised
+# before any credential is loaded: importing Hermes, and describe's reads of config.yaml, whose
+# values that mode answers with anyway.
+CODES = frozenset(("missing_api_key", "missing_base_url", "invalid_provider", "no_provider_configured",
+                   "nous_auth_missing", "no_aws_credentials", "oauth_refresh_failed", "refresh_failed",
+                   "xai_refresh_failed", "upstream_auth_failed", "upstream_unreachable",
+                   "upstream_timeout", "upstream_blocked", "invalid_api_origin", "profile_mismatch",
+                   "profile_parked"))
+MESSAGES = (r"No usable credentials found for provider '([^']{1,64})'\.",
+            r"Unknown provider '([^']{1,64})'\.",
+            r"provider '([^']{1,64})' is disabled in config")
+NAMES = set()      # the profile's requested provider and its canonical name, which the answer carries
 
 def text(exc):
     import re
     said = type(exc).__name__
-    for name in ("code", "provider"):
-        value = getattr(exc, name, None)
-        if isinstance(value, str) and re.fullmatch(r"[\w.:-]{1,64}", value):
-            said += " " + name + "=" + value
-    for pattern in SAFE_MESSAGES:
+    code, provider = getattr(exc, "code", None), getattr(exc, "provider", None)
+    if isinstance(code, str) and code in CODES:
+        said += " code=" + code
+    if isinstance(provider, str) and provider in NAMES:
+        said += " provider=" + provider
+    for pattern in MESSAGES:
         found = re.match(pattern, str(exc))
-        if found:
+        if found and found.group(1) in NAMES:
             return said + ": " + found.group(0)
     return said
 
@@ -274,17 +282,23 @@ def profile_secrets(home):
     return secrets
 
 
+def provider_names(requested):
+    """The requested provider, and the canonical name an alias resolves to (claude -> anthropic)."""
+    names = {str(requested or "")}
+    try:
+        from hermes_cli.auth import resolve_provider
+        names.add(str(resolve_provider(requested) or ""))
+    except Exception:
+        pass
+    return names - {""}
+
+
 def routing_names(requested):
     """Settings, not credentials, that Hermes still reads straight from ``os.environ`` on this
     path: the provider's base-URL override, an external process's command and arguments, and
     ``CLAUDE_CONFIG_DIR`` (Claude Code's credential file)."""
-    names, providers = {"CLAUDE_CONFIG_DIR"}, {requested}
-    try:
-        from hermes_cli.auth import resolve_provider
-        providers.add(str(resolve_provider(requested) or ""))   # an alias: claude -> anthropic
-    except Exception:
-        pass
-    for provider in providers - {""}:
+    names = {"CLAUDE_CONFIG_DIR"}
+    for provider in provider_names(requested):
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY
             names.add(str(getattr(PROVIDER_REGISTRY.get(provider), "base_url_env_var", "") or ""))
@@ -307,6 +321,7 @@ try:
 except Exception as exc:
     done(kind="config", error="profile config unreadable (" + text(exc) + ")")
 model = str(cfg.get("default") or "").strip()
+NAMES.update(provider_names(requested))
 
 
 def reasoning_effort():

@@ -105,6 +105,10 @@ def resolve_runtime_provider(**_):
     if get_secret("FAKE_MISSING"):  # Hermes's own message, with a tail no template vouches for
         raise AuthError("No usable credentials found for provider 'deepseek'. Set DEEPSEEK_API_KEY. ("
                         + get_secret("UNRELATED_TOKEN") + ")", provider="deepseek", code="missing_api_key")
+    if get_secret("FAKE_FORGED"):   # Hermes's shape, with the key where a name belongs
+        key, code = get_secret("DEEPSEEK_API_KEY"), get_secret("FAKE_FORGED")
+        code = {"key": key, "list": [key]}.get(code, code)
+        raise AuthError("No usable credentials found for provider '" + key + "'.", provider=key, code=code)
     if get_secret("FAKE_POOL"):     # a pooled key whose refresh fails, quoting it
         class Pool:
             def try_refresh_matching(self, api_key_hint):
@@ -239,12 +243,27 @@ class Resolver(Base):
                         self.assertEqual((answer["kind"], answer["error"]), ("credential", "RuntimeError"))
 
     def test_hermes_still_names_the_provider_that_lacks_a_credential(self):
-        # Hermes's code and provider, and the head of its message, are built from names; the rest
-        # of the message is not vouched for and stays behind.
-        self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_MISSING": "1", "UNRELATED_TOKEN": OTHER})
-        answer, _ = self.resolve()
-        self.assertEqual(answer["error"], "AuthError code=missing_api_key provider=deepseek: "
-                                          "No usable credentials found for provider 'deepseek'.")
+        # A code Hermes defines, and the profile's provider (requested, or the canonical name of
+        # the alias requested) with the head of a message built from it; the rest of the message
+        # is not vouched for and stays behind.
+        for requested in ("deepseek", "ds"):
+            with self.subTest(requested=requested):
+                self.secrets({"FAKE_REQUESTED": requested, "FAKE_MISSING": "1", "UNRELATED_TOKEN": OTHER})
+                answer, _ = self.resolve()
+                self.assertEqual(answer["error"], "AuthError code=missing_api_key provider=deepseek: "
+                                                  "No usable credentials found for provider 'deepseek'.")
+
+    def test_an_error_shaped_like_hermess_carries_no_key_in_its_names(self):
+        # Review of #2568, round 4, F3: the key as the provider, in the message's name slot and as
+        # the code (or inside a code that is not a name). Only a code Hermes defines survives.
+        for key in (KEY, "xyz"):
+            for code, said in (("key", "AuthError"), ("list", "AuthError"),
+                               ("missing_api_key", "AuthError code=missing_api_key")):
+                with self.subTest(key=key, code=code):
+                    self.secrets({"FAKE_REQUESTED": "deepseek", "FAKE_FORGED": code,
+                                  "DEEPSEEK_API_KEY": key})
+                    answer, _ = self.resolve()
+                    self.assertEqual((answer["kind"], answer["error"]), ("credential", said))
 
     def test_a_failed_refresh_leaves_without_its_message(self):
         # The refresh error quotes the pooled key, which is in no .env.
