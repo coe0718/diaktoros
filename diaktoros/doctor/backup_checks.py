@@ -65,8 +65,12 @@ def check_backup_fresh() -> doctor.Check:
                             f"so how old the newest backup is cannot be told; run `{command}`",
                             f"`{command}`")
     if newest is None:
+        # #1877: only this directory is read, so the line must not claim no backup exists at all —
+        # an archive written with ``--out`` elsewhere, or a host backup, is not seen here.
         return doctor.Check(name, doctor.UNKNOWN,
-                            f"no backup archive in {where} — nothing would restore this install; "
+                            f"no backup archive in {where}, so a recent backup cannot be confirmed "
+                            f"(only that directory is checked: an archive written with `--out` "
+                            f"elsewhere, or a backup taken another way, is not seen); "
                             f"run `{command}`", f"`{command}`")
     path, written = newest
     age_days = max(0.0, (now - written) / _DAY_S)
