@@ -25,15 +25,23 @@ def _expanded(node, name, where):
 
 
 def bindings(name, nodes) -> int:
-    """How many of ``nodes`` (a function's own) bind ``name``: each store of it (``+=``, a loop
-    or ``with`` target, unpacking as much as ``name = …``), an import or ``except`` as it; a
-    ``global`` or ``nonlocal`` counts as unbounded. The resolver reads only a plain ``name = …``,
-    so any other binding fails it closed (fifth review on #2587)."""
+    """How many of ``nodes`` (a function's own) bind ``name``: each store or ``del`` of it
+    (``+=``, a loop or ``with`` target, unpacking as much as ``name = …``), an import, ``except``
+    or ``match`` capture as it, a nested ``def`` or ``class`` of it; a ``global`` or ``nonlocal``
+    counts as unbounded. The resolver reads only a plain ``name = …``, so any other binding fails
+    it closed (fifth and sixth reviews on #2587)."""
     count = 0
     for node in nodes:
-        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
+        if isinstance(node, ast.Name) and node.id == name and not isinstance(node.ctx, ast.Load):
             count += 1
-        elif isinstance(node, ast.alias) and (node.asname or node.name) == name:
+        elif isinstance(node, ast.alias) and (node.asname or node.name.partition('.')[0]) == name:
+            count += 1
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+            count += 1
+        elif isinstance(node, ast.MatchMapping) and node.rest == name:
+            count += 1
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                and node.name == name:
             count += 1
         elif isinstance(node, ast.ExceptHandler) and node.name == name:
             count += 1

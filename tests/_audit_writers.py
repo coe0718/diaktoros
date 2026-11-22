@@ -25,13 +25,14 @@ _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
 def _own(nodes):
-    """The nodes under ``nodes``, not those of a function nested in them."""
+    """The nodes under ``nodes``, not those inside a function nested in them (the nested
+    ``def`` itself is one: it binds its name here)."""
     stack = list(nodes)
     while stack:
         node = stack.pop()
         yield node
-        stack.extend(child for child in ast.iter_child_nodes(node)
-                     if not isinstance(child, _SCOPES))
+        if not isinstance(node, _SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
 
 
 def _runs_when_called(fn) -> bool:
@@ -117,10 +118,9 @@ class Writers:
 
     @staticmethod
     def _rebinds(name, fn):
-        return any((isinstance(node, ast.Name) and node.id == name
-                    and not isinstance(node.ctx, ast.Load))
-                   or (isinstance(node, ast.ExceptHandler) and node.name == name)
-                   for node in _own(fn.body))
+        """Whether ``fn`` binds ``name`` at all, by any of the bindings ``bindings`` counts (an
+        import alias among them: sixth review on #2587), so no guard on it is trusted."""
+        return bindings(name, _own(fn.body)) > 0
 
     @classmethod
     def _flat(cls, stmts):

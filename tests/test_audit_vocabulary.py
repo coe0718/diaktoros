@@ -176,6 +176,20 @@ class SyntheticWriters(unittest.TestCase):
                                        + call)]).written()
         self.assertEqual(roles, set(broker.AUDIT_ROLES))
 
+    def test_a_guarded_name_rebound_after_its_guard_fails_the_full_vocabulary(self):
+        # Sixth review on #2587: ``from os import name as role`` after the guard recorded 'posix'
+        # while the guard reported only 'reviewer'. Any rebinding of a guarded name voids it.
+        sources = [(str(path), path.read_text())
+                   for path in sorted((ROOT / 'diaktoros').rglob('*.py'))]
+        guard = "def write_rebind_2587(loop, role):\n    " + _GUARD.format(i='    ')
+        for binding in ("from os import name as role", "import role", "import role.path",
+                        "def role(): pass", "class role: pass", "(role := 'intruder')",
+                        "match loop:\n        case role: pass", "with open('x') as role: pass"):
+            with self.subTest(binding), self.assertRaises(Unresolved):
+                Writers(sources + [('synthetic.py', guard + f"    {binding}\n" + _AUDIT)]).written()
+        roles, _ = Writers(sources + [('synthetic.py', guard + _AUDIT)]).written()   # control
+        self.assertEqual(roles, set(broker.AUDIT_ROLES))
+
     def test_a_guard_before_the_write_on_every_path_bounds_it(self):
         for body in ("    " + _GUARD.format(i='    ') + _AUDIT, "    check(role=role)\n" + _AUDIT,
                      "    try:\n        check(role=role)\n    except ValueError:\n        raise\n"
