@@ -42,18 +42,24 @@ def _notice(loop: dict, number: int, event: str, pr: int, outcome: str,
                     outcome=outcome, issue=True, outcome_kind=outcome_kind)
 
 
-def queue_fix(loop: dict, number: int, turn_key: str = "issue-fix") -> tuple[str, str]:
-    """Queue the fix turn from the base branch's current commit: ``(base, outcome)``.
+def queue_fix(loop: dict, number: int, turn_key: str = "issue-fix",
+              settle: bool = False) -> tuple[str, str]:
+    """Queue the fix turn from the base branch's current commit: ``(base, outcome)``. With
+    ``settle`` (a maintainer's reply woke it, #2248) a new turn waits ``reply_settle_seconds``
+    before it may start, so a close in that window ends it before launch (``fix_settle``).
 
     Raises ``RuntimeError`` when the base is unreadable, or whatever the enqueue raises.
     """
+    from . import fix_settle
     ref = gh.api(loop, f"/repos/{loop['repo']}/git/ref/heads/{loop['base']}",
                  login=loop["read_token"])
     base = ((ref or {}).get("object") or {}).get("sha") if isinstance(ref, dict) else None
     if not isinstance(base, str) or len(base) != 40:
         raise RuntimeError(f"base branch {loop['base']} unreadable (GitHub read failed)")
     try:
-        return base, gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key=turn_key)
+        wait = fix_settle.seconds(loop) if settle else 0      # 0: starts at once, as before
+        return base, gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key=turn_key,
+                                           **({"settle": wait} if wait else {}))
     except Exception as exc:
         exc.fix_base = base  # the caller's notice needs the base the enqueue failed at
         raise
@@ -259,7 +265,8 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> dic
             continue
         try:
             issue_inputs.issue_fix_issue(loop, number)
-            base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
+            base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}",
+                                      settle=True)            # #2248: the reply settles first
         except run_supervisor.IssueIneligible as exc:   # #2245: no resume can ever run
             if drop_ask(st, number, ask, str(exc), quiet=only is not None):
                 dropped[number] = str(exc)
