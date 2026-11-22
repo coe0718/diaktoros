@@ -23,7 +23,9 @@ ENV = {**os.environ, "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@
        "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.org"}
 
 
-class CatchUp(unittest.TestCase):
+class Fixture(unittest.TestCase):
+    """A base branch on a local bare remote, and the issue fix's push to it."""
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(temp.cleanup)
@@ -70,12 +72,11 @@ class CatchUp(unittest.TestCase):
         self.git("--git-dir", self.local, "push", self.remote, f"+{tip}:refs/heads/main")
         return tip
 
-    def push(self, catch_up: bool):
+    def push(self):
         journal = []
         head = safe_push._git_cas(self.loop, REPO, BRANCH, self.base, [("a.txt", b"fixed\n")],
                                   "Fix the typo", "fix", {"name": "fix", "email": "fix@example.org"},
-                                  before_push=journal.append, remote=self.remote,
-                                  from_branch="main", catch_up=catch_up)
+                                  before_push=journal.append, remote=self.remote, from_branch="main")
         self.assertEqual(journal, [head])        # what is audited is what is pushed
         self.assertEqual(self.git("--git-dir", self.remote, "rev-parse", f"refs/heads/{BRANCH}"), head)
         return head
@@ -83,9 +84,16 @@ class CatchUp(unittest.TestCase):
     def parents(self, sha: str) -> list[str]:
         return self.git("--git-dir", self.remote, "rev-list", "--parents", "-n", "1", sha).split()[1:]
 
+    def forget_branch(self):
+        self.git("--git-dir", self.remote, "update-ref", "-d", f"refs/heads/{BRANCH}")
+
+
+class CatchUp(Fixture):
     def test_a_base_that_moved_is_merged_in_before_the_branch_opens(self):
+        # Every loop: the fixture loop never set update_behind (maintainer decision on #2591).
+        self.assertFalse(config.update_behind(self.loop))
         tip = self.move_main({"b.txt": "b moved\n"})
-        head = self.push(catch_up=True)
+        head = self.push()
         fix, merged_tip = self.parents(head)
         self.assertEqual((self.parents(fix), merged_tip), ([self.base], tip))
         self.assertEqual(self.git("--git-dir", self.remote, "show", f"{head}:a.txt"), "fixed")
@@ -101,41 +109,78 @@ class CatchUp(unittest.TestCase):
                              ("workflow change", {".github/workflows/ci.yml": "on: [push]\n"})):
             with self.subTest(case=case):
                 self.move_main(change)
-                head = self.push(catch_up=True)
-                self.assertEqual(self.parents(head), [self.base])
-                self.git("--git-dir", self.remote, "update-ref", "-d", f"refs/heads/{BRANCH}")
+                self.assertEqual(self.parents(self.push()), [self.base])
+                self.forget_branch()
 
-    def test_nothing_is_merged_when_the_base_did_not_move_or_catch_up_is_off(self):
-        self.assertEqual(self.parents(self.push(catch_up=True)), [self.base])
-        self.git("--git-dir", self.remote, "update-ref", "-d", f"refs/heads/{BRANCH}")
+    def test_the_fix_alone_is_pushed_when_the_merge_cannot_be_computed(self):
+        # The merge is optional: _dry's own refusal (merge-tree failed or said nothing usable)
+        # leaves the valid fix to open on its own instead of stranding it with no PR.
         self.move_main({"b.txt": "b moved\n"})
-        self.assertEqual(self.parents(self.push(catch_up=False)), [self.base])
+        with mock.patch.object(safe_push, "_dry", side_effect=broker.BrokerDenied(
+                "merge of the base could not be computed")) as dry:
+            self.assertEqual(self.parents(self.push()), [self.base])
+        dry.assert_called_once()
+
+    def test_a_bad_merge_is_still_refused(self):
+        # Only computing the merge may fail quietly; a merge built with the wrong parents denies.
+        self.move_main({"b.txt": "b moved\n"})
+        real = safe_push._Isolated.run
+
+        def run(git, *args, **kwargs):
+            out = real(git, *args, **kwargs)
+            if "rev-list" in args and len(out.split()) == 3:
+                return out.split()[0] + b" " + out.split()[2]      # the fix parent dropped
+            return out
+        with mock.patch.object(safe_push._Isolated, "run", run), \
+                self.assertRaisesRegex(broker.BrokerDenied, "expected parents"):
+            self.push()
+        self.assertEqual(subprocess.run(["git", "--git-dir", self.remote, "rev-parse", "--verify",
+                                         "-q", f"refs/heads/{BRANCH}"], env=ENV,
+                                        capture_output=True).returncode, 1)
+
+    def test_an_unreadable_base_still_denies_the_push(self):
+        # The pre-existing check that the scoped base is on the advertised branch stays: with no
+        # base to read, nothing is built or pushed (maintainer decision on #2591).
+        self.git("--git-dir", self.remote, "update-ref", "-d", "refs/heads/main")
+        with self.assertRaises(broker.BrokerDenied):
+            self.push()
+        self.assertEqual(subprocess.run(["git", "--git-dir", self.remote, "rev-parse", "--verify",
+                                         "-q", f"refs/heads/{BRANCH}"], env=ENV,
+                                        capture_output=True).returncode, 1)
+
+    def test_nothing_is_merged_when_the_base_did_not_move(self):
+        self.assertEqual(self.parents(self.push()), [self.base])
 
 
-class OpenBranchAsksForTheCatchUp(unittest.TestCase):
-    """open_branch asks _git_cas to catch up exactly when ``update_behind`` is on."""
+class OpenBranchCatchesUp(Fixture):
+    """open_branch, end to end on the local remote, for a loop that never set update_behind."""
 
-    def test_update_behind_decides(self):
+    def test_open_branch_publishes_the_merged_head(self):
         import base64
         import hashlib
+        tip = self.move_main({"b.txt": "b moved\n"})
         data = b"fixed\n"
-        manifest = {"base_head": "a" * 40, "message": "Fix the typo",
-                    "files": [{"path": "README.md", "content_b64": base64.b64encode(data).decode(),
+        manifest = {"base_head": self.base, "message": "Fix the typo",
+                    "files": [{"path": "a.txt", "content_b64": base64.b64encode(data).decode(),
                                "sha256": hashlib.sha256(data).hexdigest()}]}
-        for setting in (True, False):
-            with self.subTest(update_behind=setting):
-                loop = {"repo": REPO, "base": "main", "update_behind": setting}
-                cas = mock.Mock(side_effect=broker.BrokerDenied("stop here"))
-                with mock.patch.object(config, "issue_fixes_enabled", return_value=True), \
-                        mock.patch.object(broker, "authorize_issue_fix", return_value="fix"), \
-                        mock.patch.object(safe_push, "_fixer_identity", return_value={}), \
-                        mock.patch.object(safe_push, "_absent_branch"), \
-                        mock.patch.object(safe_push, "_git_cas", cas), \
-                        mock.patch.object(safe_push, "_confirm_ref", return_value=None), \
-                        self.assertRaises(broker.BrokerDenied):
-                    safe_push.open_branch(loop, repo=REPO, number=12, base="a" * 40,
-                                          branch=BRANCH, manifest=manifest)
-                self.assertIs(cas.call_args.kwargs["catch_up"], setting)
+        audit, real_cas = [], safe_push._git_cas
+
+        def observed(*args, **kwargs):
+            return self.git("--git-dir", self.remote, "rev-parse", f"refs/heads/{BRANCH}")
+        with mock.patch.object(config, "issue_fixes_enabled", return_value=True), \
+                mock.patch.object(broker, "authorize_issue_fix", return_value="fix"), \
+                mock.patch.object(safe_push, "_fixer_identity",
+                                  return_value={"name": "fix", "email": "fix@example.org"}), \
+                mock.patch.object(safe_push, "_absent_branch"), \
+                mock.patch.object(safe_push, "_audit", side_effect=lambda loop, row: audit.append(row)), \
+                mock.patch.object(safe_push, "_confirm_ref", side_effect=observed), \
+                mock.patch.object(safe_push, "_git_cas",
+                                  lambda *a, **k: real_cas(*a, remote=self.remote, **k)):
+            result = safe_push.open_branch({**self.loop, "repo": REPO}, repo=REPO, number=12,
+                                           base=self.base, branch=BRANCH, manifest=manifest)
+        head = result["new_head"]
+        self.assertEqual((result["outcome"], self.parents(head)[1]), ("published", tip))
+        self.assertEqual([row["new_head"] for row in audit], [head, head])
 
 
 if __name__ == "__main__":

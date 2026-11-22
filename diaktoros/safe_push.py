@@ -513,8 +513,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
              files: list[tuple[str, bytes]], message: str, login: str,
              identity: dict, *, before_push=None, remote: str | None = None,
              from_branch: str | None = None, patch: bytes | None = None,
-             changed: list | None = None, merge: dict | None = None,
-             catch_up: bool = False) -> str:
+             changed: list | None = None, merge: dict | None = None) -> str:
     """Fetch the advertised branch, construct local objects, and exact-lease push.
 
     With ``from_branch`` (an issue fix, #214) the commit is built on ``head`` as found in that
@@ -532,8 +531,8 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
     that, refuses any conflict marker left in a conflicted file, and has the parents
     ``(head, base_sha)``. The lease is still the exact head.
 
-    With ``catch_up`` (an issue fix, #2591) the commit is then merged with the advertised
-    branch's tip when that moved past ``head`` (``_catch_up``), so the branch opens up to date.
+    An issue fix is then merged with the advertised branch's tip when that moved past ``head``
+    (``_catch_up``, #2591), so the branch opens up to date.
 
     `remote` is a private local-fixture seam, never sourced from IPC or config.
     Only validated manifest paths/bytes reach Git's temporary private bare repo.
@@ -615,7 +614,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
         created = run("--git-dir", str(bare), "rev-list", "--parents", "-n", "1", new_head).decode().split()
         if created != [new_head, head] + ([merge["base_sha"]] if merge is not None else []):
             raise broker.BrokerDenied("local commit does not have exact expected parent")
-        if catch_up and from_branch and snapshot != head:
+        if from_branch and snapshot != head:
             new_head = _catch_up(git, loop, new_head, snapshot, from_branch, branch)
         if before_push is not None:
             before_push(new_head)
@@ -649,9 +648,13 @@ def _check_resolution(run, bare: str, conflicted: list[str], start: str) -> None
 def _catch_up(git: "_Isolated", loop: dict, fix: str, tip: str, base_ref: str, branch: str) -> str:
     """An issue fix built on the base its turn started from, merged with the base's ``tip`` when
     the base moved meanwhile (#2591), so its PR opens up to date instead of behind. Only under
-    ``update_behind``'s rules: a clean merge that brings no workflow change; otherwise ``fix``
-    alone, as before, and review and ``update_behind`` take it from there."""
-    merged = _dry(git, fix, tip)
+    ``update_behind``'s rules: a clean merge that brings no workflow change. Otherwise, or when
+    the merge cannot be computed, ``fix`` alone, as before, and review and ``update_behind`` take
+    it from there: the merge is optional, a valid fix is never stranded for want of it."""
+    try:
+        merged = _dry(git, fix, tip)
+    except broker.BrokerDenied:
+        return fix
     if not merged["clean"] or merged["workflows"]:
         return fix
     bare = str(git.bare)
@@ -892,8 +895,7 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     error = None
     try:
         _git_cas(loop, repo, branch, base, files, attribution.sign_commit(loop, manifest["message"]),
-                 login, identity, before_push=before_push, from_branch=loop["base"],
-                 catch_up=config.update_behind(loop), **extra)
+                 login, identity, before_push=before_push, from_branch=loop["base"], **extra)
     except Exception as exc:
         error = exc
     outcome = "unknown"
