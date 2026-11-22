@@ -12,7 +12,7 @@ from unittest import mock
 
 from diaktoros import config, desktop_api, retry_action
 from diaktoros.state import ledger
-from test_desktop_retry import HEAD, MALFORMED, Fixture
+from test_desktop_retry import HEAD, MALFORMED, OTHER, Fixture
 
 
 class RefusalsWithholdAMalformedHead(Fixture):
@@ -47,6 +47,27 @@ class RefusalsWithholdAMalformedHead(Fixture):
         self.assertIn("(it is bbbbbbb now)", self.refusal(head=HEAD))
         self.row("succeeded", seat="fixer", pr=357)
         self.assertIn("#357 @ aaaaaaa: nothing to retry", self.refusal(pr=357, seat="fixer"))
+
+
+class TheCliTiebreakerHeadIsNamed(Fixture):
+    """The CLI's PR read breaks a supersession tie (#126) and may resolve a head no row has."""
+
+    def cli(self, live):
+        self.row("failed", head=HEAD, updated=1)        # offerable, but superseded by ...
+        self.row("succeeded", head=OTHER, updated=2)    # ... a newer row: the plan is disputed
+        return retry_action.perform(self.loop, 356, ledger=self.db, resolve_head=lambda: live,
+                                    read_pr=lambda: None)
+
+    def test_a_well_formed_live_head_with_no_row_is_named(self):
+        result = self.cli("c" * 40)
+        self.assertEqual(result["head"], "c" * 40)
+        self.assertIn("#356 @ ccccccc: nothing to retry", result["message"])
+
+    def test_a_malformed_live_head_is_still_withheld(self):
+        result = self.cli(MALFORMED)
+        self.assertIn("#356 @ a withheld head: nothing to retry", result["message"])
+        self.assertNotIn(MALFORMED[:7], result["message"])
+        self.assertNotIn("SECRET", result["message"])
 
 
 class IssueFixerRetryFollowsTheIssueFixPolicy(Fixture):

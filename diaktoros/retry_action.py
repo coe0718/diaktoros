@@ -70,11 +70,14 @@ def identity(seat: str, head) -> str:
 
 
 def shown_head7(rows: list[dict], head) -> str:
-    """``head``'s display form for a refusal line, by the one display rule (``stats.run_head``)
-    of a seat that has a row there; ``''`` when it is withheld. A refusal reaches the Desktop as
-    a 409 body, so a malformed ledger head is never cut into it (#2406)."""
-    return next((shown for shown in (stats.run_head(row["seat"], head) for row in rows
-                                     if row["head"] == head) if shown), "")
+    """``head``'s display form for a refusal line, or ``''`` when it is withheld. A refusal
+    reaches the Desktop as a 409 body, so a malformed head is never cut into it (#2406). A
+    well-formed SHA is shown on its own (``stats.recorded_head``), even with no row: the CLI's
+    tiebreaker can resolve the live PR head to one the ledger never ran. Only an issue seat's
+    ``config.TRIAGE_HEAD`` needs a row there (``stats.run_head``, the one display rule)."""
+    return stats.recorded_head(head) or next(
+        (shown for shown in (stats.run_head(row["seat"], head) for row in rows
+                             if row["head"] == head) if shown), "")
 
 
 def confirmation(seat: str, head) -> str:
