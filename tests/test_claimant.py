@@ -22,7 +22,7 @@ class ClaimantLine(unittest.TestCase):
         with patch.object(claimant, "LOADED", OLD):
             line = claimant.identity(installed=OLD)
         self.assertIn(f"pid {os.getpid()}", line)
-        self.assertIn(sys.executable, line)
+        self.assertIn(claimant._tail(sys.executable), line, "#2234: any path length")
         self.assertIn(f"plugin {OLD[:7]}", line)
         self.assertNotIn("installed", line, "one commit when loaded and installed agree")
 
@@ -73,7 +73,7 @@ class ClaimantAtClaim(turns.Base):
             self.assertIsNone(self.claim(None))       # gh.api answers None: the read failed
         error = self.s.get("review")["error"]
         self.assertIn("claim-time read failed: PR unreadable", error)
-        self.assertIn(f"[claimant pid {os.getpid()} {sys.executable}", error)
+        self.assertIn(f"[claimant pid {os.getpid()} {claimant._tail(sys.executable)}", error)
         self.assertIn(f"plugin {OLD[:7]}]", error)
 
     def test_a_claimant_older_than_the_install_refuses_and_leaves_the_run_pending(self):
