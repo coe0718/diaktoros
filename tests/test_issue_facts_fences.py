@@ -67,5 +67,23 @@ class IndentedFences(Mocked):
                 self.assertEqual(check(body), "")
 
 
+class IndentedCode(Mocked):
+    """Ninth review on #2573 (F9): a list marker four or more columns past its container's
+    content column (0 outside a list) is indented code, as Markdown renders it, not an item."""
+
+    def test_indented_code_evidence_is_not_an_item(self):
+        for body in ("Example code:\n\n    - command --help\n",        # Vex's case
+                     "Example code:\n\n\t1. step one\n",
+                     "- two: met\n\n  Code:\n\n      - nested --flag\n"):  # in an item
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+        self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", "## Requirements\nCode:\n\n"
+                                           "    - x --y\n\n- one: met\n"), "")
+
+    def test_a_real_unmarked_item_after_indented_code_is_still_refused(self):
+        reason = check("Example code:\n\n    - command --help\n\n- second: export flag\n")
+        self.assertIn('"- second: export flag" has no status', reason)
+
+
 if __name__ == "__main__":
     unittest.main()

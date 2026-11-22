@@ -3,7 +3,8 @@
 
 A list line (``- x``, ``* x``, ``1. x``): its indent, its marker and the spaces after it say where
 the item's content starts (``item_col``). A requirement item is a top-level one: a line indented
-into an open item is a nested note (evidence), and a line with no marker is prose.
+into an open item is a nested note (evidence), a line with no marker is prose, and a marker line
+four or more columns past its container's content column is indented code (``code_line``).
 
 A fence (three or more backticks or tildes) opens fenced code only up to three columns past the
 content column of the list item it sits in (0 outside a list): more is indented code, or text,
@@ -37,6 +38,13 @@ def item_col(found) -> int:
     return start + (gap if gap <= 4 else 1)
 
 
+def code_line(found, at: int, cols: list[int]) -> bool:
+    """Whether a list-marker line at column ``at`` is indented code (or text), not an item: four
+    or more columns past the content column of the deepest open item it sits in, 0 outside a list
+    (ninth review on #2573: ``    - command --help`` after prose read as an unmarked item)."""
+    return bool(found) and at - max((c for c in cols if c <= at), default=0) >= 4
+
+
 def unfenced(lines: list[str]) -> list[str]:
     """``lines`` with each fenced code block (its fences too) blanked: code, not items, statuses
     or headings (seventh review on #2573: a ``diff`` given as evidence read as unmarked items)."""
@@ -59,6 +67,7 @@ def unfenced(lines: list[str]) -> list[str]:
             blank = True
             continue
         item, found = ITEM.match(line), FENCE.match(line)
+        item = None if code_line(item, at, cols) else item
         if item or found or blank or ended:        # a fence is never a lazy continuation
             while cols and at < cols[-1]:
                 cols.pop()

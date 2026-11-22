@@ -281,8 +281,8 @@ def _top_items(lines: list[str]) -> list[str]:
         if not line.strip():
             blank = True
             continue
-        found = md_fences.ITEM.match(line)
-        indent = md_fences.indent(line)
+        found, indent = md_fences.ITEM.match(line), md_fences.indent(line)
+        found = None if md_fences.code_line(found, indent, open_items) else found   # code (F9)
         if found or blank:
             while open_items and indent < open_items[-1]:
                 open_items.pop()
