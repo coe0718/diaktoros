@@ -98,6 +98,13 @@ class Flake(unittest.TestCase):
         self.assertIn("A rerun of the failed jobs was tried, and it failed again.", kw["outcome"])
         self.assertEqual(len(self.posts), 1)
 
+    def test_the_advice_ends_its_sentence_before_the_flake_note(self):
+        """The main_red advice is a sentence of its own, like the flake notes after it."""
+        self.sweep(red())
+        self.sweep(red(ids=(301,)))
+        self.assertIn("this class of breakage. A rerun of the failed jobs was tried",
+                      self.notices[0][1]["outcome"])
+
     def test_a_rerun_that_never_shows_is_red_after_the_wait(self):
         self.sweep(red())
         tried = {**self.memory()["rerun"], "at": 0}
