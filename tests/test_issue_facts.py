@@ -131,14 +131,14 @@ class IssueFacts(unittest.TestCase):
         # Third review on #2573 (F2): two spaces under `1. item` (content at column 3) nest nothing.
         body = "## Requirements\n1. first: met\n  - second: export flag\n"
         self.assertIn("- second: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
-        # Fourth review: a marker alone on its line starts a top-level item, its text below it.
-        body = "## Requirements\n- first: met\n-\n  second: missing\n"
+        body = "## Requirements\n- first: met\n-\n  second: missing\n"  # a bare marker (4th)
         self.assertIn("second: missing", issue_facts.check(LOOP, 7, "APPROVE", body))
-        # F4: an item that dedents is the new level, so evidence under it is nested.
+        # F4: a dedenting item is a new level; a tab gap counts from its marker's column (5th).
         for body in ("## Requirements\n  - first: met\n- second: met\n  - evidence: tests/a.py\n",
                      "## Requirements\n1. first: met\n   - evidence: tests/a.py\n2. two: met\n",
                      "## Requirements\n-   first: met\n    - evidence: tests/a.py\n",
-                     "## Requirements\n-\n  first: met\n  - evidence: tests/a.py\n"):
+                     "## Requirements\n-\n  first: met\n  - evidence: tests/a.py\n",
+                     "## Requirements\n-\tfirst: met\n    - evidence: tests/a.py\n"):
             with self.subTest(body):
                 self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
 

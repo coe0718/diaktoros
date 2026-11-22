@@ -293,11 +293,13 @@ def _top_items(lines: list[str]) -> list[str]:
             out.append(line)                  # the text of a top-level item's bare marker
         empty = False
         if found:
-            gap = len((found.group(3) or " ").expandtabs(4))
+            # A tab in the gap reaches the next stop from the marker's real column (fifth review).
+            start = indent + len(found.group(2))
+            gap = len((found.group(1) + found.group(2) + (found.group(3) or " ")).expandtabs(4)) - start
             if not open_items:
                 empty = found.group(3) is None
                 out += [] if empty else [line]
-            open_items.append(indent + len(found.group(2)) + (gap if gap <= 4 else 1))
+            open_items.append(start + (gap if gap <= 4 else 1))
         blank = False
     return out
 
