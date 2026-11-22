@@ -11,7 +11,9 @@ content column of the list item it sits in (0 outside a list): more is indented 
 not a fence (eighth review: a backtick line indented four columns after prose blanked every
 requirement after it). The block runs to a closing fence of its character at least as long, at
 most three columns past that same column; or to a line that dedents out of its list item, which
-ends the item and the block with it; or to the end.
+ends the item and the block with it; or to the end. An HTML comment (``<!--`` opening a line, at
+most three columns past that same column) is blanked the same way, through the line holding
+``-->`` (tenth review: a commented-out draft item read as an unmarked requirement).
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import re
 
 ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+COMMENT = re.compile(r"^[ \t]*<!--(.*)$")
 
 
 def width(text: str) -> int:
@@ -46,11 +49,16 @@ def code_line(found, at: int, cols: list[int]) -> bool:
 
 
 def unfenced(lines: list[str]) -> list[str]:
-    """``lines`` with each fenced code block (its fences too) blanked: code, not items, statuses
-    or headings (seventh review on #2573: a ``diff`` given as evidence read as unmarked items)."""
-    out, fence, cols, blank = [], None, [], False
+    """``lines`` with each fenced code block (its fences too) and HTML comment blanked: code or
+    hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
+    evidence read as unmarked items)."""
+    out, fence, cols, blank, comment = [], None, [], False, False
     for line in lines:
         at, ended = indent(line), False
+        if comment:                                # inside an HTML comment, through its "-->"
+            comment = "-->" not in line
+            out.append("")
+            continue
         if fence is not None:
             char, size, col = fence
             if line.strip() and at < col:
@@ -66,12 +74,16 @@ def unfenced(lines: list[str]) -> list[str]:
             out.append(line)
             blank = True
             continue
-        item, found = ITEM.match(line), FENCE.match(line)
+        item, found, opener = ITEM.match(line), FENCE.match(line), COMMENT.match(line)
         item = None if code_line(item, at, cols) else item
-        if item or found or blank or ended:        # a fence is never a lazy continuation
+        if item or found or opener or blank or ended:   # neither is a lazy continuation
             while cols and at < cols[-1]:
                 cols.pop()
         blank, col = False, cols[-1] if cols else 0
+        if opener and at - col <= 3:
+            comment = "-->" not in opener.group(1)
+            out.append("")
+            continue
         if found and at - col <= 3 and not (found.group(1)[0] == "`" and "`" in found.group(2)):
             fence = (found.group(1)[0], len(found.group(1)), col)
             out.append("")

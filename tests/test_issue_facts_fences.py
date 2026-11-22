@@ -85,5 +85,24 @@ class IndentedCode(Mocked):
         self.assertIn('"- second: export flag" has no status', reason)
 
 
+class HtmlComments(Mocked):
+    """Tenth review on #2573 (F10): an HTML comment is hidden, as Markdown renders it, so a list
+    item commented out is not a requirement."""
+
+    def test_a_commented_out_item_is_not_an_item(self):
+        for body in ("<!--\n- draft requirement removed\n-->\n",           # Vex's case
+                     "<!-- - draft one: x -->\n",
+                     "- two: met\n\n  <!--\n  - nested draft\n  -->\n",
+                     "<!-- a note\n\n- draft after a blank line\n\n-->\n- three: met\n"):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
+    def test_a_real_unmarked_item_outside_the_comment_is_still_refused(self):
+        for body in ("<!--\n- draft requirement removed\n-->\n- second: export flag\n",
+                     "- second: export flag <!-- inline, not a block -->\n"):
+            with self.subTest(body):
+                self.assertIn('"- second: export flag', check(body))
+
+
 if __name__ == "__main__":
     unittest.main()
