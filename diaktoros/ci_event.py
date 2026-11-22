@@ -29,22 +29,19 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
-import re
 import time
 
 from . import ci, ci_fix, config, gh, hostdirs, main_check, review_kick
+from .ci_nudges import NUDGES, NUDGES_MAX, _SHA, _take, note, taken  # noqa: F401
 from .util import log, register_lock, silence
 
 # The gateway gives a gate 30 seconds (``gate_failures``): wait this long for a running sweep's
 # lock, then leave the commit to that sweep, which reads CI itself.
 LOCK_WAIT_S = 20.0
-NUDGES = "ci-nudges.json"     # suites noted for the lock's holder, newest last
-NUDGES_MAX = 50
 DRAIN_PASSES = 5              # a drain's takes of the notes; any left stay noted
 HANDOFFS = 3                  # times a holder that let the lock go takes it back for notes left
 # The watchdog's per-loop sweep lock (``watchdog.sweep_loop``), in the loop's state directory.
 SWEEP_LOCK = register_lock("sweep.lock")
-_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def gate(loop: dict, st, payload: dict) -> None:
@@ -59,11 +56,16 @@ def gate(loop: dict, st, payload: dict) -> None:
         silence("check_suite: payload has no head sha")
     numbers = [pr.get("number") for pr in suite.get("pull_requests") or []
                if isinstance(pr, dict) and type(pr.get("number")) is int and pr["number"] > 0]
-    note(st, head, numbers)
+    token = note(st, head, numbers)
     by_head: dict[str, list[str]] = {}
     with sweep_lock(st, LOCK_WAIT_S) as held:
         if held:
             drain(loop, st, by_head=by_head)
+            if head not in by_head and token not in taken(st):
+                # Its note left the queue untaken (``NUDGES_MAX`` dropped it): read it here, as
+                # the drain would have (F4). Past ``TAKEN_MAX`` this can repeat a holder's read
+                # of the commit, never a turn (``ci_fix`` keys it by head).
+                by_head[head] = _act(loop, st, head, numbers, log)
     if not held:
         silence(f"check_suite @ {head[:7]}: noted for the running watchdog sweep, which takes "
                 "it when it lets the lock go (or the next sweep does)", "accepted")
@@ -81,15 +83,6 @@ def gate(loop: dict, st, payload: dict) -> None:
     silence(f"check_suite @ {head[:7]}: " + "; ".join(dict.fromkeys(by_head[head])), "accepted")
 
 
-def note(st, head: str, numbers: list[int]) -> None:
-    """Note a finished suite for whoever holds the sweep lock next (``drain``)."""
-    path = st.dir / NUDGES
-    with st.locked():
-        noted = st.kv_get(path, [])
-        noted = noted if isinstance(noted, list) else []
-        st.kv_set(path, (noted + [{"head": head, "numbers": numbers}])[-NUDGES_MAX:])
-
-
 def drain(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
     """Act on every noted suite, once per commit per take, under the sweep lock its caller
     holds: the handler that took it, or the watchdog's sweep as its last step. Notes written
@@ -102,15 +95,19 @@ def drain(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
         if not heads:
             break
         for head, numbers in heads.items():
-            mine = by_head.setdefault(head, [])
-            try:
-                done = act(loop, st, head, numbers)
-            except Exception as exc:          # one unreadable commit does not drop the rest
-                log(f"check_suite @ {head[:7]} not acted on: {type(exc).__name__}: {exc}")
-                continue
+            done = _act(loop, st, head, numbers, log)
             acted += done
-            mine += done
+            by_head.setdefault(head, []).extend(done)
     return acted
+
+
+def _act(loop: dict, st, head: str, numbers: list[int], log=log) -> list[str]:
+    """``act``, with one unreadable commit logged (nothing acted on), not dropping the rest."""
+    try:
+        return act(loop, st, head, numbers)
+    except Exception as exc:
+        log(f"check_suite @ {head[:7]} not acted on: {type(exc).__name__}: {exc}")
+        return []
 
 
 def handoff(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
@@ -131,21 +128,6 @@ def handoff(loop: dict, st, log=log, by_head: dict | None = None) -> list[str]:
                 break
             acted += drain(loop, st, log, by_head)
     return acted
-
-
-def _take(st) -> dict[str, list[int]]:
-    """The noted suites, cleared: the PR numbers named for each commit."""
-    path = st.dir / NUDGES
-    with st.locked():
-        noted = st.kv_get(path, [])
-        st.kv_set(path, [])
-    heads: dict[str, list[int]] = {}
-    for entry in noted if isinstance(noted, list) else []:
-        head = entry.get("head") if isinstance(entry, dict) else None
-        if isinstance(head, str) and _SHA.fullmatch(head):
-            heads.setdefault(head, []).extend(n for n in entry.get("numbers") or []
-                                              if type(n) is int and n > 0)
-    return heads
 
 
 def act(loop: dict, st, head: str, numbers: list[int]) -> list[str]:

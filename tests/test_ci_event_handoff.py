@@ -112,12 +112,30 @@ class Handoff(base.Handler):
         note = ci_event.note
 
         def taken(st, head, numbers):
-            note(st, head, numbers)
+            token = note(st, head, numbers)
             ci_event._take(st)                                           # the other holder
+            return token
         with mock.patch.object(ci_event, "note", side_effect=taken):
             reason, decision = self.deliver(base.suite())
         self.assertEqual(decision, "accepted")
         self.assertIn("another holder of the sweep lock took it", reason)
+
+    def test_a_note_the_cap_dropped_is_read_by_its_own_handler(self):
+        # Review on #2577 (F4): later suites fill the queue before this handler gets the lock,
+        # so the cap drops its note. No holder took it: it reads its own commit, not "taken".
+        note = ci_event.note
+
+        def crowded(st, head, numbers):
+            token = note(st, head, numbers)
+            for other in HEADS[:ci_event.NUDGES_MAX // 10]:
+                for _ in range(10):
+                    note(st, other, [])
+            return token
+        with mock.patch.object(ci_event, "note", side_effect=crowded):
+            reason, decision = self.deliver(base.suite())
+        self.assertEqual((reason, decision), ("check_suite @ aaaaaaa: CI read for #7", "accepted"))
+        self.assertEqual([a[3] for a, _kw in self.queued], [base.HEAD])
+        self.assertEqual(self.left(), [])
 
     def test_the_watchdog_hands_off_after_it_lets_the_lock_go(self):
         import importlib.util
