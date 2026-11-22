@@ -113,6 +113,7 @@ jobs:
           python-version: '3.11'
       - name: Record native runtime
         run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
           sw_vers
           uname -m
           test -x /usr/bin/sandbox-exec
