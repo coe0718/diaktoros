@@ -313,6 +313,26 @@ class RunsInFlightUnreadable(fg.Base):
             holder.execute("ROLLBACK")
             holder.close()
 
+    def test_a_failed_ledger_write_is_not_diagnosed_as_unreadable(self):
+        # #2426: the ledger read fine, so the refusal must not say it could not be read (and
+        # send the operator to set a healthy ledger aside). RAISE(ROLLBACK) also ends the
+        # transaction itself, so the cleanup ROLLBACK must not replace the error.
+        for action in ("ABORT", "ROLLBACK"):
+            path = self._runs_ledger("id INTEGER, repo TEXT, state TEXT")
+            con = migrate.sqlite3.connect(path)
+            con.execute("INSERT INTO runs VALUES (1, ?, 'done')", (OLD,))
+            con.execute("CREATE TRIGGER t BEFORE UPDATE ON runs BEGIN "
+                        f"SELECT RAISE({action}, 'write failed'); END")
+            con.commit()
+            con.close()
+            moved, refused = migrate._move_ledger(path, OLD, NEW, dry_run=False)
+            self.assertEqual(moved, 0, action)
+            self.assertIn("could not be written (write failed)", refused, action)
+            self.assertNotIn("could not be read", refused, action)
+            con = migrate.sqlite3.connect(path)
+            self.assertEqual(con.execute("SELECT repo FROM runs").fetchall(), [(OLD,)])
+            con.close()
+
     def test_restore_refuses_and_replaces_nothing(self):
         path = self._ledger(b"garbage" * 100)
         args = argparse.Namespace(file="x.tgz", dry_run=False, force=True)
