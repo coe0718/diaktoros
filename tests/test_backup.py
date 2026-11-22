@@ -1239,6 +1239,31 @@ class LockInventory(unittest.TestCase):
             "\ndef review_probe(directory):\n    return directory / ('fresh-full.lock' + '')\n",
             "test_every_lock_name_in_the_package_is_registered_or_accounted_for"))
 
+    def test_the_inventory_rejects_an_unregistered_lock_in_a_script(self):
+        """Review F3 on #2604, through both enforcing tests on their default roots: a script
+        naming an unregistered lock in full, and a script building one at runtime, each turn
+        the inventory red. Either half passes if the default scan leaves ``scripts/`` out."""
+        self.assertTrue(self.probed(
+            "scripts/zz_probe.py",
+            "import os\nfd = os.open(st_dir / 'script-only-review.lock', os.O_CREAT)\n",
+            "test_every_lock_name_in_the_package_is_registered_or_accounted_for"))
+        self.assertTrue(self.probed(
+            "scripts/zz_probe.py",
+            "def lock_path(st_dir, part):\n    return st_dir / (part + '.lock')\n",
+            "test_every_runtime_built_lock_name_is_accounted_for"))
+
+    def test_the_inventory_rejects_a_stale_runtime_entry(self):
+        """Review F4 on #2604, through the enforcing test: a ``RUNTIME`` entry whose site no
+        longer builds a lock name fails as stale, while the unchanged table passes."""
+        test = "test_every_runtime_built_lock_name_is_accounted_for"
+        getattr(LockInventory(test), test)()
+        inner = LockInventory(test)
+        inner.RUNTIME = {**self.RUNTIME,
+                         ("diaktoros.safe_push", "gone", 'part + ".lock"'): "a removed site"}
+        with self.assertRaises(AssertionError) as caught:
+            getattr(inner, test)()
+        self.assertIn("stale RUNTIME entries", str(caught.exception))
+
     def test_the_scan_walks_the_scripts_too(self):
         """#1740: ``scripts/`` drives the package and keeps locks in state directories (the
         watchdog's sweep lock), so a lock named there is held to the same rule."""
