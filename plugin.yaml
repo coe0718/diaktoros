@@ -383,7 +383,7 @@ config_schema:
     label: "Bring a behind loop PR up to date"
     type: bool
     default: false
-    description: "On: when a loop PR falls behind its base (GitHub reports it once the base requires branches to be up to date), the host merges the base into it as the fixer seat, if no turn of the PR is queued or running and the merge is clean (#1785). When the head before was approved and ready to merge but for being behind, and the base's new commits touch nothing the PR changed, the approval carries over to the merged head, which still needs green CI; otherwise the new head is reviewed as usual. Needs unattended fixer pushes. Off: a behind loop PR waits for a person or the fixer."
+    description: "On: when a loop PR falls behind its base (GitHub reports it once the base requires branches to be up to date), the host merges the base into it as the fixer seat, if no turn of the PR is queued or running and the merge is clean (#1785). When the head before was approved and ready to merge but for being behind, and the base's new commits touch nothing the PR changed, the approval carries over to the merged head, which still needs green CI; otherwise the new head is reviewed as usual. It also brings a new issue fix up to date: when the base moved during the fixer's turn, a clean merge of its tip that brings no workflow change is pushed with the fix, so the PR opens on a head that is not behind (#2591). Needs unattended fixer pushes. Off: a behind loop PR waits for a person or the fixer."
   change_proof:
     label: "Prove the changed tests"
     type: bool

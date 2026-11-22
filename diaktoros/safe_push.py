@@ -513,7 +513,8 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
              files: list[tuple[str, bytes]], message: str, login: str,
              identity: dict, *, before_push=None, remote: str | None = None,
              from_branch: str | None = None, patch: bytes | None = None,
-             changed: list | None = None, merge: dict | None = None) -> str:
+             changed: list | None = None, merge: dict | None = None,
+             catch_up: bool = False) -> str:
     """Fetch the advertised branch, construct local objects, and exact-lease push.
 
     With ``from_branch`` (an issue fix, #214) the commit is built on ``head`` as found in that
@@ -530,6 +531,9 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
     exactly ``tree``, the tree the resolving turn was given — applies the seat's resolution to
     that, refuses any conflict marker left in a conflicted file, and has the parents
     ``(head, base_sha)``. The lease is still the exact head.
+
+    With ``catch_up`` (an issue fix, #2591) the commit is then merged with the advertised
+    branch's tip when that moved past ``head`` (``_catch_up``), so the branch opens up to date.
 
     `remote` is a private local-fixture seam, never sourced from IPC or config.
     Only validated manifest paths/bytes reach Git's temporary private bare repo.
@@ -600,23 +604,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
             if changed is not None:
                 changed.extend(paths)
         if conflicted:
-            # A resolution must leave no conflict marker in any file Git could not merge.
-            staged = {}
-            for entry in run("--git-dir", str(bare), "ls-files", "--stage", "-z").split(b"\0"):
-                if entry:
-                    metadata, name = entry.split(b"\t", 1)
-                    staged[name.decode("utf-8", "surrogateescape")] = metadata.decode().split()[1]
-            left = [path for path in conflicted if path in staged and CONFLICT_MARKER.search(
-                run("--git-dir", str(bare), "cat-file", "blob", staged[path]))]
-            if left:
-                raise broker.BrokerDenied(f"conflict markers left in {len(left)} file(s)")
-            # Belt and braces: every conflicted file is one the seat explicitly resolved.
-            touched = set(run("--git-dir", str(bare), "diff-index", "--cached", "--name-only",
-                              "-z", "--no-renames", start).decode("utf-8", "surrogateescape")
-                          .split("\0"))
-            if not set(conflicted) <= touched:
-                raise broker.BrokerDenied(
-                    f"{len(set(conflicted) - touched)} conflicted file(s) left unresolved")
+            _check_resolution(run, str(bare), conflicted, start)
         tree = _sha(run("--git-dir", str(bare), "write-tree").decode())
         base_tree = _sha(run("--git-dir", str(bare), "rev-parse", f"{head}^{{tree}}").decode())
         if tree == base_tree:
@@ -627,12 +615,52 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
         created = run("--git-dir", str(bare), "rev-list", "--parents", "-n", "1", new_head).decode().split()
         if created != [new_head, head] + ([merge["base_sha"]] if merge is not None else []):
             raise broker.BrokerDenied("local commit does not have exact expected parent")
+        if catch_up and from_branch and snapshot != head:
+            new_head = _catch_up(git, loop, new_head, snapshot, from_branch, branch)
         if before_push is not None:
             before_push(new_head)
         lease = f"{ref}:" if from_branch else f"{ref}:{head}"
         run("--git-dir", str(bare), "push", "--porcelain",
             f"--force-with-lease={lease}", url, f"{new_head}:{ref}")
         return new_head
+
+
+def _check_resolution(run, bare: str, conflicted: list[str], start: str) -> None:
+    """A merge resolution staged in ``bare``'s index (#303) leaves no conflict marker in any file
+    Git could not merge, and resolves every one of them."""
+    staged = {}
+    for entry in run("--git-dir", bare, "ls-files", "--stage", "-z").split(b"\0"):
+        if entry:
+            metadata, name = entry.split(b"\t", 1)
+            staged[name.decode("utf-8", "surrogateescape")] = metadata.decode().split()[1]
+    left = [path for path in conflicted if path in staged and CONFLICT_MARKER.search(
+        run("--git-dir", bare, "cat-file", "blob", staged[path]))]
+    if left:
+        raise broker.BrokerDenied(f"conflict markers left in {len(left)} file(s)")
+    # Belt and braces: every conflicted file is one the seat explicitly resolved.
+    touched = set(run("--git-dir", bare, "diff-index", "--cached", "--name-only",
+                      "-z", "--no-renames", start).decode("utf-8", "surrogateescape")
+                  .split("\0"))
+    if not set(conflicted) <= touched:
+        raise broker.BrokerDenied(
+            f"{len(set(conflicted) - touched)} conflicted file(s) left unresolved")
+
+
+def _catch_up(git: "_Isolated", loop: dict, fix: str, tip: str, base_ref: str, branch: str) -> str:
+    """An issue fix built on the base its turn started from, merged with the base's ``tip`` when
+    the base moved meanwhile (#2591), so its PR opens up to date instead of behind. Only under
+    ``update_behind``'s rules: a clean merge that brings no workflow change; otherwise ``fix``
+    alone, as before, and review and ``update_behind`` take it from there."""
+    merged = _dry(git, fix, tip)
+    if not merged["clean"] or merged["workflows"]:
+        return fix
+    bare = str(git.bare)
+    message = attribution.sign_commit(loop, f"Merge {base_ref} into {branch}")
+    head = _sha(git.run("--git-dir", bare, "commit-tree", merged["tree"], "-p", fix, "-p", tip,
+                        input=message.encode("utf-8") + b"\n").decode())
+    if git.run("--git-dir", bare, "rev-list", "--parents", "-n", "1", head).decode().split() != [head, fix, tip]:
+        raise broker.BrokerDenied("local merge does not have the expected parents")
+    return head
 
 
 def _receipt(*, repo: str, number: int, head: str, branch: str, role: str, login: str,
@@ -805,6 +833,18 @@ def _pr_follows(loop: dict, repo: str, number: int, new_head: str, role: str, br
     return False
 
 
+def _absent_branch(loop: dict, ref_path: str, branch: str, login: str) -> None:
+    """Pre-write: an existing branch (a second fix attempt) is a knowable denial, not an
+    uncertain push. The push's absent-branch lease stays the guard against a race."""
+    existing, read_error = gh.fetch(loop, ref_path, login=login)
+    if gh.status_of(read_error) == 404:
+        return                                 # absent: proceed
+    if read_error or not isinstance(existing, dict):
+        raise broker.BrokerDenied("could not check whether the fix branch exists")
+    raise broker.BrokerDenied(f"{branch} already exists — inspect it, and see docs/issues.md "
+                              "(uncertain/post-write recovery) before any new attempt")
+
+
 def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                 manifest: object) -> dict:
     """Push an issue fix (#214) as one commit on ``base`` to the new branch ``branch``.
@@ -839,16 +879,7 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                "role": "issue_fixer", "login": login, "paths": [path for path, _ in files],
                "operation": "issue_branch"}
     extra = {"patch": patch, "changed": receipt["paths"]} if patch is not None else {}
-    # Pre-write: an existing branch (a second fix attempt) is a knowable denial, not an
-    # uncertain push. The absent-branch lease below stays the guard against a race.
-    existing, read_error = gh.fetch(loop, ref_path, login=login)
-    if gh.status_of(read_error) == 404:
-        pass                                   # absent: proceed
-    elif read_error or not isinstance(existing, dict):
-        raise broker.BrokerDenied("could not check whether the fix branch exists")
-    else:
-        raise broker.BrokerDenied(f"{branch} already exists — inspect it, and see docs/issues.md "
-                                  "(uncertain/post-write recovery) before any new attempt")
+    _absent_branch(loop, ref_path, branch, login)
     new_head = None
     attempt_started = False
 
@@ -861,7 +892,8 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     error = None
     try:
         _git_cas(loop, repo, branch, base, files, attribution.sign_commit(loop, manifest["message"]),
-                 login, identity, before_push=before_push, from_branch=loop["base"], **extra)
+                 login, identity, before_push=before_push, from_branch=loop["base"],
+                 catch_up=config.update_behind(loop), **extra)
     except Exception as exc:
         error = exc
     outcome = "unknown"
