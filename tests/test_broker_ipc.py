@@ -22,7 +22,7 @@ HEAD = "a" * 40
 REPO = "acme/widgets"
 
 
-class BrokerIPCTests(unittest.TestCase):
+class BrokerIPCBase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(self.temp.cleanup)
@@ -80,6 +80,8 @@ class BrokerIPCTests(unittest.TestCase):
     def review(self):
         return {"operation": "review", "verdict": "APPROVE", "body": "verified\nNot verified: nothing"}
 
+
+class BrokerIPCTests(BrokerIPCBase):
     def test_success_rechecks_live_head_and_audits_without_secrets(self):
         server = self.start()
         with mock.patch.object(broker_client, "SOCKET", str(server.socket_path)):

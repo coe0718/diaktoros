@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 
-from diaktoros import desktop_api, escalate_pending, findings, fix_declined, history, state, stats
+from diaktoros import desktop_api, escalate_pending, findings, fix_declined, state, stats
 import _state_walk as walk
 
 NOW = time.time()
@@ -58,15 +58,14 @@ class NumberKeys(unittest.TestCase):
         got = stats.escalations(self.db, self.repo, 0, NOW + 10, breaches)
         self.assertEqual((got["total"], got["awaiting"]), (1, 1))
 
-    def test_finding_ids_past_reading_sort_first_and_are_kept(self):
+    def test_finding_ids_past_reading_sort_by_length_and_are_kept(self):
+        # Ordered by ``findings.order`` (length, then digits), which never raises (F6 on #2589).
         entry = {"findings": {"F2": finding("b.py:2: two"), "F1": finding("a.py:1: one"),
                               **{f"F{bad}": finding("odd id") for bad in BAD}}}
-        self.assertEqual([line.split()[0] for line in findings.lines(entry)],
-                         [*(f"F{bad}" for bad in BAD), "F1", "F2"])
-        self.assertEqual([history._fnum(f"F{bad}") for bad in BAD], [0, 0])
+        want = ["F1", "F2", *(f"F{bad}" for bad in BAD)]
+        self.assertEqual([line.split()[0] for line in findings.lines(entry)], want)
         self.st.findings_put(7, entry)
-        self.assertEqual([item["id"] for item in desktop_api._findings(self.st.loop, 7)],
-                         [*(f"F{bad}" for bad in BAD), "F1", "F2"])
+        self.assertEqual([item["id"] for item in desktop_api._findings(self.st.loop, 7)], want)
 
     def test_number_keyed_files_keep_the_valid_entry_beside_unreadable_keys(self):
         sha, at = "a" * 40, {"at": 1}
