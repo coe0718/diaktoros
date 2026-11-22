@@ -36,6 +36,7 @@ PUSHES = {
     "ttl_min": "50",
     "inflight_ttl_min": "12",
     "turn_budget_s": "1200",
+    "reply_settle_seconds": "0",
     "host": "https://other-gateway.example",
     "reviewer_profile": "scribe",
     "fixer_profile": "editor",

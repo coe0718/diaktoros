@@ -42,8 +42,9 @@ class Replies(base.Gate):
             self.reads += 1
             return self.comments, ""
 
-        def enqueue(loop, seat, n, head, turn_key=""):
+        def enqueue(loop, seat, n, head, turn_key="", settle=0):
             self.enqueued.append((seat, n, head, turn_key))
+            self.settles.append(settle)                 # #2248: asked for, not applied here
             self.sup.enqueue(f"{REPO}:{n}:{head}:{seat}:{turn_key}", REPO, n, head, seat,
                              turn_key=turn_key)
             return "enqueued"

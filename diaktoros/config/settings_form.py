@@ -57,6 +57,10 @@ SETTINGS_SCHEMA: dict = {
                                      "--run-budget, and the sandbox is killed shortly after. A "
                                      "real review builds and tests, so keep it generous "
                                      "(60-14400)"},
+    "reply_settle_seconds": {"label": "Reply settle (seconds)", "type": "int", "default": 120,
+                             "description": "Seconds a fix turn woken by a maintainer's reply "
+                                            "waits before it starts, so a close right after the "
+                                            "reply costs no turn (0-3600; 0 = start at once)"},
     "host": {"label": "Webhook host", "type": "str", "default": "",
              "description": "Your gateway's public webhook origin (required to create GitHub hooks)"},
     "reviewer_profile": {"label": "Reviewer's Hermes profile", "type": "str", "default": "",
@@ -596,7 +600,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     overlaid = {**loop_raw, "clone": clone, "host": host, "seats": seats}
     # Only the knobs the operator actually set are written; a blank/absent field keeps the loop's
     # own value (None on a bare dict is the same "leave it alone", since `normalize` defaults it).
-    for key in ("cap", "base", "grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s"):
+    for key in ("cap", "base", "grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s",
+                "reply_settle_seconds"):
         value = _form_value(settings, key)
         if value is not None:
             overlaid[key] = value

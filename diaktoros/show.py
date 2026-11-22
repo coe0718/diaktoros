@@ -137,7 +137,7 @@ def _rows_seats(schema, seats, adj, loop) -> None:  # noqa: ANN001
     schema("clone", ("clone",), loop.get("clone") or _UNSET,
            note="" if loop.get("clone") else "needed above 1 run at once unless the runtime file exists")
     schema("base", ("base",), loop["base"])
-    for key in ("grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s"):
+    for key in ("grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s", "reply_settle_seconds"):
         schema(key, (key,), loop[key])
     schema("host", ("host",), loop.get("host") or _UNSET)
     for role in config.ROUTE_ROLES:
