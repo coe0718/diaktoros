@@ -44,7 +44,6 @@ TRIED = "behind-updates.json"
 KEEP = 200
 # A head carried from a head that was itself carried: followed this deep at most.
 CHAIN_MAX = 8
-BEHIND = "not mergeable: GitHub reports behind"      # ``ready``'s reason for a behind head
 IN_FLIGHT = ("pending", "waiting", "claimed", "launching", "running", "uncertain")
 _DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("base_merge_depth", default=0)
 
@@ -177,6 +176,12 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
         return "the head waits for a person"
     if gate.escalated(st.breach_get(number), head):
         return "the head is escalated"
+    return _review_waits(loop, number, head, reviews)
+
+
+def _review_waits(loop: dict, number: int, head: str, reviews) -> str:
+    """The part of ``_waits`` the head's reviews decide, or ''. ``update`` asks it twice: at the
+    sweep's read and again right before the push (#2288)."""
     if not isinstance(reviews, list):
         return "its reviews could not be read"
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
@@ -260,7 +265,7 @@ def source(loop: dict, st, head: str, live: dict, raw, reviews):
         return None, f"{head[:7]} was not approved by the reviewer or on an ACCEPT ruling"
     from . import ready
     left = [text for _kind, text in ready.assess_kinds(loop, st, live, raw, ci.read(loop, head), live)
-            if text != BEHIND]
+            if text != ready.BEHIND]
     if left:
         return None, f"{head[:7]} was not ready to merge but for being behind: {left[0]}"
     return latest, ""
@@ -288,6 +293,13 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
 
     def record(new_head: str, base: str, identity: str) -> None:
         hold.take()
+        # #2288: a change request (or a ruling's write) may land while the merge is built; read
+        # the reviews again, so the push never moves the head out from under it.
+        again = gh.reviews(loop, number)
+        why = _review_waits(loop, number, head, transition.effective_reviews(
+            loop, st, number, head, again) if isinstance(again, list) else None)
+        if why:
+            raise broker.BrokerDenied(f"{why}, read again before the push")
         if approval is not None and not identity:
             _record(st, new_head, {"number": number, "from": head, "review": approval.get("id"),
                                    "base": base, "at": time.time()})

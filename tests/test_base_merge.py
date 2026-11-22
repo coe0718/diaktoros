@@ -110,7 +110,7 @@ class Base(unittest.TestCase):
         return safe_push.__dict__["_isolated_orig"](loop, login, ident, self.remote)
 
     def update(self):
-        kinds = [(ready.GITHUB, base_merge.BEHIND)] + [(ready.FAILURE, why) for why in self.left]
+        kinds = [(ready.GITHUB, ready.BEHIND)] + [(ready.FAILURE, why) for why in self.left]
         with mock.patch.object(gh, "api", side_effect=self.api), \
                 mock.patch.object(safe_push, "_isolated", side_effect=self.isolated), \
                 mock.patch.object(gh, "reviews", side_effect=lambda *a, **kw: self.reviews and list(self.reviews)), \
