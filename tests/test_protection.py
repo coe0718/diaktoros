@@ -465,13 +465,29 @@ class Setup(Fake):
         # #1952: rulesets unread (403), classic 404: setup cannot know the check is ignored.
         self.rules, self.classic = None, None
         out = self.step(pat_loop(merge_check="on"))
+        self.assertNotIn("not required:", out)            # the status is qualified too
         self.assertNotIn("the merge button ignores it.", out)
-        self.assertIn("the merge button ignores it unless rulesets, which could not be read, "
-                      "requires it", out)
+        self.assertIn("   not known to be required: main requires it nowhere setup could read; "
+                      "the check is posted, but the merge button ignores it unless rulesets, "
+                      "which could not be read, requires it. When ready: "
+                      "hermes dk protect --loop w --admin-token admin\n", out)
         self.assertEqual(self.writes(), [])
         self.rules = []                                   # both answered: the plain claim
-        self.assertIn("but the merge button ignores it. When ready",
-                      self.step(pat_loop(merge_check="on")))
+        self.assertIn("   not required: the check is posted, but the merge button ignores it. "
+                      "When ready", self.step(pat_loop(merge_check="on")))
+
+    def test_declining_a_base_with_both_sources_unread_says_either_may_require_it(self):
+        # #1952 (review of #2592): either unread source alone can require the check, so the
+        # sources are joined by "or", never "and ... require it".
+        self.rules, self.classic = None, "forbidden"
+        out = self.step(pat_loop(merge_check="on"))
+        self.assertIn("   not known to be required: main requires it nowhere setup could read; "
+                      "the check is posted, but the merge button ignores it unless rulesets or "
+                      "classic branch protection, neither of which could be read, requires it. "
+                      "When ready: hermes dk protect --loop w --admin-token admin\n", out)
+        self.assertNotIn(" and classic", out)
+        self.assertNotIn("not required:", out)
+        self.assertEqual(self.writes(), [])
 
     def test_protect_or_yes_writes_the_ruleset_and_warns_about_approvals(self):
         self.rules = requires(approvals=2)
