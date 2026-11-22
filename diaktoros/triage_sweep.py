@@ -20,7 +20,9 @@ newest first and bounded (``gh.MAX_ISSUE_PAGES`` pages of 100, pull requests inc
 until a page reaches issues older than ``HORIZON_S``, so a window of more than 500 items is still
 read whole (#1147); only past the page bound (or when the page past it cannot be read, #1727) does
 the sweep work on the newest issues it read and return an alert line saying the older ones were not
-checked, with the listing's reason (#1037).
+checked, with the listing's reason (#1037). A listing the watchdog's budget cuts (``gh_paging``)
+reads on from the page it stopped at in the next sweep (``RESUME_FILE``), then starts over from
+page 1, so a page the budget never reaches from page 1 is still read (review on #2578).
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ from .run_supervisor import issue_inputs
 from .util import epoch, log
 
 GRACE_S = 300.0
+RESUME_FILE = "triage-sweep-resume.json"    # where a budget-cut listing stopped (#2578)
 HORIZON_S = 3 * 86400.0
 PER_SWEEP = 10
 
@@ -80,23 +83,38 @@ def resolve_late(loop: dict, st) -> bool:
     return False
 
 
+def resume_page(st) -> int:
+    """The page a budget-cut listing stopped at, or 1 (nothing kept, or not a page number)."""
+    kept = st.kv_get(st.dir / RESUME_FILE, {})
+    page = kept.get("next") if isinstance(kept, dict) else None
+    ok = isinstance(page, int) and not isinstance(page, bool) and 1 < page <= gh.MAX_ISSUE_PAGES + 1
+    return page if ok else 1
+
+
 def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     """Queue the triage turn of each issue whose delivery was missed; return the alert lines."""
     ledger_down = resolve_late(loop, st)
     if not config.triage_enabled(loop):
         return []
     now = time.time() if now is None else now
+    start, progress = resume_page(st), {}
     issues, error = gh.open_issues_read(
-        loop, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - HORIZON_S)))
+        loop, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - HORIZON_S)), start, progress)
     if issues is None:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
+    # A listing the budget cut resumes where it stopped next sweep, so a page the budget never
+    # reaches from page 1 is still read (review on #2578); a whole one starts over from page 1.
+    st.kv_set(st.dir / RESUME_FILE, {"next": progress["next"]} if "next" in progress else {})
     lines: list[str] = []
     if error:                             # not proven whole: the newest were read, older not
         log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
-        lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only the newest "
-                     f"{len(issues)} open issues/PRs ({gh.one_line(error)}); older issues "
-                     "inside the sweep window were not checked")
+        which = (f"the newest {len(issues)}" if start == 1 else
+                 f"{len(issues)} (from page {start}, the newer ones last sweep)")
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only {which} "
+                     f"open issues/PRs ({gh.one_line(error)}); older issues inside the sweep "
+                     "window were not checked" + (", the next sweep reads on from there"
+                                                  if "next" in progress else ""))
     if ledger_down:                       # the cleanup just logged why: one line per cause
         return lines
     try:
