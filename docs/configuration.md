@@ -182,6 +182,7 @@ The last command removes the reviewer's stored cap. Adjudicator overrides are fi
 | `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. A positive number up to 8760 (one year); a string that spells one (`"6"`) reads as its number; `null` or the empty string `""` means the default; anything else (other text, a bool, zero, a negative, a non-finite number, more than 8760) is refused when the loop file loads. |
 | `ttl_min` | `45` | Seat-claim backstop in minutes, raised to the seat's whole worst-case turn. The watchdog's dead-claim threshold is twice that effective TTL. A whole number of minutes from 1 to 525600 (one year; a numeric string such as `"40"` reads as its number); missing, `null`, or empty means the default; anything else (other text, a fraction, a bool, zero, a negative, more than 525600) is refused when the loop file loads. |
 | `inflight_ttl_min` | `10` | Minutes a same-head in-flight mark suppresses duplicate handling. The run ledger provides additional durable deduplication. |
+| `reply_settle_seconds` | `120` | Seconds an issue-fix turn woken by a maintainer's reply (`comment_webhook`'s delivery, the watchdog sweep's reply wake, or an answered ask's resume) waits before it may start (#2248). A maintainer who comments "Fixed on main" and closes the issue a few seconds later then costs no turn: when the run falls due, its pre-launch read finds the issue closed and ends it `cancelled` before any model runs, with one log line and no observer notice. A fix turn queued any other way (a fix label, a released hold) starts at once. A whole number 0-3600; `0` starts a reply's turn at once (the behavior before #2248); missing, `null`, or empty means the default; anything else (other text, a fraction, a bool, a negative, more than 3600) is refused when the loop file loads. Set with `init`/`setup`/`set --reply-settle-seconds N`, the settings form, or the loop file; `show` lists it. A worker waits up to about two and a half minutes for the window to end; a longer window is started by the next armed watchdog sweep. |
 
 Use positive JSON integers for minute/hour timers. `grace_min`, `ttl_min`, `marker_grace_min` and `cooldown_h` are checked when the loop file loads (rows above); `inflight_ttl_min` is not type/range-checked there, and its readers fall back to the default on a value they cannot read. A malformed hand edit of an unchecked timer may survive load; zero can trigger fallback behavior in some consumers. This is not a supported way to disable a timer.
 
@@ -345,7 +346,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `handoff` | Fixer pushed and requested review. |
 | `verdict` | Changes requested: fixer queued or held for the operator under push-off policy. |
 | `approved` | Reviewer approved. |
-| `escalation` | Durable cap-breach marker written; next is adjudication or the operator. |
+| `escalation` | Durable breach marker written (the spent cap, or an escalation for a ruling before it); next is adjudication or the operator. |
 | `ruling` | Isolated adjudicator recorded a ruling; the reason also reaches the operator outbox. |
 | `stall` | Watchdog reports a quiet/stuck head. |
 | `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
@@ -590,6 +591,7 @@ The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plu
 | `base` | `main` | `base` |
 | `grace_min`, `ttl_min`, `inflight_ttl_min` | `35`, `45`, `10` | Same loop timer keys. |
 | `turn_budget_s` | `900` | Loop budget; explicit seat budgets still win. |
+| `reply_settle_seconds` | `120` | `reply_settle_seconds`; `0` starts a reply-woken fix turn at once. |
 | `host` | Blank | Gateway origin; blank preserves an existing explicit host. |
 | `reviewer_profile`, `fixer_profile` | Blank | Working-seat profiles; agent display name follows only when no explicit name exists. |
 | `reviewer_login` | Blank | `seats.reviewer.login` and `reviewer_seat` together. |

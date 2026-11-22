@@ -75,6 +75,7 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "marker_grace_min": args.marker_grace_min, "ttl_min": args.ttl_min,
               "inflight_ttl_min": args.inflight_ttl_min, "host": host,
               "turn_budget_s": getattr(args, "turn_budget", None),
+              "reply_settle_seconds": getattr(args, "reply_settle_seconds", None),
               "attribution": cli_common._attribution_arg(args, None),
               **{key: cli_common._on_off(args, key, None) for key in config.flags.SWITCHES}}
     if (wanted["review_only_update"] and not loop.get("review_only_update")

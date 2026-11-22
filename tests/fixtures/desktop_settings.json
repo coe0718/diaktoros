@@ -69,6 +69,12 @@
         "default": 900,
         "description": "Wall-clock seconds one isolated seat turn may run: Hermes's --run-budget, and the sandbox is killed shortly after. A real review builds and tests, so keep it generous (60-14400)"
       },
+      "reply_settle_seconds": {
+        "label": "Reply settle (seconds)",
+        "type": "int",
+        "default": 120,
+        "description": "Seconds a fix turn woken by a maintainer's reply waits before it starts, so a close right after the reply costs no turn (0-3600; 0 = start at once)"
+      },
       "host": {
         "label": "Webhook host",
         "type": "str",
@@ -454,6 +460,7 @@
       "ttl_min": 45,
       "inflight_ttl_min": 10,
       "turn_budget_s": 900,
+      "reply_settle_seconds": 120,
       "host": "",
       "reviewer_profile": "review",
       "fixer_profile": "",
@@ -529,6 +536,7 @@
       "ttl_min": "default",
       "inflight_ttl_min": "default",
       "turn_budget_s": "default",
+      "reply_settle_seconds": "default",
       "host": "default",
       "reviewer_profile": "set",
       "fixer_profile": "default",

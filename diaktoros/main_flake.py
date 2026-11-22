@@ -75,7 +75,9 @@ def timeouts(log: str) -> bool:
 
 def _failed_job(loop: dict, view: ci.CIState, name: str, head: str, runs: dict):
     """``(run id, conclusion, log)`` of a failed check that is an Actions job of this repository at
-    ``head``; None when it is not one, or anything is unreadable."""
+    ``head``; None when it is not one, or anything is unreadable. A log over ``LOG_LIMIT`` is
+    unreadable too: ``gh.read_text`` keeps only its tail, and a failure cut off above the tail
+    must not let the rest pass for a flake (#2285). One byte past the limit is read to tell."""
     job_id = view.ids.get(name)
     if type(job_id) is not int:
         return None
@@ -83,8 +85,10 @@ def _failed_job(loop: dict, view: ci.CIState, name: str, head: str, runs: dict):
     if job is None:
         return None
     log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
-                       login=loop.get("read_token"), limit=ci_tests.LOG_LIMIT)
-    return (job["run_id"], job.get("conclusion"), log) if log else None
+                       login=loop.get("read_token"), limit=ci_tests.LOG_LIMIT + 1)
+    if not log or len(log.encode()) > ci_tests.LOG_LIMIT:
+        return None                               # no log, or only its tail (#2285)
+    return job["run_id"], job.get("conclusion"), log
 
 
 def flake(loop: dict, view: ci.CIState, head: str) -> dict | None:
@@ -120,10 +124,7 @@ def decide(loop: dict, memory: dict, view: ci.CIState, head: str, now: float | N
     now = time.time() if now is None else now
     tried = memory.get("rerun")
     if isinstance(tried, dict) and tried.get("head") == head:
-        failed_ids = {view.ids.get(name) for name in view.failed}
-        if failed_ids <= set(tried.get("ids") or ()) and now - (tried.get("at") or 0) < RERUN_WAIT_S:
-            return Decision("wait")                   # still the jobs that were rerun
-        return Decision("notice", " A rerun of the failed jobs was tried, and it failed again.")
+        return _after_rerun(tried, view, now)
     who = rerun_login(loop)
     if not who:
         return Decision("notice", " (main_flake_rerun is on, but the loop holds no maintainer "
@@ -138,7 +139,50 @@ def decide(loop: dict, memory: dict, view: ci.CIState, head: str, now: float | N
             return Decision("notice", f" It looked like a flake ({found['why']}), but the rerun "
                                       f"of run {run_id} failed: {gh.last_error()[:120]}.")
     ids = sorted(i for i in (view.ids.get(name) for name in view.failed) if type(i) is int)
-    return Decision("rerun", record={**found, "head": head, "ids": ids, "at": now, "by": who})
+    return Decision("rerun", record={**found, "head": head, "ids": ids, "checks": list(view.failed),
+                                     "at": now, "by": who})
+
+
+def _after_rerun(tried: dict, view: ci.CIState, now: float) -> Decision:
+    """A red read of a head whose failed jobs were rerun: ``wait`` while only the jobs that were
+    rerun show red, inside RERUN_WAIT_S; else a notice whose note says what this red is (#2284).
+    "Failed again" only when a check the rerun covered shows red under a new check-run id; a red
+    from a check it never covered (one still pending when it was decided), an id that cannot be
+    read, or a rerun that never showed is said as that, not as the rerun failing; after the wait,
+    a rerun that showed in part (a covered check under a new id, perhaps still running) is said
+    as that, not as one that never showed (#2554)."""
+    old = set(tried.get("ids") or ())
+    covered = tried.get("checks")              # None: a record from before #2284 names no checks
+    again, other, unread = [], [], []
+    for name in view.failed:
+        check_id = view.ids.get(name)
+        if type(check_id) is not int:
+            unread.append(name)
+        elif check_id not in old:
+            (again if covered is None or name in covered else other).append(name)
+    tried_ = " A rerun of the failed jobs was tried"
+    if again:
+        return Decision("notice", f"{tried_}, and it failed again.")
+    if other:
+        return Decision("notice", f"{tried_}; this red is from {ci._names(other)}, which it "
+                                  "did not rerun.")
+    if unread:
+        return Decision("notice", f"{tried_}; whether it failed again could not be read (no "
+                                  f"check-run id for {ci._names(unread)}).")
+    if now - (tried.get("at") or 0) < RERUN_WAIT_S:
+        return Decision("wait")                   # still the jobs that were rerun
+    hours = RERUN_WAIT_S // 3600
+    # A covered check under a new id is the rerun showing (#2554): part of it is there, so it is
+    # not said to have never shown; one still pending is said to be in progress.
+    shown = [name for name in covered or () if type(view.ids.get(name)) is int
+             and view.ids[name] not in old]
+    if shown:
+        running = [name for name in shown if name in view.pending]
+        progress = f" (still in progress: {ci._names(running)})" if running else ""
+        return Decision("notice", f"{tried_}; after {hours} hours part of it had shown at this "
+                                  f"head{progress}, but {ci._names(view.failed)} still showed "
+                                  "its red from before the rerun.")
+    return Decision("notice", f"{tried_}, but it had not shown at this head after {hours} hours.")
 
 
 def flaked_outcome(tried: dict) -> str:

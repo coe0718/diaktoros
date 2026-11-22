@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_history as th  # noqa: E402
-from diaktoros import cli, gh, history_batch  # noqa: E402
+from diaktoros import cli, config, gh, history_batch  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 
 SINCE = "2026-09-21"                               # th.T is 2026-09-21 14:13 UTC
@@ -35,10 +35,10 @@ class Batch(fg.Base):
         self.sup = th.run_supervisor.Supervisor(self.db)
         self.reads, self.out = [], self.root / "cycles"
 
-    def other_pr(self, number, at):
-        delivery = f"reviewer:{number}:{at}"
+    def other_pr(self, number, at, seat="reviewer", head=th.A):
+        delivery = f"{seat}:{number}:{at}"
         with mock.patch.object(self.sup, "_spawn"):
-            self.sup.submit(delivery, fg.REPO, number, th.A, "reviewer")
+            self.sup.submit(delivery, fg.REPO, number, head, seat)
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='succeeded', created=?, launch_intent=?, "
                         "finished=? WHERE delivery=?", (at, at, at + 60, delivery))
@@ -106,6 +106,26 @@ class Batch(fg.Base):
         self.assertFalse(self.out.exists())
         self.assertEqual(history_batch.prs_since(self.root / "absent.sqlite", fg.REPO, 0),
                          ([], "no run ledger"))
+
+    def test_issue_seat_turns_are_not_exported_as_prs(self):
+        """#2179: triage and issue_fixer rows carry an issue number in ``pr``; none is a PR."""
+        self.cycle()
+        self.other_pr(9, th.T + 900, "triage", config.TRIAGE_HEAD)
+        self.other_pr(10, th.T + 950, "issue_fixer", config.TRIAGE_HEAD)
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out), "--offline")
+        self.assertEqual(rc, 0, out)
+        self.assertNotRegex(out, r"#(9|10)\b")
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["pr-7.txt"])
+        self.assertEqual(self.run_cli("--since", SINCE, "--out", str(self.out))[0], 0)
+        self.assertEqual([p for p in self.reads if p.endswith(("/9", "/10"))], [])
+
+    def test_an_unreadable_ledger_is_not_an_empty_window(self):
+        """#2181: a corrupt ledger, or a directory at its path, is an unknown window: exit 2."""
+        for make in (lambda: self.db.write_bytes(b"not a database" * 100), self.db.mkdir):
+            self.db.unlink(missing_ok=True)
+            make()
+            rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
+            self.assertEqual((rc, "window is unknown" in out, "no merged PR" in out), (2, True, False))
 
     def test_a_bad_flag_set_exits_2(self):
         for argv in ((), ("--pr", "7", "--since", "7d", "--out", "x"), ("--since", "7d"),

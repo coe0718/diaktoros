@@ -54,7 +54,7 @@
     "diaktoros/retry_action.py::perform": 87,
     "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 112,
     "diaktoros/run_supervisor/intake.py::RunIntake.retry": 112,
-    "diaktoros/run_supervisor/intake.py::RunIntake.submit": 91,
+    "diaktoros/run_supervisor/intake.py::RunIntake.submit": 90,
     "diaktoros/run_supervisor/notices.py::OperatorNotices.notify": 126,
     "diaktoros/run_supervisor/pr_facts.py::adjudication_state": 81,
     "diaktoros/run_supervisor/pr_facts.py::pr_change": 193,
@@ -77,7 +77,7 @@
     "diaktoros/trusted_turn.py::run_turn": 252,
     "diaktoros/watch_health.py::read_health": 93,
     "diaktoros/watch_stacked.py::reconcile_stacked": 106,
-    "scripts/gate_fixer.py::main": 300,
+    "scripts/gate_fixer.py::main": 298,
     "scripts/gate_reviewer.py::decide": 217
   }
 }

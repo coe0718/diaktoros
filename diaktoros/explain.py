@@ -74,6 +74,8 @@ _BELOW_CAP_HOLD = {
     "dispute": ("the fixer's dispute holds this head below the cap: the fixer gate starts no fix "
                 "turn, and the reviewer gate reviews it again only if a maintainer re-requests "
                 "the disputed review"),
+    gate.CYCLE_ESCALATION: ("nothing else fires for this PR (a blocking finding asks for the PR's "
+                            "own work, #754: that escalation stops both gates below the cap)"),
 }
 
 
@@ -586,10 +588,12 @@ def _local_state(c) -> None:
         # #905: the adjudicator approved on its ACCEPT, so no person is waited for either.
         c.parked, c.ruled = False, None
     # #1004 part 3 (#1353): an upheld shadow review the fixer answers waits on no person; the
-    # shadow hold says the fixer answers it, and the next event is the fixer's.
+    # shadow hold says the fixer answers it, and the next event is the fixer's (until its turn
+    # ended unanswered: then the hold says the decision is yours, #2263 review F1).
     c.shadow_fix = gate.shadows.shadow_fix_owed(c.loop, c.marker, c.head)
     # #2262: that fixer turn may have ended with no push, and the sweep re-arms only some.
-    c.shadow_turn = explain_next.shadow_fix_turn(c) if c.shadow_fix else ("", "", "")
+    c.shadow_turn = (gate.shadows.shadow_fix_turn(c.loop, c.number, c.head) if c.shadow_fix
+                     else ("", "", ""))
     if c.shadow_fix:
         c.parked, c.ruled = False, None
 

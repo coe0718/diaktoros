@@ -637,7 +637,7 @@ def group_seat_identity() -> None:
     fingerprint = (loop_bytes("shared"), SUBS.read_text())
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "shared"]))
     check("two seats on one token file → refused", rc, 2)
-    check("  and it says why", "read the same token file" in out, True)
+    check("  and it says why", "read the same credential file" in out, True)
     check("  nothing was written", (loop_bytes("shared"), SUBS.read_text()), fingerprint)
 
     for kind in ("symlink", "hardlink"):
@@ -652,7 +652,7 @@ def group_seat_identity() -> None:
         fingerprint = (loop_bytes("shared"), SUBS.read_text())
         rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "shared"]))
         check(f"{kind} alias to one credential → refused", rc, 2)
-        check(f"  {kind}: same file identified", "read the same token file" in out, True)
+        check(f"  {kind}: same file identified", "read the same credential file" in out, True)
         check(f"  {kind}: no writes", (loop_bytes("shared"), SUBS.read_text()), fingerprint)
 
     section("seat identity — profile homes must be distinct real directories")

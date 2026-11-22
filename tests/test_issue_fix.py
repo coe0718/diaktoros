@@ -112,6 +112,7 @@ class Gate(Base):
         spec.loader.exec_module(self.module)
         self.live = issue()
         self.enqueued = []
+        self.settles = []           # the settle window each enqueue asked for (#2248)
         self.open_prs = []
         self.posted = []
         self.origin = None          # the PR a seat filed the issue from (#324)
@@ -132,8 +133,8 @@ class Gate(Base):
                 (gate, "context", lambda payload: (self.loop, None)),
                 (gh, "api", api),
                 (gate, "enqueue_isolated",
-                 lambda loop, seat, n, head, turn_key="": self.enqueued.append(
-                     (seat, n, head, turn_key)) or "enqueued")):
+                 lambda loop, seat, n, head, turn_key="", settle=0: self.settles.append(settle)
+                 or self.enqueued.append((seat, n, head, turn_key)) or "enqueued")):
             patch = mock.patch.object(target, name, value)
             patch.start()
             self.addCleanup(patch.stop)
@@ -937,6 +938,26 @@ class BrokerWrite(Base):
         self.assertEqual((result["state"], result["pr_number"]), ("requested", 40))
         audit = (Path(self.loop["state_dir"]) / "broker-audit.jsonl").read_text()
         self.assertIn('"operation": "labels_failed"', audit)
+
+    def test_an_audit_failure_after_the_labels_landed_is_not_audited_as_a_failed_write(self):
+        # #2035: GitHub confirmed the labels; the success audit line can't be written. That is
+        # never recorded as labels_failed, which tells the operator to relabel the PR by hand.
+        self.labeled_issue()
+        real = broker._audit
+
+        def audit(loop, repo, number, head, branch, role, operation, login):
+            if operation == "labels":
+                raise OSError("audit disk full")
+            return real(loop, repo, number, head, branch, role, operation, login)
+        with mock.patch.object(broker, "_audit", side_effect=audit):
+            self.server._dispatch(self.open_pr())
+        paths = [path for path, _ in self.posts()]
+        self.assertEqual(paths, [f"/repos/{REPO}/pulls", f"/repos/{REPO}/issues/40/labels",
+                                 f"/repos/{REPO}/pulls/40/requested_reviewers"])
+        self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "requested")
+        audit_log = (Path(self.loop["state_dir"]) / "broker-audit.jsonl").read_text()
+        self.assertIn('"operation": "open_pr"', audit_log)
+        self.assertNotIn('"operation": "labels_failed"', audit_log)
 
     def test_bad_requests_are_refused_before_the_write_is_spent(self):
         for raw in (self.open_pr(title=""), self.open_pr(title="two\nlines"),

@@ -702,8 +702,8 @@ def _unmapped_fix(loop: dict, role: str, login: str) -> str:
         return credentials.seat_fix(loop, role)
     if role == "read":
         return credentials.reader_fix(loop, login)
-    return (f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` (or --app "
-            f"{login}=APP_ID:/abs/key.pem)")
+    return (f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` "
+            f"(or {credentials.adjudicator_app_alternative(login)})")
 
 
 def check_identities(report: Report, loop: dict) -> bool:
@@ -788,8 +788,9 @@ def check_identities(report: Report, loop: dict) -> bool:
         report.add(step, name, PASS, f"{actual} (id {ident})")
     if len(set(files.values())) != len(files):
         ok = False
-        report.add(step, "github:distinct-files", FAIL, "two identities share one token file",
-                   "give every identity its own PAT file")
+        report.add(step, "github:distinct-files", FAIL,
+                   "two identities share one credential file",
+                   "give every identity its own PAT file or GitHub App key")
     by_id: dict[int, list[str]] = {}
     for role, ident in principals.items():
         by_id.setdefault(ident, []).append(role)

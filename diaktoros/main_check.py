@@ -1,13 +1,15 @@
 """Verify main after merges: one notice when a required check is red on main's head.
 
 Two PRs can each be green and approved, yet main is red once both are merged. The watchdog reads
-main's checks at its current head (no model, no GitHub write). A required check red there is one
-``main_red`` observer notice per head, naming the check and the PRs merged since main's last
-green head (read from commit subjects, which the notice says: ``pr_refs``, #1699). A green main
-sends nothing and becomes the new last green head.
+main's checks at its current head (no model; no GitHub write but the flake reruns below). A
+required check red there is one ``main_red`` observer notice per head, naming the check and the
+PRs merged since main's last green head (read from commit subjects, which the notice says:
+``pr_refs``, #1699). A green main sends nothing and becomes the new last green head.
 
 With ``main_flake_rerun`` on, a red that looks like a flake has its failed jobs rerun once first,
-as a maintainer, and the notice waits for that rerun (``main_flake``, #1784): the one write here.
+as a maintainer, and the notice waits for that rerun (``main_flake``, #1784). Those reruns are the
+only writes here: one ``rerun-failed-jobs`` POST per distinct failed workflow run, so a sweep sends
+none (green, unreadable, no flake, or a rerun already tried at this head), one or several (#2537).
 
 GitHub's "Require branches to be up to date before merging" branch protection prevents this class
 of breakage; the notice says so.
@@ -129,8 +131,9 @@ def _green(loop: dict, st, path, memory: dict, head: str) -> None:
 
 
 def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
-    """One watchdog pass over main (no model; one GitHub write, the flake rerun, when
-    ``main_flake_rerun`` is on: #2283). True when a notice was sent now."""
+    """One watchdog pass over main (no model; with ``main_flake_rerun`` on, its only GitHub
+    writes are the flake rerun's POSTs, one per distinct failed workflow run and none when there
+    is no rerun: #2283, #2537). True when a notice was sent now."""
     from . import observer
     ref = gh.api(loop, f"/repos/{loop['repo']}/commits/{loop['base']}",
                  login=loop.get("read_token"))

@@ -165,14 +165,15 @@ class Ledger(unittest.TestCase):
         data = stats.report(loop, self.db, since, NOW, breaches=breaches)
         self.assertEqual(data["escalations"], {"total": 7, "ruled": 1, "awaiting": 6,
                                                "by": {"cap": 4, "dispute": 0, "shadow": 0,
-                                                      "operator": 1, "unknown": 2}})
+                                                      "cycle": 0, "operator": 1,
+                                                      "unknown": 2}})
         self.assertEqual(data["escalations_before"]["total"], 2)    # PR 11's turn, PR 13's marker
         later = stats.escalations(self.db, REPO, NOW, NOW + DAY, breaches)
         self.assertEqual(later["total"], 2)                         # PR 15's turn, PR 17's marker
         self.assertEqual(data["reviews"]["rulings"], {"fixer-wins": 1})
         out = stats.report_text(data)
         self.assertIn("escalations: 7 (+5 vs previous) · ruled 1, awaiting 6 · by cap 4, "
-                      "by dispute 0, by shadow 0, by operator 1, unknown 2", out)
+                      "by dispute 0, by shadow 0, by cycle 0, by operator 1, unknown 2", out)
         self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 7)
 
     def test_escalations_name_who_asked(self):
@@ -194,9 +195,23 @@ class Ledger(unittest.TestCase):
                            "escalated": {"by": "shadow", "reason": "x"}}}
         data = stats.report(loop, self.db, since, NOW, breaches=breaches)
         self.assertEqual(data["escalations"]["by"], {"cap": 0, "dispute": 1, "shadow": 2,
-                                                     "operator": 2, "unknown": 0})
+                                                     "cycle": 0, "operator": 2, "unknown": 0})
         self.assertEqual(data["escalations"]["total"], 5)
-        self.assertIn("by cap 0, by dispute 1, by shadow 2, by operator 2, unknown 0",
+        self.assertIn("by cap 0, by dispute 1, by shadow 2, by cycle 0, by operator 2, unknown 0",
+                      stats.report_text(data))
+
+    def test_cycle_escalation_is_its_own_kind(self):
+        """#2546, #2547: the gate's #754 ``cycle`` marker is counted as the cycle's, not the
+        operator's: nobody asked for that ruling."""
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        head = "e" * 40
+        self.escalate(31, head, 2, NOW - 100)
+        breaches = {f"{REPO}#31": {"head": head, "rounds": 2,
+                                   "escalated": {"by": "cycle", "reason": "x"}}}
+        data = stats.report(loop, self.db, since, NOW, breaches=breaches)
+        self.assertEqual(data["escalations"]["by"], {"cap": 0, "dispute": 0, "shadow": 0,
+                                                     "cycle": 1, "operator": 0, "unknown": 0})
+        self.assertIn("by cap 0, by dispute 0, by shadow 0, by cycle 1, by operator 0, unknown 0",
                       stats.report_text(data))
 
     def turn(self, pr, seat, created, launched=True, repo=REPO):
@@ -849,6 +864,18 @@ class Cli(unittest.TestCase):
         self.assertIn("--since", out)
         rc, out = self.cli("stats", "--loop", "nope")
         self.assertEqual(rc, 2)
+
+
+class Docs(unittest.TestCase):
+    def test_report_docs_name_every_escalation_kind(self):
+        """#2547: ``docs/commands.md`` lists every bucket the report's escalations line prints,
+        and says what each ``escalated.by`` means."""
+        doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "commands.md").read_text()
+        text = " ".join(doc.split())
+        for kind in ("cap", *stats.ESCALATION_KINDS):
+            self.assertTrue(f"`by {kind}`" in text, f"docs/commands.md never lists `by {kind}`")
+        for kind in stats.ESCALATION_KINDS:
+            self.assertTrue(f"(`{kind}`" in text, f"docs/commands.md never says what {kind} is")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,11 @@ from .. import run_supervisor
 TRIAGE_TITLE_MAX = 256
 
 
+# Why an issue fix's issue no longer qualifies once it is closed: matched exactly, so a turn it
+# ends is logged, never noticed (``fix_settle``, #2248).
+ISSUE_CLOSED = 'no longer eligible: the issue is no longer open'
+
+
 TRIAGE_BODY_MAX = 8000
 
 
@@ -85,8 +90,11 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
         raise run_supervisor.RetryableError('issue unreadable (GitHub read failed)')
     if 'pull_request' in issue:
         raise ValueError('not an issue (a pull request)')
-    if issue.get('state') != 'open':
-        raise run_supervisor.IssueIneligible('no longer eligible: the issue is no longer open')
+    if issue.get('state') not in ('open', 'closed'):
+        # Only GitHub's own word closes it (#2559 review): an unreadable state is a failed read.
+        raise run_supervisor.RetryableError('issue state unreadable (GitHub read failed)')
+    if issue.get('state') == 'closed':
+        raise run_supervisor.IssueIneligible(ISSUE_CLOSED)
     author = str((issue.get('user') or {}).get('login') or '').lower()
     if author not in fix_authors(loop):
         raise run_supervisor.IssueIneligible('no longer eligible: the issue author is not in triage.authors')

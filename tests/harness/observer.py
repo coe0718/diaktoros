@@ -108,7 +108,7 @@ def group_observer() -> None:
     check("  event", block["event"], "escalation")
     check("  the spent budget, and who owns it now",
           block["message"].splitlines()[0],
-          f"⚠️ [widgets] #7 `{HEAD_A[:7]}` loop stopped — cap spent — 3/3 verdicts, "
+          f"⚠️ [widgets] #7 `{HEAD_A[:7]}` loop stopped — a ruling is needed — 3/3 verdicts, "
           f"no approval · next: adjudicator delivery pending")
     run("gate_fixer.py", review_payload(rid=10))
     check("  a redelivered cap event pings nobody twice",
@@ -362,6 +362,8 @@ def group_observer_safety() -> None:
     check("pending marker informs observer first", len(observer_posts()), 1)
     check("pending notice never claims adjudicator received it",
           "delivery pending" in notice(observer_posts()[0])["message"], True)
+    check("pending notice never says the PR was sent for a ruling (#2558 review)",
+          "sent for" in notice(observer_posts()[0])["message"], False)
     with mock_patch.object(gate.gh, "pr", return_value=pr(7)), \
          mock_patch.object(gate, "wake_adjudicator", return_value=True):
         gate.breach(loop, st, 7, HEAD_A, 3, "cap")

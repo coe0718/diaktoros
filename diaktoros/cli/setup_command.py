@@ -271,7 +271,7 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
         argv.append("--acknowledge-branch-push")
     argv += _given(args, seat_flags.forwarded())
     argv += _given(args, ("fix_daily_turns", "review_only_cap", "review_only_daily", "ci_fix_cap",
-                          "change_proof_max", "provider_breaker_failures"))
+                          "change_proof_max", "provider_breaker_failures", "reply_settle_seconds"))
     return argv
 
 def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:

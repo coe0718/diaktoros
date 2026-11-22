@@ -80,17 +80,17 @@ def verify_token_settings(settings: dict | None, *, loop: dict | None = None) ->
 
 
 def _shared_token_file(first, second) -> str:
-    """How two token-file references may be one file, or ``""`` when they are provably two.
-    Metadata only; the PAT is never read. A file that cannot be compared (missing, unstatable)
+    """How two credential-file references (a PAT file or an App key, #2243) may be one file, or
+    ``""`` when they are provably two. Metadata only; the credential is never read. A file that cannot be compared (missing, unstatable)
     is never taken as distinct: a missing one used to read as "not the same file" (#1475)."""
     mine, theirs = config.expand_path(first), config.expand_path(second)
-    same = "read the same token file — one account wearing two hats"
+    same = "read the same credential file — one account wearing two hats"
     if os.path.realpath(mine) == os.path.realpath(theirs):
         return same
     try:
         return same if mine.samefile(theirs) else ""
     except OSError as exc:
-        return f"cannot be told apart by token file ({exc.strerror or exc})"
+        return f"cannot be told apart by credential file ({exc.strerror or exc})"
 
 
 def case_clash(loop: dict) -> str:
@@ -160,9 +160,24 @@ def reader_app_alternative(login: str = "") -> str:
     that reader to an App means naming the App's bot login as the reader too, so the alternative
     changes ``--read-token`` as well.
     """
-    if not login or login == "LOGIN" or config.APP_LOGIN.match(login.lower()):
-        return f"--app {login or '<that login>'}=APP_ID:/abs/key.pem for a GitHub App reader"
-    return ("for a GitHub App reader, name its bot login instead: --read-token <app-slug>[bot] "
+    return app_alternative(login, "reader", "--read-token", placeholder=True)
+
+
+def adjudicator_app_alternative(login: str) -> str:
+    """The GitHub App half of an adjudicator fix for ``login`` (#2454): as for the reader, a
+    login that is not a bot moves to an App by naming the bot as ``--adjudicator-login`` too."""
+    return app_alternative(login, "adjudicator", "--adjudicator-login")
+
+
+def app_alternative(login: str, role: str, flag: str, *, placeholder: bool = False) -> str:
+    """``--app`` for ``login`` when ``set --app`` would take it (a bot login, or with
+    ``placeholder`` an empty or ``LOGIN`` stand-in), else the form that renames ``role`` (through
+    ``flag``) to the App's bot login (#1912). Only the reader's advice uses the stand-in: an
+    adjudicator's login is always a real configured one, even one spelled ``LOGIN`` (#2560
+    review F2)."""
+    if (placeholder and login in ("", "LOGIN")) or config.APP_LOGIN.match(login.lower()):
+        return f"--app {login or '<that login>'}=APP_ID:/abs/key.pem for a GitHub App {role}"
+    return (f"for a GitHub App {role}, name its bot login instead: {flag} <app-slug>[bot] "
             f"--app <app-slug>[bot]=APP_ID:/abs/key.pem — {login!r} is not an App's bot login")
 
 
@@ -252,15 +267,15 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
 
 
 def _distinct_seat_files(where: str, reviewer_file, fixer_file) -> None:
-    """Refuse a reviewer and a fixer reading one token file. A file that cannot be compared now
+    """Refuse a reviewer and a fixer reading one credential file (a PAT or an App key). A file that cannot be compared now
     (gone since it was checked, or unstatable) is refused too, never taken as distinct (#1475)."""
     try:
         same_file = config.expand_path(reviewer_file).samefile(config.expand_path(fixer_file))
     except OSError as exc:
-        raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
+        raise config.ConfigError(f"{where}: cannot verify reviewer/fixer credential file identity: "
                                  f"{exc}") from exc
     if same_file:
-        raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
+        raise config.ConfigError(f"{where}: the reviewer and the fixer read the same credential file "
                                  "— each seat needs its own credential")
 
 

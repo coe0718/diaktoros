@@ -80,13 +80,28 @@ def _app_unreachable(name: str, login: str, read: str, response: gh.Response,
     return None
 
 
+def _signer_timed_out(name: str, login: str, exc: Exception, *, app_read: bool) -> doctor.Check:
+    """A signer that did not finish is no answer about the key (#2109): UNKNOWN, as a read with
+    no HTTP answer is. ``app_read``: ``GET /app`` already signed and matched, so only the
+    installation read is unknown (#2560 review F1)."""
+    what = ("GET /app signed with the key and matched, but the installation read's signer did "
+            "not finish in time (a busy or stalled host), so the installation was not read"
+            if app_read else "the signer did not finish in time (a busy or stalled host), so the "
+            "key was never judged and the live check did not finish")
+    return doctor.Check(name, doctor.UNKNOWN, f"{login}: {exc} — {what}",
+                        "run doctor again when the host is less loaded; if it keeps timing out, "
+                        "check the host's signer (`cryptography` in the Hermes runtime venv, or "
+                        "`openssl`); the key file is not implicated")
+
+
 def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     """Whether a GitHub App identity works against GitHub (#1181): its key signs as *that* App
     (``GET /app``: the id and the bot login match) and the App is installed on this repository
     (``GET /repos/<repo>/installation``). Both are reads made with the App's own JWT; no token is
     minted and nothing is written. A read with no HTTP answer (the network, not the key) is
     UNKNOWN, as for a PAT, and so is a 2xx whose body could not be read (a proxy or a captive
-    portal, #1923); only an error answer from GitHub, or a key that cannot sign, is a MISMATCH."""
+    portal, #1923), and so is a signer that timed out (#2109); only an error answer from GitHub,
+    or a key that cannot sign, is a MISMATCH."""
     from .. import github_app
     name = f"app-live:{login}"
     if offline:
@@ -94,11 +109,15 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     entry = github_app.entry(loop, login) or {}
     try:
         app = github_app._as_app(loop, login, "/app")
-        where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
+    except github_app.SignTimeout as exc:
+        return _signer_timed_out(name, login, exc, app_read=False)
     except github_app.AppError as exc:
         return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     found = app.data if isinstance(app.data, dict) else {}
-    if not found:
+    # Only an App object (an int id and a slug) says which App the key signs as (#2458): a proxy's
+    # own JSON object answering 200 is the unreadable case, never a key for another App.
+    if type(found.get("id")) is not int or not isinstance(found.get("slug"), str) \
+            or not found.get("slug"):
         silent = _app_unreachable(name, login, "GET /app", app,
                                   "the key and the installation were not read")
         if silent:
@@ -112,6 +131,14 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     if f"{found.get('slug')}[bot]".casefold() != login.casefold():
         return doctor.Check(name, doctor.MISMATCH, f"{login}: App {entry.get('app_id')} is {found.get('slug')}[bot]",
                             f"name the identity {found.get('slug')}[bot]")
+    # Each read signs its own JWT, so the second signer can time out after /app was judged
+    # (#2560 review F1): what /app said stands, and only the installation is unknown.
+    try:
+        where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
+    except github_app.SignTimeout as exc:
+        return _signer_timed_out(name, login, exc, app_read=True)
+    except github_app.AppError as exc:
+        return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     installation = where.data.get("id") if isinstance(where.data, dict) else None
     if type(installation) is not int:
         silent = _app_unreachable(name, login, f"GET /repos/{loop['repo']}/installation", where,
@@ -172,7 +199,8 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
 
     Without one, rulings go to the operator feed and the host ledger only — that is a valid
     configuration, not a failure, so nothing is reported. With one, it must be a fourth account:
-    its own login and its own token file, never the reader's or a seat's. (Distinct *principals*
+    its own login and its own credential file (a PAT file or a GitHub App key), never the
+    reader's or a seat's. (Distinct *principals*
     need a network read; the broker verifies those before every comment: ``/user`` for a PAT,
     ``/app`` and ``/users/<slug>[bot]`` for a GitHub App.)
     """
@@ -201,7 +229,8 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
         file_kind = "GitHub App key"
     if path is None:
         return doctor.Check("credential:adjudicator", doctor.ABSENT, f"no tokens or apps entry for {login!r}",
-                            f"add --token {login}=/path/to/pat (or --app {login}=APP_ID:/abs/key.pem), or "
+                            f"add --token {login}=/path/to/pat (or "
+                            f"{credentials.adjudicator_app_alternative(login)}), or "
                             "remove seats.adjudicator.login for operator-only rulings")
     if not path.is_file() or path.stat().st_size == 0:
         return doctor.Check("credential:adjudicator", doctor.ABSENT,
