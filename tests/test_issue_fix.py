@@ -112,6 +112,7 @@ class Gate(Base):
         spec.loader.exec_module(self.module)
         self.live = issue()
         self.enqueued = []
+        self.settles = []           # the settle window each enqueue asked for (#2248)
         self.open_prs = []
         self.posted = []
         self.origin = None          # the PR a seat filed the issue from (#324)
@@ -132,8 +133,8 @@ class Gate(Base):
                 (gate, "context", lambda payload: (self.loop, None)),
                 (gh, "api", api),
                 (gate, "enqueue_isolated",
-                 lambda loop, seat, n, head, turn_key="": self.enqueued.append(
-                     (seat, n, head, turn_key)) or "enqueued")):
+                 lambda loop, seat, n, head, turn_key="", settle=0: self.settles.append(settle)
+                 or self.enqueued.append((seat, n, head, turn_key)) or "enqueued")):
             patch = mock.patch.object(target, name, value)
             patch.start()
             self.addCleanup(patch.stop)

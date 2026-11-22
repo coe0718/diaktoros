@@ -280,6 +280,7 @@ DEFAULTS: dict = {
     "change_proof_max": None, # changed tests it runs per head; None = 20
     # provider-killed turns in a row that hold the account; None = 3, 0 = off (#1155)
     "provider_breaker_failures": None,
+    "reply_settle_seconds": 120,  # a reply-woken fix waits this long; 0 = at once (#2248)
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
