@@ -30,7 +30,7 @@ _TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}" + re.escape(TEMP_SUFFIX) + "$")
 # The flock files the plugin's writers keep in a state directory, each registered by its writer
 # through ``register_lock``. ``backup`` leaves out exactly these; tests/test_backup.py scans the
 # package and ``scripts/`` for lock names that are neither registered here nor listed as living
-# elsewhere, and for modules that build a lock name at runtime, each of which it lists by hand.
+# elsewhere, and for places that build a lock name at runtime, each of which it lists by hand.
 LOCK_NAMES: set[str] = set()
 
 
