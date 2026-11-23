@@ -579,13 +579,61 @@ class ClaimTimeReads(Base):
         self.assertEqual(row['state'], 'failed')
         self.assertIn(f'retry limit ({MAX_RETRIES} attempts)', row['error'])
 
+    def stamp_wait(self, began):
+        """The row's limit wait began at ``began`` (its reason as a limited claim read left it)."""
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(began))
+        with ledger.connect(self.db) as con:
+            error = con.execute("SELECT error FROM runs WHERE delivery='review'").fetchone()[0]
+            con.execute("UPDATE runs SET error=? WHERE delivery='review'",
+                        (f"{error.split(run_supervisor.LIMIT_SINCE, 1)[0]}"
+                         f"{run_supervisor.LIMIT_SINCE} {stamp} — PR unreadable",))
+
+    def test_a_bound_inside_the_resets_margin_is_after_the_reset(self):
+        # Review of #2613, F7: the read at the bound comes after GitHub's reset when the bound
+        # falls inside the 30 s margin; only a bound before the reset is said as one.
+        reset = self.spent_limit(reset_in=600)
+        self.assertIsNone(self.claim(None))
+        self.stamp_wait(reset + 10 - run_supervisor.LIMIT_WAIT_MAX)    # bound: 10 s after reset
+        self.elapse()
+        self.s.recover()
+        self.assertIsNone(self.claim(None))
+        row = self.s.get('review')
+        self.assertAlmostEqual(row['retry_at'], reset + 10, delta=1)
+        self.assertNotIn(run_supervisor.LIMIT_BOUND, row['error'])
+        [view] = views.read_only_view(self.db, 'o/r', 1)
+        self.assertIn("after GitHub's rate limit resets", views.describe_run(view, 'widgets'))
+
+    def test_an_ordinary_failure_between_limits_keeps_the_waits_start(self):
+        # Review of #2613, F9: a read that failed with calls left spends an attempt but keeps
+        # when the limit wait began, so the next limit's bound is the first one's.
+        self.spent_limit(reset_in=5 * 3600)
+        self.assertIsNone(self.claim(None))
+        began = time.time() - 3600
+        self.stamp_wait(began)
+        self.spent_limit(remaining='4999')        # the next read fails with calls left
+        self.elapse()
+        self.s.recover()
+        self.assertIsNone(self.claim(None))
+        row = self.s.get('review')
+        self.assertEqual(row['retries'], 1)
+        self.assertNotIn(run_supervisor.LIMIT_WAIT, row['error'])
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(began))
+        self.assertIn(f'{run_supervisor.LIMIT_SINCE} {stamp}', row['error'])
+        self.spent_limit(reset_in=10 * 3600)      # limited again: the first wait's bound holds
+        self.elapse()
+        self.s.recover()
+        self.assertIsNone(self.claim(None))
+        row = self.s.get('review')
+        self.assertEqual(row['retries'], 1)
+        self.assertAlmostEqual(row['retry_at'], began + run_supervisor.LIMIT_WAIT_MAX, delta=2)
+
     def test_a_long_read_error_keeps_the_limit_in_every_bounded_line(self):
         # Review of #2613, F8: the wait line keeps 300 characters of the reason and ready's turn
         # note 90; the limit leads the reason, so a long read error never pushes it out.
         waits.log_path(self.db).write_text('')            # the host made the worker log
         self.spent_limit()
         with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
-             patch('diaktoros.gh.api', side_effect=OSError('connection reset ' * 12)), \
+             patch('diaktoros.gh.api', side_effect=OSError('connection reset ' * 40)), \
              patch('diaktoros.gh.reviews', return_value=[]):
             self.assertIsNone(self.s._claim())
         row = self.s.get('review')
@@ -594,6 +642,7 @@ class ClaimTimeReads(Base):
                   if f"run={row['id']}" in line]
         self.assertIn(run_supervisor.LIMIT_WAIT, line)
         self.assertIn('connection reset', line)
+        self.assertTrue(line.rstrip().endswith(']'), line)     # and the claimant bracket (#2227)
         note = views.turn_note(self.db, 'o/r', 1, HEAD, 'reviewer')
         self.assertTrue(note.startswith("reviewer turn waiting for GitHub's rate limit to reset "
                                         "(no attempt spent, next check "), note)
