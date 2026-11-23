@@ -127,7 +127,7 @@ class RunIntake:
         # Re-delivery of an old row never upgrades its admission.
         from .. import config
         lock = config.push_policy_lock() if self.production_config and seat == 'fixer' else nullcontext()
-        with lock, shadow_owing.claim_lock(self.db, seat), self._connect() as con:
+        with lock, shadow_owing.claim_lock(self.db, seat) as held, self._connect() as con:
             admitted = 0
             if self.production_config and seat == 'fixer':
                 loop = config.by_repo(repo)
@@ -150,7 +150,7 @@ class RunIntake:
                                       (repo, pr, head, turn_key), now, settle)
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
-            with shadow_owing.fails_closed(self, con, prior, shadow):
+            with shadow_owing.fails_closed(self, con, prior, shadow, held):
                 if prior:
                     outcome = self._redeliver(con, prior, outcome, bool(admitted), requested,
                                               settle, shadow, now)

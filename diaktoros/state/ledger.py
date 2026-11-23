@@ -129,7 +129,7 @@ def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
 
 
 @contextlib.contextmanager
-def claim_lock(db) -> Iterator[None]:
+def claim_lock(db) -> Iterator[int]:
     """One at a time across the host's processes, beside the ledger at ``db``: a reviewer's
     receipt claim (``review_receipt.ReceiptLedger.claim``) and a redelivery deciding the shadow
     that reviewer's turn owes (``run_supervisor.shadow_owing.claim_lock``). That redelivery's
@@ -137,10 +137,11 @@ def claim_lock(db) -> Iterator[None]:
     one; between the two, SQLite holds no lock, so a claim there would post a review with no
     shadow (#2634 review F4, round 5). Held across both, this lock keeps the claim out until the
     stop is written. A flock, so a holder that dies frees it; past ``LOCK_WAIT_S`` it raises
-    ``TimeoutError``, before anything is written or posted."""
+    ``TimeoutError``, before anything is written or posted. It yields the lock file, which holds
+    the barrier (``owes``) a stop that could not be written leaves (round 6)."""
     path = Path(db)
     name = CLAIMS_LOCKS.get(path.name) or path.name + ".claims.lock"
-    lock = os.open(path.with_name(name), os.O_RDWR | os.O_CREAT, 0o666)   # never written
+    lock = os.open(path.with_name(name), os.O_RDWR | os.O_CREAT, 0o666)
     try:
         until = time.monotonic() + LOCK_WAIT_S
         while True:
@@ -152,6 +153,39 @@ def claim_lock(db) -> Iterator[None]:
                     raise TimeoutError(f"{path}: its claim lock was held past {LOCK_WAIT_S}s") \
                         from None
                 time.sleep(0.02)
-        yield
+        yield lock
     finally:
         os.close(lock)                    # frees the flock too
+
+
+def _owing(lock: int) -> set[str]:
+    os.lseek(lock, 0, os.SEEK_SET)
+    data = b""
+    while chunk := os.read(lock, 65536):
+        data += chunk
+    return {line.decode(errors="replace") for line in data.split(b"\n")[:-1] if line}
+
+
+def owe(lock: int, run_id: str, owed: bool = True) -> None:
+    """Under ``claim_lock``, record in its file (``owed``) or clear the reviewer run ``run_id``
+    whose owed shadow and stop could not be written (#2634 review F4, round 6): the barrier
+    ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
+    stop. Written before it is cut to length, so a crash between leaves ids, never loses one."""
+    ids = _owing(lock) | {run_id} if owed else _owing(lock) - {run_id}
+    body = "".join(f"{i}\n" for i in sorted(ids)).encode()
+    os.pwrite(lock, body, 0)
+    os.ftruncate(lock, len(body))
+    os.fsync(lock)
+
+
+def owes(lock: int, con, run_id: str) -> bool:
+    """Whether the barrier (``owe``) still holds ``run_id``'s receipt: it does until the shadow
+    row for its turn is in the ledger, and is cleared once it is."""
+    if run_id not in _owing(lock):
+        return False
+    if con.execute("SELECT 1 FROM runs AS r JOIN runs AS s ON s.repo=r.repo AND s.pr=r.pr AND "
+                   "s.head=r.head AND s.turn_key=r.turn_key AND s.seat='shadow' WHERE r.id=?",
+                   (run_id,)).fetchone() is None:
+        return True
+    owe(lock, run_id, False)
+    return False

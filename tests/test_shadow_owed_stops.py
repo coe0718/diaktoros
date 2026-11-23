@@ -5,6 +5,8 @@ F5: an event never turns an operator's stop into one it re-arms, whichever stop 
 F7 (round 5): an operator's stop before the receipt claim posts no review.
 F6: ``hermes dk retry``'s planner (the CLI's and the Desktop's) and ``status``/``explain`` offer
 the stopped turn, which re-arms with its shadow. A lost worker's stop keeps that cause too.
+F4 (round 6): a stop that cannot be written either still refuses the receipt, until the turn's
+shadow row is in.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import attribution, broker, config, gh, retry_action, review_receipt  # noqa: E402
 from diaktoros.run_supervisor import OPERATOR_CANCEL, views, workers  # noqa: E402
-from test_shadow_owed_race import OWED, _Race  # noqa: E402
+from test_shadow_owed_race import OWED, AShadowRowThatCannotBeWritten, _Race  # noqa: E402
 from test_shadow_rearm import HEAD, REVIEWER  # noqa: E402
 
 
@@ -69,6 +71,45 @@ class AnOperatorsStop(_Race):
         self.assertEqual([k for k in sent if k.get("method") == "POST"], [])
         with closing(sqlite3.connect(self.sup().db)) as con:
             self.assertEqual(con.execute("SELECT count(*) FROM review_receipts").fetchone(), (0,))
+
+
+class AStopThatCannotBeWritten(_Race):
+    """Review F4, round 6: the COMMIT fails and so does the stop's UPDATE of the reviewer row,
+    while receipt inserts still work (Vex's probe). The barrier beside the ledger holds."""
+    failing_commit = AShadowRowThatCannotBeWritten.failing_commit
+
+    def claim(self):
+        review_receipt.ReceiptLedger(self.sup().db, self.sup().get(REVIEWER)["id"], "g1").claim(5)
+
+    def test_its_receipt_is_refused_until_the_shadow_row_is_in(self):
+        loop = self.queued_unsampled()
+        with closing(sqlite3.connect(self.sup().db)) as con, con:
+            con.execute("CREATE TRIGGER no_stop BEFORE UPDATE OF cancel_requested ON runs WHEN "
+                        "NEW.cancel_requested IS NOT NULL BEGIN SELECT RAISE(ABORT, 'row'); END")
+        with self.race("running"), self.failing_commit(), \
+                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            self.enqueue(loop)
+        self.assertEqual(self.rows(), [("reviewer", "running")])
+        self.assertIsNone(self.sup().get(REVIEWER)["cancel_requested"])
+        with self.assertRaisesRegex(review_receipt.ReceiptDenied, "owes a shadow"):
+            self.claim()
+        with closing(sqlite3.connect(self.sup().db)) as con:
+            self.assertEqual(con.execute("SELECT count(*) FROM review_receipts").fetchone(), (0,))
+        # Control: the next event writes the shadow row beside it, and then the claim stands.
+        self.assertEqual(self.enqueue(loop), "duplicate running")
+        self.assertEqual(self.rows(), [("reviewer", "running"), ("shadow", "pending")])
+        self.claim()
+
+    def test_a_stop_that_is_written_clears_the_barrier(self):
+        loop = self.queued_unsampled()
+        with self.race("running"), self.failing_commit(), \
+                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            self.enqueue(loop)
+        lock = pathlib.Path(self.sup().db).with_name(pathlib.Path(self.sup().db).name
+                                                     + ".claims.lock")
+        self.assertEqual(lock.read_bytes(), b"")
+        with self.assertRaisesRegex(review_receipt.ReceiptDenied, "asked to stop"):
+            self.claim()
 
 
 class RetriedThroughThePlanner(_Race):

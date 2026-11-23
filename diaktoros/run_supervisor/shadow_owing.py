@@ -89,14 +89,16 @@ def claim_lock(db, seat: str):
 
 
 @contextlib.contextmanager
-def fails_closed(sup, con, prior, shadow):
+def fails_closed(sup, con, prior, shadow, held=None):
     """Around ``submit``'s redelivery and its COMMIT: a failure that ends the transaction itself
     (its COMMIT, or one SQLite rolls back whole) loses the shadow row with it, but not a worker
     already running the turn. So it is stopped in a fresh transaction, then the error is raised
     and the gate holds the event (#2634 review F4). ``submit`` holds the claim lock (``claim_lock``)
     throughout, so the turn's receipt cannot be claimed in between (round 5). Taken before
     anything is written: a row not ended, not asked to stop, with no write-ahead record, owing
-    a shadow."""
+    a shadow. The lock's file (``held``) is marked first (``ledger.owe``) and cleared only once the
+    stop commits, so if the stop cannot be written either the receipt stays refused until the
+    turn's shadow row is in (round 6); if neither can be written, the error says so."""
     owed = (prior is not None and isinstance(shadow, tuple) and prior['state'] in UNENDED
             and prior['cancel_requested'] is None
             and run_supervisor.write_evidence(con, prior['id']) is None)
@@ -107,8 +109,10 @@ def fails_closed(sup, con, prior, shadow):
             raise
         with contextlib.suppress(Exception):
             con.execute("ROLLBACK")
-        # If the ledger takes no write at all, the receipt claim a review needs cannot commit
-        # either; a stop that lands after one did ends the turn ``uncertain`` (reconcile).
+        try:
+            ledger.owe(held, prior['id'])
+        except Exception as barred:
+            exc.add_note(f"its receipt barrier could not be written either: {barred!r}")
         with contextlib.suppress(Exception), sup._connect() as fresh:
             fresh.execute("BEGIN IMMEDIATE")
             row = fresh.execute("SELECT * FROM runs WHERE id=?", (prior['id'],)).fetchone()
@@ -119,4 +123,5 @@ def fails_closed(sup, con, prior, shadow):
                                           row['turn_key'])).fetchone()):
                 stop(fresh, row, '', unwritten(exc), time.time())
             fresh.execute("COMMIT")
+            ledger.owe(held, prior['id'], False)    # the stop stands now and refuses the receipt
         raise
