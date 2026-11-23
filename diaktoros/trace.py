@@ -231,13 +231,18 @@ def fetch_delivery(loop: dict, delivery: str, login: str | None) -> tuple[dict, 
     ours = [hook for hook in hooks
             if routes.route_name_of(str((hook.get("config") or {}).get("url") or "")) in names]
     wanted = delivery.strip()
+    unread: list[str] = []              # #2357: a failed listing is unsearched, not searched
     for hook in ours:
         base = f"/repos/{loop['repo']}/hooks/{hook['id']}/deliveries"
         number = wanted if wanted.isdigit() else None
         if number is None:
             for page in range(1, MAX_DELIVERY_PAGES + 1):
                 listing = gh.api(loop, f"{base}?per_page=100&page={page}", login=login)
-                if not isinstance(listing, list) or not listing:
+                if not isinstance(listing, list):
+                    unread.append(f"hook {hook['id']} page {page}: "
+                                  f"{gh.last_error() or 'no delivery list returned'}")
+                    break
+                if not listing:
                     break
                 match = next((d for d in listing if isinstance(d, dict)
                               and str(d.get("guid") or "") == wanted), None)
@@ -251,6 +256,9 @@ def fetch_delivery(loop: dict, delivery: str, login: str | None) -> tuple[dict, 
         if isinstance(request, dict) and isinstance(request.get("payload"), dict):
             route = routes.route_name_of(str((hook.get("config") or {}).get("url") or ""))
             return request["payload"], str(found.get("event") or ""), route
+    if unread:
+        raise TraceError(f"delivery {wanted!r} not found, but the search is incomplete: the "
+                         f"delivery list could not be read ({'; '.join(unread)})")
     raise TraceError(f"no delivery {wanted!r} on this loop's repo hooks (the last "
                      f"{MAX_DELIVERY_PAGES * 100} per hook were searched)")
 
