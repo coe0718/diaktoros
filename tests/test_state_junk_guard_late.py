@@ -13,6 +13,10 @@ writer that adds one each call (``id_bump``) still lets discovery settle.
 
 Round 12: one writer's count that changes only with another file (``ie_gated``: 2 alone, 3 once
 ``gc_enable`` ran) is kept too, so the reader that opens a file only on 3 (``if_read``) reaches it.
+
+Round 13: a count one writer grows on its own file (``ja_bump``, read as 3 by ``jb_read``) is
+folded, so the walk fails rather than passing a reader it never reached; a tally registered in
+``COUNTERS`` with its reason (``id_bump``'s, in the test that registers it) settles.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -21,11 +25,13 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import state  # noqa: E402
 import _state_walk as walk  # noqa: E402
+import _state_walk_cases as cases  # noqa: E402
 
 PROBES = '''
 import json
@@ -80,6 +86,18 @@ class LateMixin:
         path = self.dir / ("late-" + "opened" + ".json")      # spelled nowhere whole
         return {**json.loads(path.read_text())} if path.exists() else {}
 
+    def ja_bump(self) -> None:                                # adds one each call
+        data = self._load(self.dir / "late-bump.json", {})
+        seen = data.get("count") if isinstance(data, dict) else 0
+        self._save(self.dir / "late-bump.json", {"count": (seen if type(seen) is int else 0) + 1})
+
+    def jb_read(self) -> dict:
+        count = self._load(self.dir / "late-bump.json", {})
+        if not (isinstance(count, dict) and count.get("count") == 3):
+            return {}
+        path = self.dir / ("late-" + "third" + ".json")       # spelled nowhere whole
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
     def hh_grow(self) -> None:                                # never the same twice
         data = self._load(self.dir / "late-grow.json", [])
         self._save(self.dir / "late-grow.json", [*(data if isinstance(data, list) else []), "x"])
@@ -92,15 +110,15 @@ class TheWalkCatchesLateValues(unittest.TestCase):
     def setUpClass(cls):
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         cls.addClassCleanup(temp.cleanup)
-        root = Path(temp.name)
-        source = root / "late_mixin.py"
+        cls.root = Path(temp.name)
+        source = cls.root / "late_mixin.py"
         source.write_text(PROBES)
         spec = importlib.util.spec_from_file_location("late_mixin", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         cls.cls = type("LateLoopState", (module.LateMixin, state.LoopState),
                        {"__module__": module.__name__})
-        cls.walk = walk.Walk(cls.cls, root / "late")
+        cls.walk = walk.Walk(cls.cls, cls.root / "late")
         cls.walk.discover()
 
     def test_a_value_written_after_its_reader_was_traced_is_laid_beside_it(self):
@@ -122,8 +140,18 @@ class TheWalkCatchesLateValues(unittest.TestCase):
         beside = [f for f in failures if "in late-opened.json]: raised TypeError" in f]
         self.assertEqual(len(beside), BESIDE, failures)
 
-    def test_one_writers_growing_count_still_settles(self):
-        self.assertNotIn("id_bump (discovery)", " ".join(self.walk.uncovered))
+    def test_a_count_one_writer_grows_fails_the_walk(self):
+        self.assertNotIn("late-third.json", self.walk.discover())
+        failures = self.walk.run(["ja_bump", "jb_read"])
+        self.assertIn("ja_bump (discovery): its later counts in late-bump.json were folded into "
+                      "its first, so a reader keyed on one would not be reached", " ".join(failures))
+
+    def test_a_registered_tally_still_settles(self):
+        with mock.patch.dict(cases.COUNTERS, {"late-tally.json": "this test's tally"}):
+            found = walk.Walk(self.cls, self.root / "registered")
+            found.discover()
+        self.assertNotIn("id_bump (discovery)", " ".join(found.uncovered))
+        self.assertIn("ja_bump (discovery)", " ".join(found.uncovered))
 
     def test_state_that_never_settles_fails_closed(self):
         failures = self.walk.run(["hh_grow"])

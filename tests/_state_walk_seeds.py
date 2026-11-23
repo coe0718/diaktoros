@@ -14,7 +14,7 @@ _NONE = object()
 
 
 def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
-         firsts: dict | None = None, seed: dict | None = None) -> bool:
+         firsts: dict | None = None, seed: dict | None = None, folded: set | None = None) -> bool:
     """Fold ``value``, one a call of ``writer`` wrote into ``file``, into the file's valid sample,
     and keep it whole among its alternatives: each distinct value, never folded into another, so
     two writers' conflicting values (``{"ready": false}``, ``{"ready": true}``) are both kept.
@@ -23,7 +23,9 @@ def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
     other files (``seed`` but ``file`` itself), fold into its first one (``firsts``), since a
     writer that adds one to its own file each call would never end discovery. A count it writes
     only beside another companion is kept (round 12), and a count fed back through another file
-    keeps discovery going until it fails closed. Whether either gained something, so discovery
+    keeps discovery going until it fails closed. Each ``(file, writer)`` whose count was folded so
+    goes in ``folded``, for the walk to fail on outside its registered counters (round 13).
+    Whether either gained something, so discovery
     calls again each method that touches the file (round 10: a new whole value that leaves the
     folded sample as it was counts too)."""
     have, kept, firsts = samples.get(file, _NONE), alts.setdefault(file, {}), \
@@ -31,6 +33,8 @@ def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
     beside = repr(skeleton({f: v for f, v in (seed or {}).items() if f != file}, True))
     key = firsts.setdefault((file, writer, beside, repr(skeleton(value))),
                             repr(skeleton(value, True)))
+    if folded is not None and key != repr(skeleton(value, True)):
+        folded.add((file, writer))
     added = key not in kept
     if added:
         kept[key] = value

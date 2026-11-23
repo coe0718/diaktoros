@@ -38,7 +38,7 @@ from pathlib import Path
 from diaktoros import state
 from _state_walk_cases import (  # noqa: F401 - re-exported for the tests
     ANY_SHAPE, ARGS, EMPTY, FLAT, HEAD, HINTS, JUNK_STRINGS, KEEPS, KEY, LIST, LOCK, METHOD_ARGS,
-    NEVER, RAISES, SCALARS, SHAPES, SKIP, new_loop)
+    COUNTERS, NEVER, RAISES, SCALARS, SHAPES, SKIP, new_loop)
 from _state_walk_seeds import fold, seeds
 from _state_walk_oracle import (  # noqa: F401 - re-exported for the tests
     conforms, healing, kind, plain, returns, strings)
@@ -56,7 +56,7 @@ class Walk:
         self.cls, self.root, self.made = cls, root, 0
         self.clean, self.wrote, self.samples, self.strays, self.files = {}, {}, {}, set(), None
         self.touched, self.bases, self.alts, self.uncovered = {}, {}, {}, set()
-        self.firsts = {}
+        self.firsts, self.folded = {}, set()
 
     def methods(self, only=None) -> list[str]:
         return [n for n in public_methods(self.cls)
@@ -99,7 +99,7 @@ class Walk:
     def sample(self, file: str, value, name: str, seed: dict) -> bool:
         """Fold a value a call of ``name`` on ``seed`` wrote into ``file``'s sample and
         alternatives."""
-        return fold(self.samples, self.alts, file, value, name, self.firsts, seed)
+        return fold(self.samples, self.alts, file, value, name, self.firsts, seed, self.folded)
 
     def clean_call(self, name: str) -> set[str]:
         """Call ``name`` on an empty dir: record its result and writes; the names it touched."""
@@ -138,6 +138,10 @@ class Walk:
         else:                            # still finding state after ROUNDS: fail closed
             self.uncovered |= {f"{name} (discovery): still reaching new state after {ROUNDS} "
                                "rounds, so its files may not all be found" for name in todo}
+        self.uncovered |= {f"{name} (discovery): its later counts in {file} were folded into its "
+                           "first, so a reader keyed on one would not be reached (fails closed: a "
+                           "tally no state method branches on goes in COUNTERS, with why)"
+                           for file, name in self.folded if file not in COUNTERS}
         self.files = sorted(set().union(spelled_json(self.cls), *touched.values(),
                                         {state.OBSERVATIONS_FILE, "kv.json"}))
         return self.files

@@ -58,6 +58,11 @@ KEEPS = {
 # Result keys whose value is new on every call, so a call on junk and one on a missing file differ
 # there by design; the walk compares the rest. Each, and why.
 FRESH = {"claim": "fix_ask_claim's reservation id, a random one per reservation (review on #2579)"}
+# Files where one writer's successive counts (beside the same other files) fold into one sample,
+# since a tally that grows each call never ends discovery; each, and why no state method branches
+# on its value. A count folded in any other file fails the walk (#2589 review F8, round 13).
+COUNTERS = {"fix-asks.json": "a per-PR ask tally: state only returns it (fix_ask_count) and adds "
+                             "or takes one; callers outside LoopState compare it"}
 # Methods with no return annotation, and the return type the walk holds them to.
 HINTS = {"review_only_conflict": tuple[dict, str, bool] | None}
 LOCK = object()                                  # what ``call`` returns for a lock it took
