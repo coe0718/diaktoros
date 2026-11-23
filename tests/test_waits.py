@@ -35,6 +35,7 @@ class ClaimWaits(sm.Base):
     # test_ci_poll's helpers, borrowed so its own tests do not run twice.
     fake_api, hold, claim, row = (cp.LightPoll.fake_api, cp.LightPoll.hold, cp.LightPoll.claim,
                                   cp.LightPoll.row)
+    age = cp.LightPoll.age
 
     def setUp(self):
         super().setUp()
@@ -81,11 +82,46 @@ class ClaimWaits(sm.Base):
         self.hold()
         self.claim()
         rotated = self.log.with_name(self.log.name + ".1")
+        # #2206: the rotation ends with ~210 KB of stderr after the wait line (it was rotated
+        # near WORKER_LOG_MAX), so its last 64 KiB hold no wait; the live log holds none at all.
+        with self.log.open("a") as fh:
+            fh.write("worker stderr\n" * 15000)
         self.log.rename(rotated)
-        self.log.write_text("worker stderr\n" * 8000)        # chatty, and well past 64 KiB
+        self.log.write_text("worker stderr\n")
         self.hold()
         self.claim()
         self.assertEqual((len(waits_in(rotated)), len(waits_in(self.log))), (1, 0))
+
+    def test_an_unchanged_hold_is_remembered_past_64_kib_of_live_log(self):
+        """#2187: the run's last wait line, ~70 KB back in the live log (under WORKER_LOG_MAX,
+        so a new line could still be appended), is found and not logged again."""
+        self.hold()
+        self.claim()
+        with self.log.open("a") as fh:
+            fh.write("worker stderr\n" * 5000)
+        self.hold()
+        self.claim()
+        self.assertEqual(len(waits_in(self.log)), 1)
+
+    def test_a_long_claim_read_failure_keeps_the_claimant_bracket(self):
+        """#2227: a claim-time read failure's reason ends with the claimant bracket; the log
+        line and ``hermes dk history`` keep it however long the read error before it."""
+        from diaktoros import claimant, history_sources
+        from diaktoros.run_supervisor import CI_HOLD_READ_S
+        loaded = "03ffe0f" + "a" * 33
+        self.hold()
+        self.age(CI_HOLD_READ_S + 5)    # a due live hold read that fails: the full claim's read
+        with mock.patch.object(claimant, "LOADED", loaded), \
+             mock.patch.object(claimant, "installed_commit", return_value=loaded):
+            self.claim(events_error="HTTP 502: " + "upstream said no " * 40)
+        self.assertEqual(self.row()[0], "waiting")
+        [line] = waits_in(self.log)
+        self.assertTrue(line["reason"].startswith(CLAIM_READ_FAILED), line)
+        self.assertTrue(line["reason"].endswith("plugin 03ffe0f]"), line)
+        self.assertIn("[claimant pid ", line["reason"])
+        self.assertLessEqual(len(line["reason"]), waits.REASON_MAX)
+        [event] = history_sources.wait_events(self.sup.db, "acme/widgets", 7, [])
+        self.assertTrue(event["text"].endswith("plugin 03ffe0f]"), event)
 
     def test_a_wait_is_not_appended_past_the_log_cap(self):
         """#2302: a worker's wait line never grows the log past WORKER_LOG_MAX, the cap a worker's
