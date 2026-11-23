@@ -716,24 +716,20 @@ def cmd_restore(args) -> int:
     """``restore`` (#496): put a backup back, paused with migrate's marker; see ``backup``."""
     from ..state import backup
     from ..state import migrate
+    from ..state import restore_checks
     archive = pathlib.Path(args.file).expanduser()
     try:
         manifest = backup.read_manifest(archive)
         if args.dry_run:
             return _restore(args, manifest, archive)
         with migrate.hold() as left:
-            busy = migrate.runs_in_flight()
-            if busy:
-                print(f"cannot restore: {busy} run(s) are in flight or uncertain; wait for them "
-                      "(or reconcile them), then run restore again")
-                return 2
-            clash = backup.existing(manifest)
-            if clash and not args.force:
-                print("cannot restore: existing state would be overwritten (use --force):\n  "
-                      + "\n  ".join(clash[:20])
-                      + (f"\n  … {len(clash) - 20} more" if len(clash) > 20 else ""))
-                return 2
-            return _restore(args, manifest, archive, left)
+            refused = restore_checks.refusal(manifest, force=args.force)
+            if refused:
+                print(f"cannot restore: {refused}")
+            code = 2 if refused else _restore(args, manifest, archive, left)
+            if code == 2:      # refused before any write: an interrupted run's pause stays (#2594)
+                migrate.keep_left(left)
+            return code
     except (migrate.MigrationBusy, migrate.RunsUnknown) as exc:
         print(f"cannot restore: {exc}")
         return 2
