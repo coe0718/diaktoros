@@ -135,7 +135,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             add(PENDING, "review receipts unreadable: approval unknown")
         elif latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
             # #1245: a red merge check names the verdict, with the budget explain counts.
-            add(FAILURE, _changes_requested(loop, st, number, head, reviews, author, pr))
+            add(FAILURE, _changes_requested(loop, st, pr, head, reviews))
         elif latest is None or gh.review_state(latest) != "APPROVED":
             # No verdict at the head yet is a review still to come.
             add(PENDING, _not_approved(loop, st, number, head, reviews, author, pr))
@@ -223,10 +223,11 @@ def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author:
     return _with_turn(loop, number, head, "reviewer", said)
 
 
-def _changes_requested(loop: dict, st, number: int, head: str, reviews: list, author: str,
-                       pr: dict | None = None) -> str:
+def _changes_requested(loop: dict, st, pr: dict, head: str, reviews: list) -> str:
     """A change request at the head, with the budget ``explain`` counts (#1245), a review-only
     PR's spent cap (#2622 review, F2) and the fixer's turn answering it (#753)."""
+    number = pr.get("number")
+    author = str((pr.get("user") or {}).get("login") or "").lower()
     return _with_turn(loop, number, head, "fixer",
                       f"changes requested at head {head[:7]} "
                       f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)"
