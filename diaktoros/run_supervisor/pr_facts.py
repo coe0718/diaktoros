@@ -25,6 +25,29 @@ def effective_reviews(loop: dict, row, reviews, ledger=None):
                                         reviews, ledger=ledger)
 
 
+def breach_rounds(turn_key) -> int:
+    """The round count an adjudicator turn's key ``breach:<rounds>`` names; 0 for any other or
+    malformed key. The one parse the claim's live check and ``recover``'s handback share."""
+    turn = str(turn_key or '')
+    try:
+        return int(turn.split(':', 1)[1]) if turn.startswith('breach:') else 0
+    except ValueError:
+        return 0
+
+
+def _approval_supersedes(loop: dict, reviews: list, head: str, shadow: bool) -> bool:
+    """Whether the head's approval state supersedes a queued ruling (``adjudication_state``):
+    approved at the head ends any ruling but a shadow one, which exists *because* it is
+    approved; a shadow escalation whose approval is gone is moot (the reviewer blocks). A shadow
+    escalation stands on the reviewer's own approval, not the adjudicator's ruled one (#905,
+    #1706), as ``gate.shadows.shadow_escalation`` sends it."""
+    from .. import gate, gh
+    latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    approved = (gate.reviewer_approved(latest, loop) if shadow
+                else latest is not None and gh.review_state(latest) == 'APPROVED')
+    return approved != shadow and (approved or shadow)
+
+
 def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     """Live eligibility of a queued adjudicator turn: ``('ok'|'superseded'|'retry', facts)``.
 
@@ -36,11 +59,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     from .. import gate, gh, state as state_mod
     if loop is None:
         return 'retry', {}
-    turn = str(row['turn_key'] or '')
-    try:
-        rounds = int(turn.split(':', 1)[1]) if turn.startswith('breach:') else 0
-    except ValueError:
-        rounds = 0
+    rounds = breach_rounds(row['turn_key'])
     if rounds < 1:
         return 'superseded', {}
     pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}", login=loop['read_token'])
@@ -74,11 +93,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']), ledger)
     if not isinstance(reviews, list):
         return 'retry', {}
-    latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
-    approved = latest is not None and gh.review_state(latest) == 'APPROVED'
-    if approved != shadow and (approved or shadow):
-        # Approved at the head ends any ruling but a shadow one, which exists *because* it is
-        # approved; a shadow escalation whose approval is gone is moot (the reviewer blocks).
+    if _approval_supersedes(loop, reviews, row['head'], shadow):
         return 'superseded', {}
     counted = gate.verdicts(reviews, loop)
     # Any standing escalation holds this head for a ruling in place of a spent cap.

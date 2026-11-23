@@ -20,6 +20,7 @@ import time
 import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
+from diaktoros import run_supervisor
 from diaktoros.state import ledger
 from diaktoros.inference_proxy import PATH
 
@@ -323,11 +324,14 @@ class RouteWorkerVertical(unittest.TestCase):
         self.assertEqual(self.world['model'], [])
         self.assertEqual(self.world['writes'], [])
 
-    def test_head_moves_during_export_fails_without_agent_or_write(self):
+    def test_head_moves_during_export_cancels_without_agent_or_write(self):
+        # #2610: a review whose head moved while it staged ends as #2468's move does, cancelled
+        # with its reason (the watchdog delivers the review to the new head), not failed.
         self.world['move_during_export'] = True
         route = self.route()
         self.assertEqual((route.returncode, route.stdout.strip()), (0, '[SILENT]'), route.stderr)
-        self.result('failed')
+        row = self.result('cancelled')
+        self.assertEqual(row[3], run_supervisor.REVIEW_HEAD_MOVED)
         self.assertEqual(self.world['model'], [])
         self.assertEqual(self.world['writes'], [])
 

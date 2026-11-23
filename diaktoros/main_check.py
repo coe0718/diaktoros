@@ -21,7 +21,7 @@ from . import ci, config, gh, pr_refs
 FILE = "main-ci.json"
 PRS_MAX = 10
 ADVICE = ("GitHub's \"Require branches to be up to date before merging\" protection prevents "
-          "this class of breakage")
+          "this class of breakage.")
 OUTCOME_MAX = 600       # the main_red notice's outcome is at most this long
 NAMES_MIN = 40          # what the failed check names keep at least, when they are clipped
 LEAD = "main: required check(s) failed: "
