@@ -218,5 +218,19 @@ class HtmlBlocks(Mocked):
                 self.assertEqual(check(body), "")
 
 
+    def test_only_shown_html_text_counts(self):
+        # Twentieth review: a tag inside a comment opens no HTML list (F20), and an attribute is
+        # not shown, so its `met` marks nothing (F21); the unmarked item is still refused.
+        for body in ("<ul>\n<!-- <ul> -->\n<li>second: export flag</li>\n</ul>\n",     # F20
+                     "<ul><!--\n<ul>\n--><li>second: export flag</li></ul>\n",
+                     '<ul>\n<li><span title="met">second: export flag</span></li>\n</ul>\n'):
+            with self.subTest(body):
+                self.assertIn('"- second: export flag" has no status', check(body))
+        for body in ('<ul>\n<li><span title="x">second: met</span></li>\n</ul>\n',
+                     "<ul>\n<!-- <li>draft</li> -->\n<li>second: met</li>\n</ul>\n"):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
+
 if __name__ == "__main__":
     unittest.main()

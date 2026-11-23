@@ -7,23 +7,20 @@ into an open item is a nested note (evidence), a line with no marker is prose, a
 four or more columns past its container's content column is indented code (``code_line``).
 
 A fence (three or more backticks or tildes) opens fenced code only up to three columns past the
-content column of the list item it sits in (0 outside a list): more is indented code, or text,
-not a fence (eighth review: a backtick line indented four columns after prose blanked every
-requirement after it). The block runs to a closing fence of its character at least as long, at
+content column of the list item it sits in (0 outside a list): more is indented code, or text
+(eighth review). The block runs to a closing fence of its character at least as long, at
 most three columns past that same column; or to a line that dedents out of its list item, which
 ends the item and the block with it; or to the end. An HTML comment (``<!--`` opening a line, at
 most three columns past that same column) is blanked the same way, through the line holding
 ``-->``, or to a line that dedents out of its list item, as a fence does (tenth and eleventh
-reviews: a commented-out draft item read as an unmarked requirement; a comment left open in an
-item blanked the top-level items after it). A comment inside a line is hidden too: ``visible``
+reviews). A comment inside a line is hidden too: ``visible``
 drops it from the line, and one it leaves open hides the lines after it up to its ``-->``, or to
 the next blank line, item, fence or comment line (twelfth review: ``- x <!-- met -->`` read as
-marked ``met``). One that never closes shows as text, so its words are dropped, never counted.
-A ``<!--`` inside a code span is text, not a comment (thirteenth review). Inline comments and
-code spans are read over a whole paragraph, as Markdown reads them, not line by line: a code span
-may run across lines (fourteenth review), and a backslash escapes the character after it, so an
-escaped backtick opens no code span (fifteenth review). A marker line that cannot interrupt a
-paragraph is the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
+marked ``met``). One that never closes hides its words: they are never counted.
+A ``<!--`` in a code span is text (thirteenth review). Inline comments and code spans are read
+over a whole paragraph, not line by line: a code span may run across lines (fourteenth), and an
+escaped backtick opens none (fifteenth). A marker line that cannot interrupt a paragraph is
+the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
 second F14): one that dedents past the item it continues is indented back into it. Nor is a
 line that only looks like a fence or comment opener (sixteenth review) a break in the paragraph.
 Every other HTML block (``html_end``, as CommonMark lists them) is raw HTML, not Markdown, so
@@ -31,11 +28,9 @@ no line in it is an item or heading (seventeenth review: a command beginning ``-
 evidence read as an unmarked requirement). A ``<pre>``, ``<script>``, ``<style>`` or
 ``<textarea>`` block, and a ``<?``, ``<!X`` or CDATA one, is code or hidden: blanked as a comment
 is, through its closing tag. Any other (``<div>``, ``<ul>``, a lone tag), up to a blank line, is
-shown text: kept, so a status in it still counts (eighteenth review: ``<li>two: not met</li>``
-was hidden), with a backslash before a leading marker, ``#`` or ``*`` (``literal``). A lone tag
-cannot interrupt a paragraph, so there it is the paragraph's text. A shown ``<li>`` outside any
-Markdown item, in no HTML list nested in another, is a requirement item (``shown``: nineteenth
-review, ``<li>second: export flag</li>`` was approved with no status); inside one it is evidence.
+shown text: its displayed words are kept, so a status in them counts (eighteenth review), and a
+top-level ``<li>`` is a requirement item (``shown``: nineteenth and twentieth). A lone tag
+cannot interrupt a paragraph, so there it is the paragraph's text.
 """
 from __future__ import annotations
 
@@ -57,8 +52,9 @@ HTML = [(re.compile(start, re.I), end and re.compile(end, re.I)) for start, end 
     (rf"(?:<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$", None))]
 # An inline token: a backslash escape (ASCII punctuation), a backtick run or a comment opener.
 INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|<!--")
-# In shown HTML: an HTML list opening or closing, or a list item opening.
-LI = re.compile(r"<(/?)(?:ul|ol)(?:\s[^>]*)?>|<li(?:\s[^>]*)?>", re.I)
+# In shown HTML: a comment's start or end, or a tag (its attributes are not shown text).
+TAG = re.compile(rf"<!--|-->|<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>")
+LIST = re.compile(r"</?[uo]l\b", re.I)                 # an HTML list's tag
 
 
 def width(text: str) -> int:
@@ -119,24 +115,31 @@ def literal(line: str) -> str:
 
 
 def shown(line: str, top: bool, state: list) -> list[str]:
-    """The lines a shown HTML block's ``line`` reads as: each ``<li>`` in it that is no deeper than
-    one HTML list starts a top-level item line (``- `` and its text, or the next text when it has
-    none), when the block is in no Markdown item (``top``); the rest is ``literal``. ``state`` is
-    the block's ``[HTML list depth, an item still waiting for its text]`` (nineteenth review)."""
-    if not top:
-        return [literal(line)]
-    segs, at, waiting = [], 0, state[1]
-    for tag in LI.finditer(line):
-        if not tag.group().lower().startswith("<li"):
-            state[0] = max(0, state[0] + (-1 if tag.group(1) else 1))
-        elif state[0] <= 1:
-            segs.append((waiting, line[at:tag.start()]))
-            at, waiting = tag.end(), True
+    """The lines a shown HTML block's ``line`` reads as: its displayed text, without tags (an
+    attribute is not shown: twentieth review, F21) or comments (nor is a tag inside one: F20).
+    When the block is in no Markdown item (``top``), each ``<li>`` no deeper than one HTML list
+    starts a top-level item line (``- `` and its text, or the next text when it has none); the
+    rest is ``literal``. ``state`` is the block's ``[HTML list depth, an item still waiting for
+    its text, inside a comment]`` (nineteenth review)."""
+    segs, text, waiting, at = [], [], state[1], 0
+    for tag in TAG.finditer(line):
+        word = tag.group()
+        if state[2] or word == "-->":                   # in a comment; or plain text
+            state[2], at = (False, tag.end()) if state[2] and word == "-->" else (state[2], at)
+            continue
+        text.append(line[at:tag.start()] + " ")      # a tag may end a word: keep it apart
+        at, state[2] = tag.end(), word == "<!--"
+        if LIST.match(word):
+            state[0] = max(0, state[0] + (-1 if word[1] == "/" else 1))
+        elif top and state[0] <= 1 and word[:3].lower() == "<li" and not word[3:4].isalnum():
+            segs.append((waiting, "".join(text)))
+            text, waiting = [], True
+    text.append("" if state[2] else line[at:])
     out = []
-    for opens, text in segs + [(waiting, line[at:])]:
-        if text.strip():
-            out.append("- " + text.strip() if opens else literal(text))
-        state[1] = opens and not text.strip()
+    for opens, part in segs + [(waiting, "".join(text))]:
+        if part.strip():
+            out.append("- " + part.strip() if opens else literal(part))
+        state[1] = opens and not part.strip()
     return out
 
 
@@ -170,7 +173,7 @@ def unfenced(lines: list[str]) -> list[str]:
     evidence read as unmarked items). The lines left are read for inline comments a paragraph
     at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
     out, fence, cols, kinds, blank, html, para, raw = [], None, [], [], False, None, [], None
-    state = [0, False]                    # a shown HTML block's, for ``shown``
+    state = [0, False, False]             # a shown HTML block's, for ``shown``
 
     def flush():                          # the paragraph so far, read inline as one text
         out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
@@ -225,7 +228,7 @@ def unfenced(lines: list[str]) -> list[str]:
             flush()
         blank, col = False, cols[-1] if cols else 0
         if opener and opener[0] is None:           # shown HTML, to the next blank line
-            raw, state = col, [0, False]
+            raw, state = col, [0, False, False]
             shown_ = shown(line, raw == 0, state)
             out += shown_
             para += shown_
