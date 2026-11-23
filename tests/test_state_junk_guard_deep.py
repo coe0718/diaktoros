@@ -9,6 +9,10 @@ writes the trigger, planted on a further pass once a junk call touched it, else 
 F2: a reader that hands back the stored file (``fix_handoff`` returning the raw ``fix-asks.json``
 object) fails on an object of junk, which reads as a missing file whatever its top level; and a
 writer that rewrites an object but keeps the junk inside what it writes fails too.
+
+F8 (round 7): junk in a file read only when ANOTHER file holds a valid value is reached, though
+every all-junk call replaces that value with junk: each file is also fuzzed alone, beside clean
+companions (Vex's probe: ``arm_probe`` writes the trigger, ``read_probe`` then reads the target).
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -59,6 +63,16 @@ class ProbeMixin:
         data[str(number)] = entry
         self._save(path, data)
 
+    def arm_probe(self) -> None:
+        self._save(self.dir / "independent-trigger.json", {"ready": True})
+
+    def read_probe(self) -> dict:
+        trigger = self._load(self.dir / "independent-trigger.json", {})
+        if not (isinstance(trigger, dict) and trigger.get("ready") is True):
+            return {}
+        path = self.dir / "independent-target.json"
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
     def merge_entry(self, number: int) -> None:               # keeps a junk entry whole
         path = self.dir / "merge-entry.json"
         data = self._load(path, {})
@@ -67,10 +81,13 @@ class ProbeMixin:
         self._save(path, data)
 '''
 RAISING = sum(bool(s) and not isinstance(s, dict) for s in walk.SHAPES)  # opens, then {**junk}
+BESIDE = sum(not isinstance(s, dict) for s in walk.SHAPES)    # a clean trigger: None raises too
 
 
-def of(failures: list[str], method: str, text: str = "") -> list[str]:
-    return [f for f in failures if f.startswith(f"{method}[") and text in f]
+def of(failures: list[str], method: str, text: str = "", everywhere=False) -> list[str]:
+    """``method``'s failures holding ``text`` (only the all-junk pass's when ``everywhere``)."""
+    return [f for f in failures if f.startswith(f"{method}[") and text in f
+            and not (everywhere and ".json]: " in f)]
 
 
 class TheWalkCatchesDeeper(unittest.TestCase):
@@ -106,12 +123,15 @@ class TheWalkCatchesDeeper(unittest.TestCase):
 
     def test_junk_in_a_file_read_only_when_another_holds_data_fails_the_walk(self):
         failures = self.walk.run(["hidden_state"])
-        raised = of(failures, "hidden_state", "raised TypeError")
+        raised = of(failures, "hidden_state", "raised TypeError", everywhere=True)
         self.assertEqual(len(raised), RAISING, failures)
+        self.assertEqual(len(of(failures, "hidden_state", "state.json]: raised TypeError")),
+                         BESIDE, failures)
 
     def test_a_file_only_junk_opens_is_planted_on_a_further_pass(self):
         failures = self.walk.run(["lone_hidden"])
-        self.assertEqual(len(of(failures, "lone_hidden", "raised TypeError")), RAISING, failures)
+        self.assertEqual(len(of(failures, "lone_hidden", "raised TypeError", everywhere=True)),
+                         RAISING, failures)
         self.assertEqual(self.walk.strays, {"lone-hidden.json"})
 
     def test_a_file_touched_on_junk_and_never_planted_fails_closed(self):
@@ -119,6 +139,13 @@ class TheWalkCatchesDeeper(unittest.TestCase):
             failures = self.walk.run(["lone_hidden"])
         self.assertIn("lone-hidden.json: touched on junk, and still not planted after 1 passes, "
                       "so never fuzzed", failures)
+
+    def test_junk_read_only_beside_a_valid_companion_fails_the_walk(self):
+        self.assertIn("independent-target.json", self.walk.discover())
+        failures = self.walk.run(["read_probe"])
+        beside = of(failures, "read_probe", "in independent-target.json]: raised TypeError")
+        self.assertEqual(len(beside), BESIDE, failures)
+        self.assertEqual(of(failures, "read_probe", everywhere=True), [])  # all-junk: unreached
 
     def test_a_reader_returning_the_stored_object_fails_the_walk(self):
         # Vex's stub: fix_handoff returns fix-asks.json itself when it is an object. Right on a

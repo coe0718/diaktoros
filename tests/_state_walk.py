@@ -8,8 +8,11 @@ creates), so a name built at run time is found as well: first on an empty state 
 no new name turns up, on a dir where every file found holds what the methods wrote there, so a
 file read only on a branch another file's data opens is found too. ``observations.json`` and
 ``kv.json`` (the key-value API's path) are always in it. Each junk shape is planted in all of
-them at once. A file a call touches on junk that was not planted (a branch only junk opens) is
-planted on a further pass, and one still unplanted after ``ROUNDS`` passes fails the walk.
+them at once, and then (#2589 F8) in each file a method touched alone, beside clean companions:
+every other file it touched holding what the methods wrote there, so a file read only when
+another holds a valid value is reached with junk too. A file a call touches on junk that was
+not planted (a branch only junk opens) is planted on a further pass, and one still unplanted
+after ``ROUNDS`` passes fails the walk.
 
 **What is checked** for each call on junk (``Walk.check``): it does not raise (except a
 ``RAISES`` entry's own exception); its result conforms to the method's declared return type (its
@@ -20,7 +23,8 @@ as #80's readers do, whatever the top-level type (a ``KEEPS`` entry names a shap
 valid part for one method); and a file it rewrote holds every path the method's own clean call
 writes there, of the same JSON type and with none of the planted junk strings
 (``JUNK_STRINGS``) left at it (an object or a list, and not the junk as it was, when it writes
-none): healed, never junk kept. The cases are in ``tests/_state_walk_cases.py``.
+none): healed, never junk kept. Beside companions, "a missing file" and "its own clean call" are
+the call on the companions alone. The cases are in ``tests/_state_walk_cases.py``.
 """
 from __future__ import annotations
 
@@ -49,6 +53,7 @@ class Walk:
     def __init__(self, cls, root: Path):
         self.cls, self.root, self.made = cls, root, 0
         self.clean, self.wrote, self.samples, self.strays, self.files = {}, {}, {}, set(), None
+        self.touched, self.bases = {}, {}
 
     def methods(self, only=None) -> list[str]:
         return [n for n in public_methods(self.cls)
@@ -121,7 +126,7 @@ class Walk:
         Done once per walk; ``run`` reuses it."""
         if self.files is not None:
             return self.files
-        touched = {name: self.clean_call(name) for name in self.methods()}
+        touched = self.touched = {name: self.clean_call(name) for name in self.methods()}
         todo = set(touched)
         for _ in range(ROUNDS):
             again, grown = set(), set()
@@ -142,16 +147,33 @@ class Walk:
                                         {state.OBSERVATIONS_FILE, "kv.json"}))
         return self.files
 
-    def check(self, name: str, shape, files) -> tuple[list[str], set[str]]:
-        """The call's problems with ``shape`` planted in every one of ``files``, and the
+    def base(self, name: str, file: str):
+        """``(companions, outcome, writes)`` for junk in ``file`` alone: every other file
+        ``name`` touched that holds a valid sample, and the call on those alone (None when
+        there are none, so the all-junk pass already covers it)."""
+        companions = {f: self.samples[f] for f in sorted(self.touched.get(name, set()) - {file})
+                      if f in self.samples}
+        if not companions:
+            return None
+        key = (name, file, repr(companions))
+        if key not in self.bases:
+            outcome, _, written = self.trace(name, companions)
+            self.bases[key] = companions, outcome, {(name, f): v for f, v in written.items()}
+        return self.bases[key]
+
+    def check(self, name: str, shape, files, base=None) -> tuple[list[str], set[str]]:
+        """The call's problems with ``shape`` planted in every one of ``files`` (beside
+        ``base``'s companions, its outcome and writes standing for a missing file's), and the
         ``*.json`` names it touched."""
-        (status, result), seen, written = self.trace(name, dict.fromkeys(files, shape))
+        companions, outcome, wrote = base or ({}, self.clean.get(name, ("raised", None)), None)
+        (status, result), seen, written = self.trace(
+            name, {**companions, **dict.fromkeys(files, shape)})
         if status == "raised":
             allowed = RAISES[name][0] if name in RAISES else ()
             problem = f"raised {type(result).__name__}: {result}"
             return ([] if isinstance(result, allowed) else [problem]), seen
         problems, hint = [], returns(self.cls, name)
-        status, clean = self.clean.get(name, ("raised", None))
+        status, clean = outcome
         if name in ANY_SHAPE or result is LOCK:
             status = "any"
         elif hint is inspect.Signature.empty:
@@ -165,14 +187,14 @@ class Walk:
             problems.append(f"read junk as {result!r:.90}, not as a missing file ({clean!r:.40})")
         for file, now in sorted(written.items()):
             problems += ([f"left {file} unreadable"] if now is _MISSING
-                         else self.healed(name, file, now, shape))
+                         else self.healed(name, file, now, shape, wrote))
         return problems, seen
 
-    def healed(self, name: str, file: str, now, shape) -> list[str]:
+    def healed(self, name: str, file: str, now, shape, wrote=None) -> list[str]:
         """A rewritten file's problems: it carries what the method writes on a missing file,
         with none of the planted junk where the method writes (any object or list when the
         method writes nothing there on a missing file, but never the junk left as it was)."""
-        clean = self.wrote.get((name, file), _MISSING)
+        clean = (self.wrote if wrote is None else wrote).get((name, file), _MISSING)
         if clean is _MISSING:
             if not isinstance(now, (dict, list)):
                 return [f"rewrote {file} as a {type(now).__name__}, not healed"]
@@ -190,7 +212,8 @@ class Walk:
         known, files, self.strays = self.files, set(self.discover()), set()
         if known is not None:            # again, so a method patched since discovery is its own
             for name in self.methods(only):
-                files |= self.clean_call(name)
+                files |= (seen := self.clean_call(name))
+                self.touched[name] = self.touched.get(name, set()) | seen
         for _ in range(ROUNDS):
             failures, strays = [], set()
             for name in self.methods(only):
@@ -198,6 +221,13 @@ class Walk:
                     problems, seen = self.check(name, shape, sorted(files))
                     strays |= seen - files
                     failures += [f"{name}[{shape!r:.30}]: {p}" for p in problems]
+                for file in sorted(self.touched.get(name, set()) & files):
+                    if (base := self.base(name, file)) is None:
+                        continue
+                    for shape in SHAPES:
+                        problems, seen = self.check(name, shape, [file], base)
+                        strays |= seen - files
+                        failures += [f"{name}[{shape!r:.30} in {file}]: {p}" for p in problems]
             if not strays:
                 return failures
             self.strays |= strays
