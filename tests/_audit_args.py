@@ -154,9 +154,11 @@ def module_bindings(trees, modules=frozenset()) -> Counter:
                 found[name] += 1
             elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
                 found[node.attr] += 1
-            elif (isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'setattr'
-                  and len(node.args) > 1):
-                if isinstance(node.args[1], ast.Constant):
+            elif isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'setattr':
+                if (node.keywords or len(node.args) < 3
+                        or any(isinstance(arg, ast.Starred) for arg in node.args)):
+                    found[ANY] += 1
+                elif isinstance(node.args[1], ast.Constant):
                     found[str(node.args[1].value)] += 1
                 elif not _never_module(node.args[0], up, modules):
                     found[ANY] += 1

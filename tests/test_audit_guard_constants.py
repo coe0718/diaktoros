@@ -8,7 +8,8 @@ Tenth: a parameter that shadows such an import is not shown so, since a caller m
 Eleventh: nor is a name imported from another package (``from sys import x``, ``import a.b as x``),
 which is that package's attribute and may be a scanned module it exported. Twelfth: nor through
 ``setattr`` spelled any way but a direct call (bound to another name, read from ``builtins``,
-passed on, or ``__setattr__``), whose writes the guard cannot read.
+passed on, or ``__setattr__``), whose writes the guard cannot read. Thirteenth: nor through a
+direct ``setattr`` whose arguments are unpacked (``*`` or ``**``), which the guard cannot read.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -69,6 +70,11 @@ REBOUND = {
         "functools.partial(setattr, synthetic)('ALLOWED_2587', ('intruder',))\n",
     'by __setattr__ of its module': "import synthetic\n"
         "synthetic.__setattr__('ALLOWED_2587', ('intruder',))\n",
+    # Thirteenth: a direct setattr whose arguments are unpacked.
+    'by setattr with starred arguments': "import sys\n"
+        "setattr(*(sys.modules[__name__], 'ALLOWED_2587', ('reviewer', 'intruder')))\n",
+    'by setattr with unpacked keywords': "import synthetic\n"
+        "setattr(synthetic, *('ALLOWED_2587',), ('intruder',), **{})\n",
 }
 # Reads of a namespace dict, and a computed setattr on another package's module or on a caught
 # exception, in the scope that name resolves in, rebind nothing here.
