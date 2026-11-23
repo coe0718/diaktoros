@@ -330,8 +330,10 @@ class ClaimTimeReads(Base):
         # sweep. The worker that backed it off now stays for the first backoff and re-arms it.
         sleeps = []
         spawned = self.worker(sleeps, self.clock())
-        self.assertEqual(len(sleeps), 1, sleeps)
-        self.assertAlmostEqual(sleeps[0], run_supervisor.backoff(1) + 1, delta=1)
+        # In slices of at most POLL_SLICE_S (#2609), to the backoff.
+        self.assertTrue(all(s <= run_supervisor.POLL_SLICE_S + 1 for s in sleeps), sleeps)
+        self.assertAlmostEqual(sum(sleeps), run_supervisor.backoff(1) + 1,
+                               delta=len(sleeps) + 1)
         row = self.s.get('review')
         self.assertEqual((row['state'], row['retries']), ('pending', 1))
         self.assertEqual(len(spawned), 1)          # recover() armed a fresh worker
@@ -378,7 +380,7 @@ class ClaimTimeReads(Base):
                         (now[0] + 5, f'{run_supervisor.CI_HOLD} on aaaaaaa'))
         sleeps = []
         self.worker(sleeps, now)
-        self.assertEqual(len(sleeps), 2, sleeps)
+        self.assertTrue(all(s <= run_supervisor.POLL_SLICE_S + 1 for s in sleeps), sleeps)
         self.assertEqual({self.s.get(d)['state'] for d in ('ci', 'review')}, {'pending'})
 
     def test_a_worker_does_not_wait_for_a_backoff_past_its_window(self):
@@ -401,7 +403,7 @@ class ClaimTimeReads(Base):
         delivery = f'o/r:1:{HEAD}:reviewer'
         sleeps = []
         spawned = self.worker(sleeps, self.clock())
-        self.assertEqual((len(sleeps), len(spawned)), (1, 1), sleeps)
+        self.assertEqual((bool(sleeps), len(spawned)), (True, 1), sleeps)
         with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
              patch('diaktoros.gh.api', return_value=ClaimTimeReads.pull(self)), \
              patch('diaktoros.gh.reviews', return_value=[]):

@@ -44,7 +44,6 @@ import os
 import pathlib
 import re
 import shlex
-import subprocess
 from typing import NamedTuple
 
 from .. import ci, config, gh, isolation, route_intent
@@ -1034,14 +1033,11 @@ UPSTREAM_REPO = "coe0718/diaktoros"
 
 
 def installed_commit() -> str:
-    """The installed plugin's commit (its git checkout's HEAD), or "" when it is not a checkout."""
-    try:
-        proc = subprocess.run(["git", "-C", str(plugin_root()), "rev-parse", "HEAD"],
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    sha = proc.stdout.strip()
-    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+    """The installed plugin's commit, or "" when it is not a git checkout: ``claimant``'s reading
+    of the install folder under ``$HERMES_HOME/plugins``, not the checkout this process loaded,
+    so doctor, ``update`` and the claimant name the same commit (#2595)."""
+    from .. import claimant
+    return claimant.installed_commit()
 
 
 class PluginComparison(NamedTuple):

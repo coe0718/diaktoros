@@ -236,7 +236,7 @@ def _findings(tracked: dict, number: int, rounds: list, reviews: list,
             if kind in ("fixed", "withdrawn"):
                 settled.setdefault(fid, at_round.get(str(review.get("commit_id") or "")))
     out = []
-    for fid, item in sorted(tracked.items(), key=lambda kv: _fnum(kv[0])):
+    for fid, item in sorted(tracked.items(), key=lambda kv: findings_mod.order(kv[0])):
         if not isinstance(item, dict):
             continue
         ruling = stats.deciding_ruling(item, number, rulings)
@@ -249,6 +249,3 @@ def _findings(tracked: dict, number: int, rounds: list, reviews: list,
                     "ruling": f"{ruling['verdict']} ({ruling['turn_key']})" if ruling else ""})
     return out
 
-
-def _fnum(fid: str) -> int:
-    return int(fid[1:]) if fid[1:].isdigit() else 0

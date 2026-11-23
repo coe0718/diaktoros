@@ -26,7 +26,7 @@ import time
 
 from .. import envnames, run_supervisor, util
 from ..hostdirs import WORKER_ENV, in_worker
-from . import claims, waits
+from . import claims, poller, waits
 
 
 def process_state(pid: int | None, launched: float | None) -> str:
@@ -704,13 +704,7 @@ class WorkerLifecycle:
     def settling(self) -> bool:
         """Whether a run of ``settle_repos`` waits out a reply's settle window (``SETTLE_HOLD``,
         #2248, #2569)."""
-        if not self.settle_repos:
-            return False
-        repos = sorted(self.settle_repos)
-        with self._connect() as con:
-            return con.execute("SELECT 1 FROM runs WHERE state='waiting' AND error=? AND repo IN ("
-                               + ",".join("?" * len(repos)) + ") LIMIT 1",
-                               (run_supervisor.SETTLE_HOLD, *repos)).fetchone() is not None
+        return bool(self.settle_repos) and poller.settle_due(self) is not None
 
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, or backing a claim off after a failed GitHub read,
@@ -720,42 +714,45 @@ class WorkerLifecycle:
         row due within this linger's window is waited for: the second and later read-failure
         backoffs (4 min and up) are the watchdog sweep's, as before. A fix turn settling after a
         maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by a worker of its
-        repo (#2569)."""
-        if not self.held_for_ci and not self.settling():
+        repo (#2569).
+
+        One poller per ledger (#2609): with ~30 PRs held for CI, lingerers that each polled every
+        held row kept starting each other: 9,200 in an hour, and GitHub's read limit ran out. Now
+        only the worker holding ``<ledger>.poller`` polls; one that finds it held leaves the polling
+        to it, but for its own repo's settling rows. Any worker takes the polling up when rows
+        are due soon and nobody polls, and a poller that stops at ``POLLER_MAX_S`` with rows
+        still due soon starts its successor."""
+        if not self.held_for_ci and not self.settling() and not poller.due_soon(self):
             return
         def marked_sleep(seconds):
             # Marked only while asleep (#1811): a worker in its database reads or in recover()
             # is at work, and a hang there must fail a test's exit check, not be ended.
             with lingering(self.db):
                 sleep(seconds)
-        self._linger_until_due(marked_sleep)
+        end = time.time() + run_supervisor.POLLER_MAX_S
+        while True:
+            held = poller.lock(self.db)
+            if held is False:
+                if self.settling():     # its own settling rows: no other repo's poller waits
+                    poller.wait(self, marked_sleep, end, poller.settle_due)
+                return                  # another worker polls
+            try:
+                stuck = poller.wait(self, marked_sleep, end)
+            finally:
+                if held is not None:
+                    held.close()        # the kernel drops the lock with the descriptor
+            # Read again once the lock is released (review of #2612): a worker that held a row
+            # meanwhile left it to this one, and it writes its hold before it tries the lock.
+            due = self._polled_due()
+            if due is None or due > time.time() + poller.window() or due == stuck:
+                return                  # nothing due soon, or only the row recover() can't move
+            if time.time() >= end or due > end:
+                self._spawn()           # the cap: a successor takes the lock and polls (#2609)
+                return
 
-    def _linger_until_due(self, sleep) -> None:
-        """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row
-        and ``recover()`` it, until the window closes or nothing falls due in it."""
-        deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
-        polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
-                  run_supervisor.CLAIM_READ_FAILED)
-        repos = sorted(self.settle_repos)
-        recovered = None
-        while time.time() < deadline:
-            with self._connect() as con:
-                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
-                                  + " OR ".join("error LIKE ?" for _ in polled)
-                                  + " OR (error=? AND repo IN (" + ",".join("?" * len(repos))
-                                  + ")))", (*(hold + '%' for hold in polled),
-                                            run_supervisor.SETTLE_HOLD, *repos)).fetchone()[0]
-            if due is None or due > deadline:
-                return          # nothing due in this window: the watchdog sweep is the backstop
-            if due <= time.time():
-                if due == recovered:
-                    return      # recover() did not release it: do not spin on it
-                # Not a return: the earliest due row may be another worker's, and the row this
-                # worker backed off may fall due later in the window (#1302): keep waiting.
-                self.recover()
-                recovered = due
-                continue
-            sleep(min(due - time.time(), deadline - time.time()) + 1)
+    def _polled_due(self) -> float | None:
+        """The earliest due time of a waiting row a lingerer polls, or None (``poller.due``)."""
+        return poller.due(self)
 
 
 def _worker_gone(row) -> bool:

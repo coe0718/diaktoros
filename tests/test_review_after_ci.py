@@ -244,8 +244,17 @@ class Linger(unittest.TestCase):
         with ledger.connect(self.sup.db) as con:
             con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?", (retry_at, error))
 
-    def test_only_a_worker_that_held_for_ci_lingers(self):
+    def test_a_worker_that_held_nothing_lingers_only_when_nobody_polls(self):
+        # #2609: one poller per ledger. A worker that held nothing leaves due rows to the poller
+        # (the take-over when there is none is test_call_volume's).
+        from diaktoros.run_supervisor import poller
         self.hold(0)
+        polling = poller.lock(self.sup.db)
+        self.addCleanup(polling.close)
+        self.sup.linger_for_ci(sleep=self.fail)
+        self.sup.recover.assert_not_called()
+        self.hold(time.time() + 10 * 60)            # nothing due soon: nothing to take up
+        polling.close()
         self.sup.linger_for_ci(sleep=self.fail)
         self.sup.recover.assert_not_called()
 

@@ -383,6 +383,28 @@ class Counted(unittest.TestCase):
                          (1, "101"))
         self.assertEqual(counts[jwt_login]["limit"]["used"], "102")
 
+    def test_calls_are_grouped_by_the_program_that_made_them(self):
+        # #2609: 9,200 processes in an hour could not be told apart; each file now names its
+        # program, and a file from before that is "unknown".
+        with mock.patch.object(gh_calls, "_caller", ""):
+            gh_calls.set_caller("worker")
+            self.get("/repos/owner/one/pulls/7")                             # spent
+            self.get("/repos/owner/one/pulls/7")                             # free (a 304)
+            gh_calls.flush()
+            self.assertEqual(gh_calls.caller(), "worker")
+        hour = int(time.time() // 3600 * 3600)
+        (gh_calls.directory() / "1-1-old.json").write_text(json.dumps(
+            {"counts": [[hour, "reader", "GET", "/repos/R/pulls/N", "spent", 4]]}))
+        callers = gh_calls.summary(time.time())["reader"]["callers"]
+        self.assertEqual(callers, {"worker": {"processes": 1, "calls": 2, "spent": 1},
+                                   "unknown": {"processes": 1, "calls": 4, "spent": 4}})
+        rc, text = t.run_cli(t.parser_for({}).parse_args(["calls"]))
+        self.assertIn("by unknown: 1 process(es) · 4 calls · 4 spent", text)
+        self.assertIn("by worker: 1 process(es) · 2 calls · 1 spent", text)
+        with mock.patch.object(gh_calls, "_caller", ""), \
+                mock.patch.object(sys, "argv", ["/x/scripts/gate_reviewer.py"]):
+            self.assertEqual(gh_calls.caller(), "gate_reviewer.py")         # the entry script
+
     def test_the_calls_command_lists_the_costliest_paths_and_githubs_figure(self):
         for _ in range(3):
             self.get("/repos/owner/one/actions/jobs/1")                   # 1 spent, 2 free
