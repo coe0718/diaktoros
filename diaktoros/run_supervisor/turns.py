@@ -238,6 +238,9 @@ class ClaimAndLaunch:
             fences = merge_hold.fences(con, time.time())    # before any read (#2468)
         for row in claims.claim_order(candidates):
             if (self.production_config and row['seat'] in self.capacity
+                    and self._unstartable(row)):
+                continue        # #2609: no GitHub read for a row that cannot start now
+            if (self.production_config and row['seat'] in self.capacity
                     and self._ci_poll(row)):
                 waits.note(self, row['id'])     # why it waits, once per reason (#2080)
                 continue        # still held for CI: the light poll re-timed it (#1648)
@@ -450,6 +453,28 @@ class ClaimAndLaunch:
         self._refresh_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
                                    else 'failed')
 
+    def _blocked(self, con, row) -> bool:
+        """Whether ``row`` cannot start now: its PR is occupied by another non-shadow turn, or
+        its seat is at capacity in its repo. A shadow turn (#218) neither occupies the PR nor
+        waits for it: it writes nothing, so the real reviewer and fixer never queue behind it,
+        and it never queues behind them. Capacity is per repo and seat: another repo's rows
+        never consume it."""
+        occupied = row['seat'] != run_supervisor.SHADOW and con.execute(
+            "SELECT 1 FROM runs WHERE repo=? AND pr=? AND " + run_supervisor.NOT_SHADOW + " "
+            "AND (state IN ('claimed','launching','running','uncertain') "
+            "OR push_intent IS NOT NULL)", (row['repo'], row['pr'])).fetchone()
+        used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
+                           "state IN ('claimed','launching','running','uncertain')",
+                           (row['repo'], row['seat'])).fetchone()[0]
+        return bool(occupied) or used >= self._capacity_for(row['repo'], row['seat'])
+
+    def _unstartable(self, row) -> bool:
+        """Whether ``row`` cannot start now (``_blocked``, read without the writer lock). Such a
+        row costs no GitHub read (#2609): it stays pending for the worker a freed slot starts,
+        and the commit's locked check still decides."""
+        with self._connect() as con:
+            return self._blocked(con, row)
+
     def _claim_commit(self, row, read: _ClaimRead):
         """Settle one candidate under the writer lock from what its read found: claim it
         (returning ``(id, owner)``), retire it, back it off, or leave it pending (None)."""
@@ -468,18 +493,8 @@ class ClaimAndLaunch:
                 con.execute('COMMIT')
                 self._refresh_check(None, row, 'cancelled')     # #2326
                 return None
-            # Recheck both capacity and PR occupancy under the writer lock. A shadow turn
-            # (#218) neither occupies the PR nor waits for it: it writes nothing, so the real
-            # reviewer and fixer never queue behind it, and it never queues behind them.
-            occupied = row['seat'] != run_supervisor.SHADOW and con.execute(
-                "SELECT 1 FROM runs WHERE repo=? AND pr=? AND " + run_supervisor.NOT_SHADOW + " "
-                "AND (state IN ('claimed','launching','running','uncertain') "
-                "OR push_intent IS NOT NULL)", (row['repo'], row['pr'])).fetchone()
-            # Capacity is per repo and seat: another repo's rows never consume it.
-            used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
-                               "state IN ('claimed','launching','running','uncertain')",
-                               (row['repo'], row['seat'])).fetchone()[0]
-            if occupied or used >= self._capacity_for(row['repo'], row['seat']):
+            # Recheck both capacity and PR occupancy under the writer lock (``_blocked``).
+            if self._blocked(con, row):
                 con.execute("COMMIT")
                 return None
             now = time.time()
@@ -1101,6 +1116,12 @@ class ClaimAndLaunch:
             if (row['seat'] == 'adjudicator'
                     and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
                 shadow = turn_prompts.newest_shadow_review(row)
+                if shadow is None:
+                    # #1145: no review to show (the ledger could not be read). A ruling then
+                    # answers none, its ACCEPT records '' and the sweep sends the same review
+                    # again as the next round: wait for a read instead of launching.
+                    raise run_supervisor.RetryableError(
+                        'shadow review unreadable before launch')
                 extra = {'shadow': shadow}
             if row['seat'] == 'adjudicator':
                 extra['seen'] = seen
