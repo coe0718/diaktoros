@@ -224,6 +224,10 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
             except Exception as exc:
                 log(f"noted CI suites not acted on: {type(exc).__name__}: {exc}")
             fcntl.flock(fd, fcntl.LOCK_UN)
+            try:                    # #1996: notes left as the lock went, taken back
+                ci_event.handoff(loop, st, log)
+            except Exception as exc:
+                log(f"noted CI suites not handed off: {type(exc).__name__}: {exc}")
     finally:
         os.close(fd)
 
