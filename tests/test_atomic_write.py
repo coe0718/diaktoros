@@ -44,6 +44,9 @@ DIFFERENT = {
         "renames a ledger file and its sidecar; nothing is written", {"os.rename": 2}),
     "diaktoros/state/migrate.py::files_step": ("renames a loop's files; nothing is written",
                                          {"os.rename": 1}),
+    "diaktoros/state/migrate.py::keep_left": (
+        "puts back the interrupted run's own marker file, kept by ``hold``: a full disk cannot "
+        "refuse a rename (#2630 review)", {"os.replace": 1}),
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": (
         "rotates a worker log", {"os.replace": 1}),
     "diaktoros/deps.py::prefetch_rust": ("retires and restores a dependency-cache directory",

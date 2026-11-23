@@ -136,7 +136,13 @@ def hold():
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise MigrationBusy(describe(migrating() or {})) from None
-        left = migrating()
+        left, kept = migrating(), _kept_path()
+        kept.unlink(missing_ok=True)       # a dead holder's leftover: the lock is ours now
+        if left is not None:
+            # The interrupted run's own marker, kept as a second name for its file: ``keep_left``
+            # puts it back by a rename, which a full disk cannot refuse as it can a write (#2630).
+            with contextlib.suppress(OSError):
+                os.link(path, kept)
         mine = {"pid": os.getpid(), "started": time.time()}
         state_mod._atomic_write(path, mine)
         yield left
@@ -144,11 +150,18 @@ def hold():
         # come after a step committed, and migration has no global rollback, so the pause stays
         # until a re-run finishes. Callers refuse before any write by returning, not raising.
         # A marker that is no longer the one written here was put back by ``keep_paused`` (a
-        # restore of an archive taken mid-migration, #1054): it stays.
+        # restore of an archive taken mid-migration, #1054) or ``keep_left``: it stays.
         if migrating() == mine:
             path.unlink(missing_ok=True)
     finally:
+        with contextlib.suppress(OSError):
+            _kept_path().unlink(missing_ok=True)
         os.close(fd)
+
+
+def _kept_path() -> pathlib.Path:
+    """Where ``hold`` keeps an interrupted run's marker while it holds its own."""
+    return marker_path().with_suffix(".left")
 
 
 def snapshot_refusal() -> str:
@@ -178,8 +191,14 @@ def keep_paused(info: dict) -> None:
 def keep_left(left: dict | None) -> None:
     """Keep the pause after a run that picked up an interrupted one (``hold`` yielded ``left``)
     and then refused before any move (#2323): the interrupted run's records may still be half
-    moved, so its marker is put back, and ``hold`` leaves a marker it did not write."""
-    if left is not None:
+    moved, so its marker is put back, and ``hold`` leaves a marker it did not write. Its own file,
+    by a rename, so a disk too full to write cannot lose it (#2630 review); written again only
+    when ``hold`` could not keep the file."""
+    if left is None:
+        return
+    try:
+        os.replace(_kept_path(), marker_path())
+    except FileNotFoundError:
         state_mod._atomic_write(marker_path(), left)
 
 

@@ -21,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_backup as tb  # noqa: E402
-from diaktoros import cli  # noqa: E402
+from diaktoros import cli, state as state_mod  # noqa: E402
 from diaktoros.state import backup, migrate, restore_checks  # noqa: E402
 
 # What a migrate that died left: its pid is gone, and its records may be half moved.
@@ -145,6 +145,21 @@ class FailedRestoreKeepsTheRightPause(Fixture):
         self.assert_refused_and_still_paused(code, text, "No space left on device")
         self.assertIn("nothing was written", text)
         self.assertEqual((self.state / "queue.json").read_text(), live)
+
+    def test_a_disk_that_stays_full_keeps_the_interrupted_pause(self):
+        # Review on #2630: putting the old marker back must not need a write on the full disk.
+        self.plant()
+        real, writes = state_mod._atomic_write, []
+
+        def full(path, data):
+            if Path(path) == migrate.marker_path() and writes:
+                raise OSError(28, "No space left on device")
+            writes.append(path)              # restore's own marker, before the disk filled
+            return real(path, data)
+        with self.staging_fails(), mock.patch.object(state_mod, "_atomic_write", full):
+            code, text = self.restore(force=True)
+        self.assert_refused_and_still_paused(code, text, "No space left on device")
+        self.assertFalse(migrate._kept_path().exists())
 
     def test_a_full_disk_while_staging_with_no_interrupted_run_leaves_no_pause(self):
         with self.staging_fails():
