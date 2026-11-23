@@ -90,6 +90,7 @@ RETRY_CAP = 3600.0
 # this margin), spending no attempt; for at most LIMIT_WAIT_MAX from its first such wait.
 LIMIT_WAIT = "waiting for the GitHub API limit to reset"
 LIMIT_SINCE = "limit waits since"
+LIMIT_BOUND = "the limit wait's bound"
 LIMIT_MARGIN_S = 30.0
 LIMIT_WAIT_MAX = 6 * 3600.0
 # What a turn's output leaves in ``runs.detail`` (#1658): the sandbox is discarded, so the last

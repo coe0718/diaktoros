@@ -316,6 +316,8 @@ def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str, held=lam
     error = gh.one_line(error, TURN_NOTE_MAX)
     if state == 'waiting':
         at = f", next check {pacing.when(retry_at)}" if type(retry_at) in (int, float) else ''
+        if run_supervisor.LIMIT_WAIT in error:      # #2608: not an attempt (#2613 review, F8)
+            return f"{turn} waiting for GitHub's rate limit to reset (no attempt spent{at})"
         return (f"{turn} waiting to retry (attempt {(retries or 0) + 1} of "
                 f"{run_supervisor.MAX_RETRIES}{at})" + (f": {error}" if error else ''))
     if state in ('failed', 'cancelled'):
@@ -571,11 +573,14 @@ def _held_step(row: dict, loop_id: str) -> str:
     return step
 
 
-def _limit_step(due: int) -> str:
-    """A claim read waiting for GitHub's rate limit to reset (#2608): no attempt is spent."""
-    return (f"read again in {due}s, after GitHub's rate limit resets (no attempt spent; a "
-            "lingering worker starts it when it falls due within its wait, otherwise the next "
-            "event or armed watchdog sweep does; a start still depends on host eligibility)")
+def _limit_step(due: int, bound: bool = False) -> str:
+    """A claim read waiting for GitHub's rate limit to reset (#2608): no attempt is spent. At
+    the wait's bound, the read comes before the reset (#2613 review, F7)."""
+    when = ("at the limit wait's bound, before GitHub's rate limit resets" if bound
+            else "after GitHub's rate limit resets")
+    return (f"read again in {due}s, {when} (no attempt spent; a lingering worker starts it "
+            "when it falls due within its wait, otherwise the next event or armed watchdog "
+            "sweep does; a start still depends on host eligibility)")
 
 
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
@@ -592,7 +597,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         if run_supervisor.LIMIT_WAIT in str(row.get('error') or ''):
-            return _limit_step(due)
+            return _limit_step(due, run_supervisor.LIMIT_BOUND in str(row.get('error') or ''))
         return (f"attempt {(row['retries'] or 0) + 1} of {run_supervisor.MAX_RETRIES} due in {due}s "
                 "(recorded earliest recheck on the next event or armed watchdog sweep; "
                 "a start still depends on host eligibility)")

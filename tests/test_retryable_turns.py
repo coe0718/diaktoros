@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from diaktoros import gate, run_supervisor
 from diaktoros.state import ledger
-from diaktoros.run_supervisor import views, workers
+from diaktoros.run_supervisor import views, waits, workers
 from diaktoros.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
 HEAD = 'a' * 40
@@ -461,10 +461,13 @@ class ClaimTimeReads(Base):
             row = self.s.get('review')
             self.assertEqual((row['state'], row['retries'], row['attempts']), ('waiting', 0, 0))
             self.assertEqual(row['retry_at'], reset + run_supervisor.LIMIT_MARGIN_S)
-            self.assertIn('claim-time read failed: PR unreadable', row['error'])
-            self.assertIn(f'{run_supervisor.LIMIT_WAIT} at '
-                          f'{time.strftime("%H:%MZ", time.gmtime(row["retry_at"]))}', row['error'])
+            self.assertTrue(row['error'].startswith(
+                f'{run_supervisor.CLAIM_READ_FAILED}: {run_supervisor.LIMIT_WAIT} at '), row['error'])
+            self.assertIn(' — PR unreadable (GitHub read failed)', row['error'])
             self.assertTrue(self.s.held_for_ci)   # this worker stays if the reset is near
+            self.assertIn(f'{run_supervisor.LIMIT_WAIT} at '
+                          f'{time.strftime("%H:%MZ", time.gmtime(reset))}', row['error'])
+            self.assertNotIn(run_supervisor.LIMIT_BOUND, row['error'])
             [view] = views.read_only_view(self.db, 'o/r', 1)
             self.assertIn("after GitHub's rate limit resets (no attempt spent",
                           views.describe_run(view, 'widgets'))
@@ -511,7 +514,7 @@ class ClaimTimeReads(Base):
         gh_calls.directory().mkdir(parents=True, exist_ok=True)
         sibling = gh_calls.directory() / '1-2-sibling.json'
         self.addCleanup(sibling.unlink, missing_ok=True)
-        for case, login, age, waits in (('another login', 'other[bot]', 0, False),
+        for case, login, age, held in (('another login', 'other[bot]', 0, False),
                                         ('a stale file', 'read', 2 * 3600, False),
                                         ('the reader, now', 'read', 0, True)):
             with self.subTest(case=case):
@@ -521,8 +524,8 @@ class ClaimTimeReads(Base):
                 os.utime(sibling, (time.time() - age,) * 2)
                 self.assertIsNone(self.claim(None))
                 row = self.s.get('review')
-                self.assertEqual(run_supervisor.LIMIT_WAIT in row['error'], waits, row['error'])
-                self.assertEqual(row['retries'], 0 if waits else 1)
+                self.assertEqual(run_supervisor.LIMIT_WAIT in row['error'], held, row['error'])
+                self.assertEqual(row['retries'], 0 if held else 1)
                 with ledger.connect(self.db) as con:
                     con.execute("UPDATE runs SET state='pending', retries=0, retry_at=NULL, "
                                 "error=NULL")
@@ -552,6 +555,15 @@ class ClaimTimeReads(Base):
         self.assertEqual((row['state'], row['retries']), ('waiting', 0))
         self.assertAlmostEqual(row['retry_at'] - time.time(), run_supervisor.LIMIT_WAIT_MAX,
                                delta=5)
+        # Review of #2613, F7: GitHub's reset is said as the reset, and the read at the bound as
+        # coming before it.
+        hm = lambda at: time.strftime('%H:%MZ', time.gmtime(at))   # noqa: E731
+        reset = time.time() + 10 * 3600
+        self.assertIn(f"{run_supervisor.LIMIT_WAIT} at {hm(reset)}, read again at "
+                      f"{hm(row['retry_at'])} ({run_supervisor.LIMIT_BOUND})", row['error'])
+        [view] = views.read_only_view(self.db, 'o/r', 1)
+        self.assertIn("at the limit wait's bound, before GitHub's rate limit resets (no attempt",
+                      views.describe_run(view, 'widgets'))
         began = time.time() - run_supervisor.LIMIT_WAIT_MAX - 60     # the wait is that old now
         stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(began))
         with ledger.connect(self.db) as con:
@@ -566,6 +578,26 @@ class ClaimTimeReads(Base):
             self.assertEqual(row['retries'], attempt)
         self.assertEqual(row['state'], 'failed')
         self.assertIn(f'retry limit ({MAX_RETRIES} attempts)', row['error'])
+
+    def test_a_long_read_error_keeps_the_limit_in_every_bounded_line(self):
+        # Review of #2613, F8: the wait line keeps 300 characters of the reason and ready's turn
+        # note 90; the limit leads the reason, so a long read error never pushes it out.
+        waits.log_path(self.db).write_text('')            # the host made the worker log
+        self.spent_limit()
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', side_effect=OSError('connection reset ' * 12)), \
+             patch('diaktoros.gh.reviews', return_value=[]):
+            self.assertIsNone(self.s._claim())
+        row = self.s.get('review')
+        self.assertEqual((row['state'], row['retries']), ('waiting', 0))
+        [line] = [line for line in waits.log_path(self.db).read_text().splitlines()
+                  if f"run={row['id']}" in line]
+        self.assertIn(run_supervisor.LIMIT_WAIT, line)
+        self.assertIn('connection reset', line)
+        note = views.turn_note(self.db, 'o/r', 1, HEAD, 'reviewer')
+        self.assertTrue(note.startswith("reviewer turn waiting for GitHub's rate limit to reset "
+                                        "(no attempt spent, next check "), note)
+        self.assertNotIn('attempt 1 of', note)
 
     def test_a_near_reset_is_waited_for_by_the_worker_that_saw_it(self):
         # Review of #2613, F5: with the reset inside the worker's wait, it schedules the read

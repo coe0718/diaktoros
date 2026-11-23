@@ -215,7 +215,26 @@ def _limit_wait_began(error) -> float | None:
     """When a row's rate-limit wait began, from its recorded reason (#2608), or None."""
     text = str(error or '')
     marker = f'{run_supervisor.LIMIT_SINCE} '
-    return util.iso_epoch(text.rsplit(marker, 1)[1].strip()) if marker in text else None
+    if marker not in text:
+        return None
+    rest = text.split(marker, 1)[1].split()
+    return util.iso_epoch(rest[0].rstrip(';')) if rest else None
+
+
+def _limit_note(until, started: float, reset: float) -> str:
+    """A rate-limited claim read's note (#2608): GitHub's reset; when the wait's bound comes
+    first, that the read is at the bound, before the reset (#2613 review, F7); and since when the
+    limit has been waited for. Past the bound (``until`` None) only that start, so it holds."""
+    def hm(at):
+        return time.strftime('%H:%MZ', time.gmtime(at))
+    since = (f'{run_supervisor.LIMIT_SINCE} '
+             f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started))}')
+    if until is None:
+        return since
+    note = f'{run_supervisor.LIMIT_WAIT} at {hm(reset)}'
+    if until < reset + run_supervisor.LIMIT_MARGIN_S:
+        note += f', read again at {hm(until)} ({run_supervisor.LIMIT_BOUND})'
+    return f'{note}; {since}'
 
 
 def _claim_read_reason(read_error: str) -> str:
@@ -444,23 +463,17 @@ class ClaimAndLaunch:
         (#53): back off, then fail with the reason and a notice. Pre-write, so `retry` (or a
         new event) re-arms it. A read the reader's spent rate limit refused waits for the reset
         instead, spending no attempt (#2608, ``_limit_wait``)."""
-        reason = _claim_read_reason(error)
         self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
-        until, started = self._limit_wait(row, current, now, since)
-        if started is not None:
-            # The wait's start rides on the reason, so the bound holds across reads (#2608).
-            note = (f'{run_supervisor.LIMIT_SINCE} '
-                    f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started))}')
-            if until is not None:
-                note = (f'{run_supervisor.LIMIT_WAIT} at '
-                        f'{time.strftime("%H:%MZ", time.gmtime(until))}; {note}')
-            note = f' — {note}'
-            reason = reason[:560 - len(note)] + note
+        until, started, reset = self._limit_wait(row, current, now, since)
+        # The limit's note leads the reason (#2613 review, F8): every bounded output of it (the
+        # wait line, ready's turn note) keeps it, and its start rides on, so the bound holds.
+        reason = _claim_read_reason(error if started is None
+                                    else f'{_limit_note(until, started, reset)} — {error}')
         if until is not None:
             # #2608: the read App ran out of calls. Not a fault of this run: it waits for the
             # reset, spending no attempt (a 35-minute outage outlasted the whole backoff).
             con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?, updated=? "
-                        "WHERE id=?", (until, reason, now, row['id']))
+                        "WHERE id=?", (until, reason[:600], now, row['id']))
             con.execute('COMMIT')
             self._refresh_check(None, row, 'waiting')
             return
@@ -468,7 +481,8 @@ class ClaimAndLaunch:
         if retries < run_supervisor.MAX_RETRIES:
             con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
                         "error=?, updated=? WHERE id=?",
-                        (retries, now + run_supervisor.backoff(retries), reason, now, row['id']))
+                        (retries, now + run_supervisor.backoff(retries), reason[:600], now,
+                         row['id']))
         else:
             con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
                         "error=?, updated=? WHERE id=?",
@@ -481,11 +495,11 @@ class ClaimAndLaunch:
 
     @staticmethod
     def _limit_wait(row, current, now: float, since: float) -> tuple:
-        """``(when to read again, when the limit wait began)`` for a failed claim read that the
+        """``(when to read again, when the limit wait began, the reset)`` for a failed claim read that the
         reader's spent rate limit explains (``gh_calls.limited_until``: a limited answer in this
-        claim, or the reader's recorded headers); ``(None, None)`` when it doesn't. The wait
+        claim, or the reader's recorded headers); all None when it doesn't. The wait
         began at the first limited failure, carried in the row's reason. Past ``LIMIT_WAIT_MAX``
-        from then the read is ``(None, began)``: it counts as any other failed read, so a limit
+        from then the read is ``(None, began, reset)``: it counts as any other failed read, so a limit
         that never comes back still ends through the backoff and retry limit. The read again is
         never later than that bound, however far the reset."""
         from .. import config, gh_calls
@@ -493,12 +507,12 @@ class ClaimAndLaunch:
         login = str((loop or {}).get('read_token') or '')
         reset = gh_calls.limited_until(login, since, now) if login else None
         if reset is None:
-            return None, None
+            return None, None, None
         started = _limit_wait_began(current['error']) or now
         if now - started >= run_supervisor.LIMIT_WAIT_MAX:
-            return None, started
+            return None, started, reset
         return min(reset + run_supervisor.LIMIT_MARGIN_S,
-                   started + run_supervisor.LIMIT_WAIT_MAX), started
+                   started + run_supervisor.LIMIT_WAIT_MAX), started, reset
 
     def _claim_commit(self, row, read: _ClaimRead):
         """Settle one candidate under the writer lock from what its read found: claim it
