@@ -102,15 +102,21 @@ def clear_pending_request(loop, st, number: int, head: str, rounds: int, pr) -> 
     gate as a maintainer's grant (``grant_by_rerequest``). Only where that re-request can grant
     (``rerequest_can_grant``), the reviewer is pending, and no round is granted at ``head`` for
     ``rounds`` spent: checked with the DELETE under ``review_request_lock``, so a grant made
-    meanwhile is never followed by the removal (#2622 review, F4). Written as the fixer seat,
-    which has write access (as the host's base merges are), and audited. Whether the request is
-    gone; a failed removal changes nothing, and the next capped request tries again."""
+    meanwhile is never followed by the removal (#2622 review, F4). The caller's ``pr`` may
+    predate a push, and the DELETE acts on the PR as it is now: so the live PR is read under the
+    lock too, and an unreadable one, a moved head (whose grant this check cannot see) or a
+    reviewer no longer pending removes nothing; the next capped request judges the new head.
+    Written as the fixer seat, which has write access (as the host's base merges are), and
+    audited. Whether the request is gone; a failed removal changes nothing, and the next capped
+    request tries again."""
     if not rerequest_can_grant(loop) or not reviewer_pending(loop, pr):
         return False
     with st.review_request_lock():
-        if st.review_cap_granted(number, head, rounds):
+        live = gh.pr(loop, number)
+        if (not isinstance(live, dict) or (live.get("head") or {}).get("sha") != head
+                or not reviewer_pending(loop, live) or st.review_cap_granted(number, head, rounds)):
             return False
-        return _remove_request(loop, number, head, pr)
+        return _remove_request(loop, number, head, live)
 
 
 def _remove_request(loop, number: int, head: str, pr) -> bool:

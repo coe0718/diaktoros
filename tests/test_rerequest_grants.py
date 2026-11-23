@@ -527,6 +527,49 @@ class Gate(fg.Base):
         self.assertEqual(len(self.removed), 1)
         self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
 
+    def test_a_push_and_a_grant_at_the_new_head_are_never_followed_by_the_old_heads_removal(self):
+        # Review of #2622 round 3, F4: the sweep (or the gate) decided on the head it listed; a
+        # push and a maintainer's grant at the new head land before its removal. The DELETE acts
+        # on the PR as it is now, so the removal reads the live PR under the lock and leaves it.
+        from diaktoros import gh
+        new = "e" * 40
+        real = review_asks.clear_pending_request
+
+        def then(live):
+            def moved_first(*args):
+                gh.pr.return_value = live
+                if live and live["head"]["sha"] == new:
+                    self.st.review_cap_grant(7, new, self.cap)
+                return real(*args)
+            return moved_first
+        self.sweep(self.verdicts(self.cap, OLD))          # the first sweep arms and baselines
+        pushed = {"head": {**self.live["head"], "sha": new},
+                  "requested_reviewers": [{"login": "reviewer"}]}
+        for path, run in (("the sweep", lambda: self.sweep(self.verdicts(self.cap, OLD))),
+                          ("the gate", lambda: self.ask(OWNER))):
+            for case, live in (("a push and a grant at its head", pushed),
+                               ("the PR unreadable", None),
+                               ("the reviewer no longer pending",
+                                {"head": self.live["head"], "requested_reviewers": []})):
+                with self.subTest(path=path, case=case):
+                    self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
+                    self.pending()
+                    self.removed.clear()
+                    self.audited.clear()
+                    with mock.patch.object(review_asks, "clear_pending_request",
+                                           side_effect=then(live and {**self.live, **live})):
+                        run()
+                    self.assertEqual(self.removed, [])
+                    self.assertEqual(self.audited, [])
+                    if live is pushed:
+                        self.assertTrue(self.st.review_cap_granted(7, new, self.cap))
+        # The live PR at the head the caller decided on, its reviewer pending: removed.
+        self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
+        self.pending()
+        self.removed.clear()
+        self.sweep(self.verdicts(self.cap, OLD))
+        self.assertEqual(len(self.removed), 1)
+
     def test_ready_names_the_grant_and_how_the_button_works(self):
         # Review of #2622, F2: the merge check's words say how to grant a round, and offer the
         # re-request only once the reviewer is no longer pending.
