@@ -468,6 +468,8 @@ A shadow turn gets the reviewer's prompt and change view at that head, minus any
 
 Its row is open from the moment the reviewer is queued, so with `shadow.escalate` the head holds the whole time, including while the reviewer's APPROVE is being posted.
 
+A reviewer row with no shadow row (one from before shadow rows were written with it, or one first queued while its head was not sampled) gets one whenever that reviewer turn is queued again while the turn is sampled: by a redelivered event that re-arms it or finds it still waiting to start, and by `hermes dk retry` (#2072, #2076, #2627, #2628). Its findings snapshot is taken as for a new reviewer row, and its row is written in the same transaction that re-arms or redelivers the reviewer's, so the head never shows a re-queued reviewer with no shadow to wait for. A shadow row already there is left as it is (above).
+
 It is not part of the loop:
 - it never occupies the PR, so the real reviewer and fixer never wait for it, and it waits for nothing of theirs except its own reviewer turn's verdict (above);
 - it claims no seat and marks no head in flight;

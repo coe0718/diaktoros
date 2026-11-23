@@ -14,6 +14,7 @@ import uuid
 from contextlib import nullcontext
 
 from .. import run_supervisor
+from . import retry_terms
 
 
 def redelivery_refusal(con, prior, *, admitted: bool, production: bool, seat: str) -> str | None:
@@ -139,11 +140,9 @@ class RunIntake:
                                       (repo, pr, head, turn_key), now, settle)
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
-            if prior and prior['state'] in run_supervisor.REARMABLE and (self.fixture_mode or self.production_config):
+            if prior:
                 outcome = self._redeliver(con, prior, outcome, bool(admitted), requested, settle,
                                           shadow, now)
-            elif prior and prior['state'] == 'waiting' and prior['retry_at']:
-                outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
             con.execute("COMMIT")
         # A redelivery of an unclaimed run must rearm the worker after a
         # transient generation/read outage; active or completed runs stay deduped.
@@ -152,18 +151,27 @@ class RunIntake:
 
     def _redeliver(self, con, prior, outcome: str, admitted: bool, budget, settle: float,
                    shadow, now: float) -> str:
-        """``submit``'s answer for a ``REARMABLE`` row: a new event for a head whose run never
-        wrote is a reason to try again (#53), one attempt per event, up to MAX_REARMS failures.
-        A re-armed reviewer turn owes its shadow too (#2072, #2076): one from before #1682, or
-        first queued unsampled, may have no shadow row, so it is written in this transaction."""
+        """``submit``'s answer for a row already at the delivery. A ``REARMABLE`` row: a new event
+        for a head whose run never wrote is a reason to try again (#53), one attempt per event,
+        up to MAX_REARMS failures. A re-armed reviewer turn owes its shadow too (#2072, #2076):
+        one from before #1682, or first queued unsampled, may have no shadow row, so it is
+        written in this transaction. So does one the event finds still to start (``pending``, or
+        ``waiting`` on a backoff or a settle, #2627): it is left as it is, with its shadow."""
+        identity = (prior['repo'], prior['pr'], prior['head'], prior['turn_key'])
+        if prior['state'] in ('pending', 'waiting'):
+            self._insert_runs(con, [], shadow, identity, now)
+            if prior['state'] == 'waiting' and prior['retry_at']:
+                outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
+            return outcome
+        if prior['state'] not in run_supervisor.REARMABLE or not (self.fixture_mode
+                                                                  or self.production_config):
+            return outcome
         refused = redelivery_refusal(con, prior, admitted=admitted,
                                      production=bool(self.production_config), seat=prior['seat'])
         if refused is not None:
             return f"{outcome}: {refused}"
         self._rearm(con, prior['id'], reset=False, budget=budget, settle=settle)
-        if shadow is not None:
-            self._insert_runs(con, [], shadow, (prior['repo'], prior['pr'], prior['head'],
-                                                prior['turn_key']), now)
+        self._insert_runs(con, [], shadow, identity, now)
         return 'rearmed'
 
     def _start_worker(self, repo: str, prior, outcome: str, settle: float) -> None:
@@ -194,8 +202,9 @@ class RunIntake:
                      settle: float = 0.0) -> None:
         """Insert new run rows, ``(delivery, seat, push_admitted, budget)`` each, in the caller's
         transaction. With ``shadow``, a reviewer turn's shadow row goes in with it (#1682), and
-        with a re-armed one (``rows`` empty, #2076): no new or re-armed reviewer row is visible
-        without the shadow it owes, so neither an APPROVE posted
+        with a re-armed one or one still to start (``rows`` empty, #2076, #2627, #2628): no new,
+        re-armed or redelivered reviewer row is visible without the shadow it owes (written
+        ``pending`` as ``retry``'s re-arm is, even here with no launcher), so neither an APPROVE posted
         before a second submit nor that submit failing can leave ``shadow.escalate`` with
         nothing to wait for. A failure rolls both back. A shadow row already at the identity
         is left as it is, for ``gate.shadows.enqueue_shadow`` to re-arm or refuse.
@@ -204,6 +213,7 @@ class RunIntake:
         until then, not runnable now; ``recover`` makes it pending once due, and its claim and
         pre-launch reads decide it as any pending row's."""
         repo, pr, head, turn_key = identity
+        state = "pending" if self.fixture_mode or self.production_config or not rows else "blocked"
         if shadow is not None and not con.execute(
                 "SELECT 1 FROM runs WHERE delivery=? OR (repo=? AND pr=? AND head=? AND "
                 "seat=? AND turn_key=?)", (shadow[0], repo, pr, head, run_supervisor.SHADOW,
@@ -211,7 +221,6 @@ class RunIntake:
             if run_supervisor.SHADOW not in self.capacity or not shadow[1] > 0:
                 raise ValueError("a shadow row needs the shadow seat and a positive budget")
             rows = [*rows, (shadow[0], run_supervisor.SHADOW, 0, shadow[1])]
-        state = "pending" if self.fixture_mode or self.production_config else "blocked"
         for index, (delivery, seat, admitted, budget) in enumerate(rows):
             held = index == 0 and settle > 0 and state == "pending"
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,"
@@ -260,58 +269,21 @@ class RunIntake:
         snapshot taken under the push-policy lock, the same lock ``submit`` and the broker's push
         hold. While unattended fixer pushes are off the retry is refused with the command that
         turns them on. (A redelivered event never upgrades admission; only this does.)
+
+        A reviewer run whose turn is sampled is re-armed with the shadow row it owes, on a
+        findings snapshot kept now, in the same transaction (#2628, ``retry_terms``).
         """
         from .. import config
         with self._connect() as con:
             first = con.execute('SELECT repo,seat,pr,head,turn_key FROM runs WHERE id=?',
                                 (run_id,)).fetchone()
-        fixer = first is not None and first['seat'] == 'fixer'
-        st = None
-        if first is not None and first['seat'] == run_supervisor.SHADOW:
-            # A shadow is judged on the findings snapshot taken when it was queued (#1013), and
-            # one that has ended may have had it evicted. Hold the state lock from the check to
-            # the re-arm (state lock, then ledger: the order enqueue_shadow uses), so a put
-            # cannot evict the snapshot in between.
-            from .. import state as state_mod
-            try:
-                loop = config.by_repo(first['repo'])
-                st = state_mod.state_for(loop) if loop is not None else None
-            except config.ConfigError:
-                st = None
-        # An issue fix publishes under the same push policy (and triage and a fix label, #980).
-        issue_fix = first is not None and first['seat'] == 'issue_fixer'
-        shadow = first is not None and first['seat'] == run_supervisor.SHADOW
-        with (st.locked() if st is not None else nullcontext()), \
-                (config.push_policy_lock() if fixer or issue_fix else nullcontext()), \
+        st, lock, loop = retry_terms.locks(first)
+        pushes = first is not None and first['seat'] in ('fixer', 'issue_fixer')
+        with lock, (config.push_policy_lock() if pushes else nullcontext()), \
                 self._connect() as con:
-            admitted, policy_off = None, ''
-            if shadow:
-                policy_off = shadow_snapshot_refusal(st, first)
-            if issue_fix:
-                try:
-                    loop = config.by_repo(first['repo'])
-                    reason = (run_supervisor.issue_fix_off_reason(loop) if loop is not None
-                              else f"no loop is configured for {first['repo']}")
-                except config.ConfigError as exc:
-                    reason = f"the loop configuration for {first['repo']} is unusable ({exc})"
-                if reason:
-                    policy_off = (f"refused: {reason}, so an issue fix could not publish; turn "
-                                  "it on (triage with a fix label, and unattended fixer "
-                                  "pushes), then retry")
-            if fixer:
-                try:
-                    loop = config.by_repo(first['repo'])
-                except config.ConfigError as exc:
-                    # Not a ValueError: named here so `retry` reports it per run, not a crash.
-                    loop, policy_off = None, (f"refused: the loop configuration for "
-                                              f"{first['repo']} is unusable ({exc})")
-                if not policy_off and (loop is None
-                                       or not config.unattended_fixer_push_enabled(loop)):
-                    command = config.fixer_push_enable_command(loop or "LOOP")
-                    policy_off = (f"refused: unattended fixer pushes are off for "
-                                  f"{first['repo']}, so a fixer turn could not publish; run "
-                                  f"`{command}` first, then retry")
-                admitted = 1
+            admitted, policy_off = retry_terms.policy(first, st)
+            # Before the transaction, under the state lock: the shadow a reviewer owes (#2628).
+            shadow = retry_terms.owed_shadow(loop, first, self.db)
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT state,error FROM runs WHERE id=?', (run_id,)).fetchone()
             if row is None:
@@ -347,6 +319,9 @@ class RunIntake:
             if admitted is not None:
                 con.execute('UPDATE runs SET push_admitted=? WHERE id=?', (admitted, run_id))
             self._rearm(con, run_id, reset=True, budget=budget)
+            if shadow is not None:
+                self._insert_runs(con, [], shadow, (first['repo'], first['pr'], first['head'],
+                                                    first['turn_key']), time.time())
             con.execute('COMMIT')
         return 'pending'
 
