@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import atexit
 import json
-import math
 import os
 import pathlib
 import random
@@ -165,14 +164,19 @@ def limited_until(login: str, since: float, now: float | None = None) -> float |
     return max(resets) if resets else None
 
 
+RESET_HORIZON_S = 86400         # GitHub's reset is within the hour: one past a day isn't real
+
+
 def _reset(value) -> float | None:
-    """A recorded reset as epoch seconds, or None when it is missing, not a number or not finite:
-    headers are recorded raw, and a malformed one is no evidence of a limit (#2613 review, F12)."""
+    """A recorded reset as epoch seconds, or None when it is not one GitHub could send: missing,
+    not a number, or more than ``RESET_HORIZON_S`` ahead (which includes the infinite and the
+    unrepresentable; one in the past is never waited for). Headers are recorded raw, and a malformed one is no
+    evidence of a limit, nor a time to format (#2613 review, F12)."""
     try:
         reset = float(value)
     except (TypeError, ValueError):
         return None
-    return reset if math.isfinite(reset) else None
+    return reset if reset <= time.time() + RESET_HORIZON_S else None
 
 
 def _newest_seen(login: str, now: float) -> dict | None:

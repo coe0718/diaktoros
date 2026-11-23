@@ -534,7 +534,7 @@ class ClaimTimeReads(Base):
 
     def test_a_malformed_recorded_reset_is_an_ordinary_failed_read(self):
         # Review of #2613, F12: headers are recorded raw, so a fresh count file can carry a
-        # reset that is not a number. It is no evidence of a limit: the claim's failed read
+        # reset GitHub never sends. It is no evidence of a limit: the claim's failed read
         # spends an attempt and backs off, as any other, instead of raising and staying pending.
         import json
         from diaktoros import gh_calls
@@ -543,7 +543,10 @@ class ClaimTimeReads(Base):
         gh_calls.directory().mkdir(parents=True, exist_ok=True)
         sibling = gh_calls.directory() / '1-2-sibling.json'
         self.addCleanup(sibling.unlink, missing_ok=True)
-        for reset in ('invalid', 'inf', 'nan', None, [1]):
+        # Round 5: a finite reset past what the platform can format (1e100), before the epoch,
+        # or further ahead than any GitHub reset is not one either.
+        for reset in ('invalid', 'inf', 'nan', None, [1], '1e100', '-1e100', -5,
+                      str(time.time() + 2 * 86400)):
             with self.subTest(reset=reset):
                 sibling.write_text(json.dumps({'counts': [], 'limits': {'read': {
                     'remaining': '0', 'reset': reset, 'used': '5000', 'at': time.time()}}}))
