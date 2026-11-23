@@ -1,6 +1,12 @@
 """What an audit call passes for a parameter (``_audit_writers``): by position, by keyword, or
 inside a ``**`` expansion the guard can read. Anything it cannot read fails closed (third
-review on #2587), so a writer can never record a role the vocabulary check did not see.
+review on #2587).
+
+Threat model (#2637): this guard catches accidental drift in ordinary code (a literal or variable
+role, keyword or ``**`` passing, a rebound constant, ``setattr``, ``exec`` and namespace writes)
+and fails closed on what it cannot read. It is not a proof against code written to evade it: a
+static scan of Python never finishes. Code review covers that, and ``broker.audit_vocabulary``
+refuses any line outside ``AUDIT_ROLES`` and ``AUDIT_OPERATIONS`` as it is written.
 """
 from __future__ import annotations
 

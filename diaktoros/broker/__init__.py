@@ -274,8 +274,19 @@ AUDIT_OPERATIONS = ("review", "push", "answers", "labels", "comment", "open_pr",
                     "ruling_issue_labels_missing")
 
 
+def audit_vocabulary(role, operation) -> None:
+    """Refuse an audit line whose role or operation is not in ``AUDIT_ROLES`` or
+    ``AUDIT_OPERATIONS``, before it is written (#2637). The static drift guard
+    (``tests/_audit_writers.py``) catches drift in ordinary code; this backstop catches what no
+    static scan can, so a line is never written with a value the Desktop would read as ``unknown``."""
+    if role not in AUDIT_ROLES or operation not in AUDIT_OPERATIONS:
+        raise BrokerDenied(f"audit line refused: role {role!r} or operation {operation!r} is not "
+                           "in the audit vocabulary")
+
+
 def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
            role: str, operation: str, login: str) -> None:
+    audit_vocabulary(role, operation)
     # The GitHub write already happened; a worker never recreates the loop's state dir to
     # record it (hostdirs, #108). One line, and the operation still reports its real outcome.
     # Checks only: on the host, the mkdir below creates it as before.
