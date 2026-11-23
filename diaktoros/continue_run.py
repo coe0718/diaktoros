@@ -198,9 +198,9 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     lost response, a failed state write, a crash) stays open as ``pending``, which no reply
     resolves; calling this again for the same run reconciles it: it adopts the fixer's comment
     carrying this run's ``plan_marker`` if GitHub has one, and posts only if not (review F4).
-    That reconciling happens whatever the inspection says now (#2381): when the run is no longer
-    refused only for want of a plan, its own reservation is still settled by
-    ``_release_plan_ask`` before the refusal, so a changed label, body or branch cannot strand it.
+    When the run is no longer refused only for want of a plan (#2381), its own reservation is
+    settled by ``_release_plan_ask`` before the refusal: a pending one is dropped (#2367, #2370)
+    and the line names how to ask again, so a changed label, body or branch cannot strand it.
     """
     from . import fix_hold, state as state_mod
     plan = inspect(loop, sup, run_id)
@@ -212,7 +212,7 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
             # The plan is no longer required (no plan-first refusal and no conflict, or the
             # issue read now says no plan is needed or possible, #2382 review F2): the run's ask
             # is closed outright. While a conflict hides whether one is still needed (the issue
-            # still asks for a plan, or could not be read), only an unconfirmed one is settled.
+            # still asks for a plan, or could not be read), only an unconfirmed one is dropped.
             keep = bool(plan["conflicts"]) and plan.get("plan_needed") is not False
             settled = [_release_plan_ask(loop, state_mod.state_for(loop), plan["fix"]["number"],
                                          run_id, keep_adopted=keep)]
@@ -238,14 +238,17 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                           f"{run_id}` opens the PR"]
 
 
-def plan_marker(run_id: str) -> str:
-    """The hidden first line that ties a posted plan comment to its run, so a retry finds it."""
-    return f"<!-- diaktoros plan of run {run_id} -->"
+def plan_marker(run_id: str, claim: str = "") -> str:
+    """The hidden first line that ties a posted plan comment to its run's reservation (``claim``,
+    review on #2579), so a retry finds it and a later reservation never adopts it."""
+    return f"<!-- diaktoros plan of run {run_id}{f' claim {claim}' if claim else ''} -->"
 
 
-def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tuple[int | None, str]:
-    """``(id, "")`` of the oldest comment by ``login`` carrying ``run_id``'s ``plan_marker``,
-    ``(None, "")`` when there is none, ``(None, why)`` when the comments are unreadable."""
+def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str,
+                        claim: str = "") -> tuple[int | None, str]:
+    """``(id, "")`` of the oldest comment by ``login`` carrying the ``plan_marker`` of ``run_id``'s
+    reservation ``claim``, ``(None, "")`` when there is none, ``(None, why)`` when the comments
+    are unreadable."""
     comments, error = gh.issue_comments_read(loop, number)
     if comments is None:
         return None, error or "unreadable"
@@ -253,7 +256,8 @@ def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tup
                           key=lambda c: c["id"]):
         user = comment.get("user")
         author = str(user.get("login") or "") if isinstance(user, dict) else ""
-        if author.casefold() == login.casefold() and plan_marker(run_id) in str(comment.get("body") or ""):
+        if author.casefold() == login.casefold() and plan_marker(run_id, claim) in str(
+                comment.get("body") or ""):
             return comment["id"], ""
     return None, ""
 
@@ -263,12 +267,14 @@ def _release_plan_ask(loop: dict, st, number: int, run_id: str, keep_adopted: bo
     run's PR (#2381); the line to report, or ``""`` when the run has no ask open. Another run's
     or the seat's ask is never touched.
 
-    A ``pending`` reservation is first matched against the issue's comments
-    (``_adopt_plan_comment``): with no marked comment on the issue it is dropped and its count
-    given back, since nothing was asked. With ``keep_adopted`` (a conflict hides whether a plan
-    is still needed) a found comment is adopted, so a maintainer's ``/loop approve`` resolves it
-    as usual, and a confirmed ask stays; without it (the plan is no longer required, or the PR is
-    open) the ask is closed, still counted when its comment is on the issue or may be. Runs under
+    A ``pending`` reservation is always dropped (#2367, #2370: dropped, never adopted, so no
+    inspection result can strand it): its count is given back when the issue's comments show no
+    marked comment of the run (``_adopt_plan_comment``), since nothing was asked, and kept when
+    the comment is on the issue or may be. A confirmed ask stays with ``keep_adopted`` (a
+    conflict hides whether a plan is still needed: a maintainer's ``/loop approve`` resolves it
+    as usual) and is closed without it (the plan is no longer required, or the PR is open).
+    Under a conflict the line names the recovery: inspect with ``--dry-run``, then post a fresh
+    plan with ``--post-plan`` once only the plan refusal stands. Runs under
     ``config.push_policy_lock``, as a ``--post-plan`` post does."""
     if not isinstance(st.fix_ask_open().get(number), dict):
         return ""
@@ -281,23 +287,22 @@ def _release_plan_ask(loop: dict, st, number: int, run_id: str, keep_adopted: bo
                 return ""
             st.fix_ask_drop(number, run=run_id)
             return f"closed run {run_id}'s plan ask on issue #{number}: the plan is not needed now"
-        comment, error = _adopt_plan_comment(loop, number, config.seat_login(loop, "fixer"), run_id)
-        if error and keep_adopted:
-            return (f"run {run_id}'s plan ask on issue #{number} stays pending: the issue's "
-                    f"comments are unreadable ({error}); run `--post-plan` again")
+        comment, error = _adopt_plan_comment(loop, number, config.seat_login(loop, "fixer"), run_id,
+                                             str(ask.get("claim") or ""))
+        recover = (f"; to ask again, check `hermes dk continue --loop {loop['id']} --run {run_id} "
+                   "--dry-run` and, once it is refused only for want of a plan, run `--post-plan` "
+                   "again to post a fresh plan" if keep_adopted else "")
         if comment is None and not error:
             st.fix_ask_drop(number, run=run_id, uncount=True)
             return (f"dropped run {run_id}'s unposted plan reservation on issue #{number} "
-                    "(no plan comment of the run is on the issue)")
-        if keep_adopted:
-            try:
-                st.fix_ask_confirm(number, run_id, comment)
-            except Exception as exc:
-                return f"plan comment {comment} found but not recorded ({exc}); run `--post-plan` again"
-            return (f"adopted plan comment {comment} of run {run_id}; a maintainer's "
-                    "`/loop approve` resolves it")
+                    f"(no plan comment of the run is on the issue){recover}")
         st.fix_ask_drop(number, run=run_id)
-        return f"closed run {run_id}'s plan ask on issue #{number}: the plan is not needed now"
+        if not keep_adopted:
+            return f"closed run {run_id}'s plan ask on issue #{number}: the plan is not needed now"
+        on_issue = (f"its plan comment {comment} is on the issue" if comment is not None else
+                    f"its plan comment may be on the issue: comments unreadable ({error})")
+        return (f"dropped run {run_id}'s unconfirmed plan reservation on issue #{number} ({on_issue}; "
+                f"a `/loop approve` on it is not read){recover}")
 
 
 def _post_claimed_plan(loop: dict, st, fix: dict, login: str, run_id: str, ask: dict) -> str:
@@ -309,11 +314,11 @@ def _post_claimed_plan(loop: dict, st, fix: dict, login: str, run_id: str, ask: 
     number, again = fix["number"], "; the plan ask stays reserved: run `--post-plan` again"
     comment = None
     if ask.get("reconcile"):
-        comment, error = _adopt_plan_comment(loop, number, login, run_id)
+        comment, error = _adopt_plan_comment(loop, number, login, run_id, str(ask.get("claim") or ""))
         if error:
             return f"no plan posted: the issue's comments are unreadable ({error}){again}"
     if comment is None:
-        body = f"{plan_marker(run_id)}\n{fix_hold.posted_ask('plan', ask['text'])}"
+        body = f"{plan_marker(run_id, str(ask.get('claim') or ''))}\n{fix_hold.posted_ask('plan', ask['text'])}"
         try:
             comment = broker.post_issue_comment(loop, repo=fix["repo"], number=number,
                                                 login=login, body=body)
