@@ -1,5 +1,6 @@
 """Whether a ``hermes dk restore`` archive is safe to restore on this install (#496, #587, #783,
-#917, #920): ``unsafe`` and the route and state-directory checks it is built from.
+#917, #920): ``unsafe`` and the route and state-directory checks it is built from, and
+``refusal``, what the install itself says against a restore now.
 
 An archive is input from outside. ``backup`` reads and writes it; this module only judges what
 it would write, and never writes anything. Split out of ``backup`` (#1049's PR took that file
@@ -214,3 +215,23 @@ def unsafe(manifest: dict, *, allowed_state_dirs=(), archive=None) -> list[str]:
             problems += [f"route {name}: {why}"
                          for why in route_problems(entry, live.get(name), claims.get(name, []))]
     return problems
+
+
+def refusal(manifest: dict, *, force: bool) -> str:
+    """Why ``restore`` must not write now, or "": a run in flight or uncertain (a ledger that
+    cannot be read counts), or existing state it would overwrite without ``--force``. Asked under
+    migrate's marker; a refusal writes nothing, so the restore keeps the pause of an interrupted
+    migration it picked up (#2594)."""
+    from . import backup, migrate
+    try:
+        busy = migrate.runs_in_flight()
+    except migrate.RunsUnknown as exc:
+        return str(exc)
+    if busy:
+        return (f"{busy} run(s) are in flight or uncertain; wait for them (or reconcile them), "
+                "then run restore again")
+    clash = backup.existing(manifest)
+    if clash and not force:
+        return ("existing state would be overwritten (use --force):\n  " + "\n  ".join(clash[:20])
+                + (f"\n  … {len(clash) - 20} more" if len(clash) > 20 else ""))
+    return ""
