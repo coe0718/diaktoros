@@ -329,8 +329,8 @@ class JunkWatch(unittest.TestCase):
                 self.assertEqual(self.st.watch(), {})
         self.st.watch_file.write_text("{not json")
         self.assertEqual(self.st.watch(), {})
-        self.st.watch_file.write_text(json.dumps({"last_run": 5}))
-        self.assertEqual(self.st.watch(), {"last_run": 5})
+        self.st.watch_file.write_text(json.dumps({"last_run": "2026-01-01T00:00:00Z"}))
+        self.assertEqual(self.st.watch(), {"last_run": "2026-01-01T00:00:00Z"})
 
     def test_callers_of_watch_survive_a_non_mapping(self):
         from diaktoros.doctor import cron_checks

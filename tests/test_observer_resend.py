@@ -4,6 +4,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import pathlib
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -16,7 +17,9 @@ import _ledger_guard  # noqa: E402
 setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
-class ObserverResendTests(unittest.TestCase):
+class Fixture(unittest.TestCase):
+    """A loop whose observer route fails every POST until ``fix_route`` (shared, #2629 F2)."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -52,6 +55,8 @@ class ObserverResendTests(unittest.TestCase):
         self.assertTrue(entry.get("posting_at"), "the failed attempt marked its POST")
         return key
 
+
+class ObserverResendTests(Fixture):
     def test_a_retryable_failure_reclaimed_and_killed_is_resent(self):
         # #1968: the sweep's re-claim must not keep the failed attempt's `posting_at`, or a sweep
         # killed before its own mark leaves a claim the next sweep can only quarantine.
@@ -80,6 +85,76 @@ class ObserverResendTests(unittest.TestCase):
         with patch.object(routes, "fire", return_value=True) as fire:
             self.assertEqual(observer.retry(self.loop, self.state), 1)
             fire.assert_called_once()
+
+    def capped_manual_resend_killed(self):
+        """A failed notice past the sweep's cap whose manual resend died before its POST."""
+        key = self.failed_notice()
+        data = observer._read(self.state.observations)
+        data["entries"][key]["attempts"] = observer.MAX_ATTEMPTS
+        observer._save(self.state.observations, data)
+        self.fix_route()
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.resend(self.loop, self.state, key)
+        self.age(key)
+        return key
+
+    def test_a_capped_manual_resend_killed_before_its_post_is_resent_once(self):
+        # #2611: `resend` takes a notice past MAX_ATTEMPTS; killed before its POST, the sweep
+        # used to mark it failed and never send it, though the claim never reached the gateway.
+        key = self.capped_manual_resend_killed()
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        self.assertEqual(self.entries()[key]["status"], "delivered")
+
+    def test_a_capped_manual_resend_is_recovered_by_the_sweep_only_once(self):
+        # The sweep's own re-claim is not a manual one: killed too, it stays failed for a person.
+        key = self.capped_manual_resend_killed()
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.retry(self.loop, self.state)
+        self.age(key)
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 0)
+            fire.assert_not_called()
+        self.assertEqual((self.entries()[key]["status"], self.entries()[key]["retryable"]),
+                         ("failed", True))
+        with patch.object(routes, "fire", return_value=True):
+            self.assertTrue(observer.resend(self.loop, self.state, key))
+
+    def test_a_late_manual_sender_writes_nothing_on_the_sweeps_claim(self):
+        # #2611 review F1: stale is not dead. A capped manual resend paused before its mark, its
+        # claim taken over by the sweep, resumes during the sweep's POST: it must not POST too,
+        # nor record its own outcome on the sweep's claim.
+        key = self.failed_notice()
+        data = observer._read(self.state.observations)
+        data["entries"][key]["attempts"] = observer.MAX_ATTEMPTS
+        observer._save(self.state.observations, data)
+        self.fix_route()
+        real, paused, go = observer._mark_posting, threading.Event(), threading.Event()
+        late = threading.Thread(target=observer.resend, args=(self.loop, self.state, key))
+
+        def mark(*args):
+            if threading.current_thread() is late and not go.is_set():
+                paused.set()
+                go.wait(10)
+            return real(*args)
+
+        def post(*_args, **_kwargs):
+            if threading.current_thread() is not late and not go.is_set():
+                go.set()                                  # the late sender resumes mid-POST
+                late.join(10)
+            return True
+        with patch.object(observer, "_mark_posting", side_effect=mark), \
+                patch.object(routes, "fire", side_effect=post) as fire:
+            late.start()
+            self.assertTrue(paused.wait(10))
+            self.age(key)
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+        self.assertFalse(late.is_alive())
+        self.assertEqual(fire.call_count, 1)                  # the sweep's POST, not a second
+        self.assertEqual(self.entries()[key]["status"], "delivered")
 
     def digest_failed_to_the_cap(self):
         """Two queued notices whose digest fails before its POST on every allowed attempt."""

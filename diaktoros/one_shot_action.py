@@ -625,8 +625,8 @@ def _review(loop, args, emit=print):
             return refused
 
     def queued():
-        entry = (st.queue_all().get("reviewer") or {}).get(key) or {}
-        return entry if entry.get("head") == head else None
+        entry = st.queue_all().get("reviewer", {}).get(key)        # an entry may be junk (#2303)
+        return entry if isinstance(entry, dict) and entry.get("head") == head else None
     before = (_reviewer_runs(loop["repo"], args.pr, head), queued())
     payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
                "repository": {"full_name": loop["repo"]},

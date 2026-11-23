@@ -461,7 +461,7 @@ def _record_failures(loop):
 
 
 def _record_broker(loop):
-    from .broker import AUDIT_ROLES
+    from .broker import AUDIT_OPERATIONS, AUDIT_ROLES
     raw = _record_bytes(config.state_dir(loop) / 'broker-audit.jsonl', tail=True)
     if raw and not raw.endswith(b'\n'):
         raise ValueError('incomplete append')
@@ -478,11 +478,7 @@ def _record_broker(loop):
                      'pr': _record_number(entry.get('pr'), integer=True),
                      'head': _record_sha(entry.get('head', entry.get('old_head', ''))),
                      'role': _record_enum(entry.get('role'), AUDIT_ROLES),
-                     'operation': _record_enum(entry.get('operation'),
-                                               ('review', 'push', 'answers', 'labels', 'comment',
-                                                'open_pr', 'request_review', 'issue_comment',
-                                                'file_issue', 'ruling_comment', 'issue_branch',
-                                                'update_branch')),
+                     'operation': _record_enum(entry.get('operation'), AUDIT_OPERATIONS),
                      'phase': _record_enum(entry.get('phase', 'recorded'),
                                            ('recorded', 'attempt', 'reconciled')),
                      'outcome': _record_enum(entry.get('outcome', 'recorded' if 'phase' not in entry
@@ -957,7 +953,7 @@ def _findings(loop: dict, pr: int) -> list[dict]:
                     "head": stats.recorded_head(item.get("head")),
                     "at": float(at) if isinstance(at, (int, float)) else None,
                     "missed": bool(item.get("missed"))})
-    out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isdigit() else 0)
+    out.sort(key=lambda item: findings.order(item["id"]))
     return out
 
 

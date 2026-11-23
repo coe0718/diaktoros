@@ -47,6 +47,9 @@ DIFFERENT = {
         "renames a ledger file and its sidecar; nothing is written", {"os.rename": 2}),
     "diaktoros/state/migrate.py::files_step": ("renames a loop's files; nothing is written",
                                          {"os.rename": 1}),
+    "diaktoros/state/migrate.py::keep_left": (
+        "puts back the interrupted run's own marker file, kept by ``hold``: a full disk cannot "
+        "refuse a rename (#2630 review)", {"os.replace": 1}),
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": (
         "rotates a worker log", {"os.replace": 1}),
     "diaktoros/deps.py::prefetch_rust": ("retires and restores a dependency-cache directory",
@@ -64,6 +67,7 @@ CALLERS = {
     "diaktoros/observer.py::_save", "diaktoros/onboarding.py::_store", "diaktoros/pacing.py::_save",
     "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
     "diaktoros/runtime_detect.py::write", "diaktoros/state/__init__.py::_atomic_publish",
+    "diaktoros/state/migrate.py::hold",       # an interrupted run's marker, kept by copy (#2630)
     "diaktoros/state/__init__.py::LoopState._transition_write",
     # The shared append-then-prune (#2302): gate_decisions.record and corpus.record publish
     # their pruned files through it.

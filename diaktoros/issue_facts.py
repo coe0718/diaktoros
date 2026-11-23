@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import re
 
+from . import md_fences
+
 ISSUE_BODY_BYTES = 8000
 ISSUE_TITLE_BYTES = 256
 COMMENT_BYTES = 4000
@@ -25,9 +27,10 @@ LABELS_MAX = 10
 
 _CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d{1,10})\b", re.IGNORECASE)
 # The heading may carry a note after it, ``## Requirements (all met)``, ``— met`` or ``: met``
-# (#2199: a refused heading cost shadow turns their last steps); a sentence never matches.
+# (#2199: a refused heading cost shadow turns their last steps), or several, ``(all met) — see
+# below`` (#2276); a sentence never matches.
 HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)?\s*Requirements\b\**"
-                     r"(?:\s*\([^)]*\)|\s+[-–—]\s.*|\s*:.*)?[\s:*]*$", re.IGNORECASE)
+                     r"(?:\s*\([^)]*\)|\s+[-–—]\s.*|\s*:.*)*[\s:*]*$", re.IGNORECASE)
 _ANY_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*:?\s*$)")
 # An issue number is at most 10 digits: a longer run is no reference, so ``int`` never meets
 # one (past 4300 digits it raises: review on #1948).
@@ -68,7 +71,7 @@ def closing_numbers(loop: dict, number: int, body: str | None = None) -> list[in
 
 
 def cited_own_work(loop: dict, number: int, pr_body: object, head_ref: object,
-                   review_body: object) -> list[int]:
+                   review_body: object, known=()) -> list[int]:
     """#754: the PR's own numbers that a blocking finding names, in order of first mention.
 
     The PR's own numbers are the PR itself, the issues its body closes (``closing_numbers`` on
@@ -79,15 +82,18 @@ def cited_own_work(loop: dict, number: int, pr_body: object, head_ref: object,
     Requirements section or a summary does not count. A number counts only as a literal
     same-repo ``#N`` (``_REFERENCE``, as ``referenced_numbers`` reads it): ``#123`` is not in
     ``#1234``, and ``other/repo#123`` is another repository's. Literal on purpose: no model
-    judges whether the finding asks for that work."""
+    judges whether the finding asks for that work.
+
+    ``known``: the finding ids the host has recorded for the PR, read as the broker reads them
+    (#2548: without them ``F2: fixed in #12`` reads as a new finding)."""
     from . import config, findings
     own = {number, *(closing_numbers(loop, number, pr_body if isinstance(pr_body, str) else "")
                      or [])}
     branch = re.fullmatch(config.ISSUE_FIX_BRANCH_RE, head_ref if isinstance(head_ref, str) else "")
     if branch:
         own.add(int(branch.group(1)))
-    blocking = [rest for _, kind, rest in findings.parse(review_body if isinstance(review_body, str)
-                                                         else "")
+    body = review_body if isinstance(review_body, str) else ""
+    blocking = [rest for _, kind, rest in findings.parse(body, known or ())
                 if kind in ("new", "open")]
     return [value for value in referenced_numbers(blocking, ()) if value in own]
 
@@ -241,19 +247,55 @@ def referenced_section(loop: dict, number: int, texts: list[str], closing,
             "words.\n\n" + "\n".join(rows))
 
 
-def requirements(body: str) -> list[str] | None:
-    """The lines of the review's ``Requirements`` section, or None when there is none."""
-    lines = body.splitlines()
+def _section(body: str) -> list[str] | None:
+    """The ``Requirements`` section's lines, blank ones kept and fenced code blanked
+    (``md_fences.unfenced``), or None when there is none."""
+    lines = md_fences.unfenced(body.splitlines())
     for i, line in enumerate(lines):
         if HEADING.match(line):
             out = []
             for rest in lines[i + 1:]:
                 if _ANY_HEADING.match(rest) and not _STATUS.search(rest):
                     break
-                if rest.strip():
-                    out.append(rest)
+                out.append(rest)
             return out
     return None
+
+
+def requirements(body: str) -> list[str] | None:
+    """The non-blank lines of the review's ``Requirements`` section, or None when there is none."""
+    section = _section(body)
+    return None if section is None else [line for line in section if line.strip()]
+
+
+def _top_items(lines: list[str]) -> list[str]:
+    """The section's top-level list items, read as Markdown nests them (reviews on #2573): each
+    open item's content starts past its marker and the spaces after it, and a later item indented
+    at least that far is nested in it (evidence), any other ends it. So a list indented as a whole
+    is still top level, a bullet under ``1. item`` needs three spaces to nest, and an item that
+    dedents is the new level. Prose after a blank line, not indented into the open item, ends it
+    too; prose with no blank line before it is the item's own text. A marker alone on its line
+    starts an item whose text is the next line, indented past it (fourth review)."""
+    open_items, blank, out, empty = [], False, [], False
+    for line in lines:
+        if not line.strip():
+            blank = True
+            continue
+        found, indent = md_fences.ITEM.match(line), md_fences.indent(line)
+        found = None if md_fences.code_line(found, indent, open_items) else found   # code (F9)
+        if found or blank:
+            while open_items and indent < open_items[-1]:
+                open_items.pop()
+        if empty and not found and not blank and open_items and indent >= open_items[-1]:
+            out.append(line)                  # the text of a top-level item's bare marker
+        empty = False
+        if found:
+            if not open_items:
+                empty = found.group(3) is None
+                out += [] if empty else [line]
+            open_items.append(md_fences.item_col(found))
+        blank = False
+    return out
 
 
 def check(loop: dict, number: int, verdict: str, body: str) -> str:
@@ -271,10 +313,15 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
                 "needs a `Requirements` section (a heading line such as `## Requirements`, then one "
                 "line per requirement) giving each requirement `met` (with evidence), "
                 "`not met` or `deferred to #N`; nothing was written, resubmit")
-    statuses = [found for found in (_STATUS.search(line) for line in items) if found]
+    # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
+    marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
+    statuses = [found for _, found in marked if found]
+    tops = set(_top_items(_section(body) or []))
+    top = [line for line, found in marked if not found and line in tops]
     if not statuses:
+        named = f" ({json.dumps(_clip(top[0].strip(), 120))} has none)" if top else ""
         return ("the Requirements section has no item marked `met`, `not met` or "
-                "`deferred to #N`; nothing was written, resubmit")
+                f"`deferred to #N`{named}; nothing was written, resubmit")
     for found in statuses:
         if found.group(2):
             n = int(found.group(2))
@@ -287,4 +334,8 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
         return ("an APPROVE cannot have a `not met` requirement: it is a blocking finding "
                 "(number it F<n>) and the verdict is REQUEST_CHANGES; nothing was written, "
                 "resubmit")
+    if verdict == "APPROVE" and top:
+        return (f"the Requirements item {json.dumps(_clip(top[0].strip(), 120))} has no status: "
+                "an APPROVE marks every requirement `met` (with evidence), `not met` or "
+                "`deferred to #N`; nothing was written, resubmit")
     return ""

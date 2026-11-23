@@ -79,6 +79,8 @@ PUSH_SETTLED = "push quarantine settled: nothing written:"
 # only the next watchdog sweep, up to a sweep interval later, would start it.
 CLAIM_READ_FAILED = "claim-time read failed"
 CI_POLL_S = 90
+POLLER_MAX_S = 3600.0   # the one lingering CI poller (#2609) hands over after this long
+POLL_SLICE_S = 30.0     # and sleeps at most this long, to see rows held meanwhile
 # The CI light poll's live maintainer-hold read (#1708): once per this many seconds of a hold,
 # so a hold the watchdog sweep has not recorded yet is still seen within this bound.
 CI_HOLD_READ_S = 10 * 60
@@ -1258,6 +1260,8 @@ def _worker(a) -> None:
     # state dir is gone, replaced or unusable, before or during the run, it logs one line
     # (to <ledger>.workers.log, which the host opened for it) and exits 0.
     os.environ[WORKER_ENV] = "1"
+    from .. import gh_calls
+    gh_calls.set_caller("worker")       # its entry script is only __main__.py (#2609)
     waits.cap_stderr(Path(a.db))
     try:
         if a.operation == "_fixture-worker":

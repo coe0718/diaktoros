@@ -174,7 +174,7 @@ def refusal(loop: dict, number: int, entry: dict, restated: dict[str, str]) -> s
         return ("the host could not read the comments on this PR and its closing issue(s), so "
                 "whether a finding you keep open was answered cannot be checked: this is a "
                 "GitHub read failure, not the finding's fault; nothing was written, retry shortly")
-    for fid in sorted(found, key=lambda k: int(k[1:])):
+    for fid in sorted(found, key=findings.order):
         answer = quote(found[fid][-1])
         reason = findings.state_reason(restated[fid])
         item = entry["findings"][fid]
@@ -202,7 +202,7 @@ def section(loop: dict, number: int, entry: dict) -> str:
     if not found:
         return ""
     parts = []
-    for fid in sorted(found, key=lambda k: int(k[1:])):
+    for fid in sorted(found, key=findings.order):
         shown = found[fid][-PER_FINDING:]
         parts.append(f"### {fid}\n" + "\n".join("> " + quote(a) for a in shown))
     text = "\n\n".join(parts)
