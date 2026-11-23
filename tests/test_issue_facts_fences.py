@@ -165,5 +165,27 @@ class HtmlComments(Mocked):
         self.assertEqual(check("- second: export flag `x <!-- met --> y` met\n"), "")
 
 
+class HtmlBlocks(Mocked):
+    """Seventeenth review on #2573 (F17): an HTML block other than a comment is raw HTML, as
+    Markdown renders it, so a line in ``<pre>`` evidence that begins ``- `` is not an item."""
+
+    def test_html_block_evidence_is_not_an_item(self):
+        for body in ("<pre>\n- command --help\n</pre>\n",                   # Vex's case
+                     "<PRE class=x>\n\n- command --help\n</pre>\n",          # to its </pre>
+                     "<div>\n- command --help\n</div>\n", "<?php\n- x\n?>\n",
+                     "<span>\n- command --help\n",                         # a lone tag
+                     "- two: met\n\n  <pre>\n  - nested --flag\n  </pre>\n"):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
+    def test_a_real_unmarked_item_after_the_block_is_still_refused(self):
+        for body in ("<pre>\n- command --help\n</pre>\n- second: export flag\n",
+                     "<div>\n- command --help\n\n- second: export flag\n",   # a blank ends it
+                     "Prose.\n<span>\n- second: export flag\n",   # a lone tag: the prose's text
+                     "    <pre>\n\n- second: export flag\n"):     # indented: code, no block
+            with self.subTest(body):
+                self.assertIn('"- second: export flag" has no status', check(body))
+
+
 if __name__ == "__main__":
     unittest.main()

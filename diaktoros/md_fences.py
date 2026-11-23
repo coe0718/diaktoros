@@ -26,6 +26,11 @@ escaped backtick opens no code span (fifteenth review). A marker line that canno
 paragraph is the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
 second F14): one that dedents past the item it continues is indented back into it. Nor is a
 line that only looks like a fence or comment opener (sixteenth review) a break in the paragraph.
+Every other HTML block (``html_end``: ``<pre>``, ``<div>``, ``<?``, a lone tag and the rest, as
+CommonMark lists them) is raw HTML, not Markdown, so it is blanked as a comment is, through its
+end: a closing ``</pre>`` and the like, or a blank line (seventeenth review: a command beginning
+``- `` in ``<pre>`` evidence read as an unmarked requirement). A lone tag cannot interrupt a
+paragraph, so there it is the paragraph's text.
 """
 from __future__ import annotations
 
@@ -33,7 +38,18 @@ import re
 
 ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
-COMMENT = re.compile(r"^[ \t]*<!--(.*)$")
+_ATTR = r"""(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+_BLOCK_TAGS = ("address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|"
+               "dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|"
+               "frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|"
+               "nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|"
+               "tfoot|th|thead|title|tr|track|ul")
+# CommonMark's HTML block kinds: what opens one, and what ends it (None: the next blank line).
+HTML = [(re.compile(start, re.I), end and re.compile(end, re.I)) for start, end in (
+    (r"<(?:script|pre|style|textarea)(?:\s|>|$)", r"</(?:script|pre|style|textarea)>"),
+    (r"<!--", r"-->"), (r"<\?", r"\?>"), (r"<![A-Za-z]", r">"), (r"<!\[CDATA\[", r"\]\]>"),
+    (rf"</?(?:{_BLOCK_TAGS})(?:\s|/?>|$)", None),
+    (rf"(?:<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$", None))]
 # An inline token: a backslash escape (ASCII punctuation), a backtick run or a comment opener.
 INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|<!--")
 
@@ -77,6 +93,15 @@ def interrupts(found, at: int, cols: list[int], kinds: list[str]) -> bool:
     return found.group(3) is not None and (kind(found) in "-*+" or int(found.group(2)[:-1]) == 1)
 
 
+def html_end(text: str, para: list) -> tuple | None:
+    """Whether ``text`` (a line, its indent stripped) opens an HTML block, and if so ``(end,)``:
+    what ends it, or None for the next blank line. A lone tag cannot interrupt a paragraph."""
+    for kind_at, (start, end) in enumerate(HTML):
+        if start.match(text) and not (para and kind_at == len(HTML) - 1):
+            return (end,)
+    return None
+
+
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
     (twelfth review on #2573); each line break they held is kept, so the lines still line up.
@@ -106,17 +131,19 @@ def unfenced(lines: list[str]) -> list[str]:
     hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
     evidence read as unmarked items). The lines left are read for inline comments a paragraph
     at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
-    out, fence, cols, kinds, blank, comment, para = [], None, [], [], False, None, []
+    out, fence, cols, kinds, blank, html, para = [], None, [], [], False, None, []
 
     def flush():                          # the paragraph so far, read inline as one text
         out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
         para.clear()
     for line in lines:
         at, ended = indent(line), False
-        if comment is not None and line.strip() and at < comment:
-            comment, ended = None, True            # its list item ended, and the comment with it
-        elif comment is not None:                  # inside an HTML comment, through its "-->"
-            comment = None if "-->" in line else comment
+        if html is not None and line.strip() and at < html[0]:
+            html, ended = None, True               # its list item ended, and the block with it
+        elif html is not None and html[1] is None and not line.strip():
+            html = None                            # a blank line ends it, and is read as one
+        elif html is not None:                     # inside an HTML block, through its end
+            html = None if html[1] and html[1].search(line) else html
             out.append("")
             continue
         if fence is not None:
@@ -135,7 +162,7 @@ def unfenced(lines: list[str]) -> list[str]:
             out.append(line)
             blank = True
             continue
-        item, found, opener = ITEM.match(line), FENCE.match(line), COMMENT.match(line)
+        item, found, opener = ITEM.match(line), FENCE.match(line), html_end(line.lstrip(), para)
         item = None if code_line(item, at, cols) else item
         # A fence or comment line too deep for its item, or a backtick fence with a backtick
         # after it, is text: it ends no paragraph and closes no item (sixteenth review).
@@ -153,7 +180,7 @@ def unfenced(lines: list[str]) -> list[str]:
             flush()
         blank, col = False, cols[-1] if cols else 0
         if opener:
-            comment = None if "-->" in opener.group(1) else col
+            html = None if opener[0] and opener[0].search(line) else (col, opener[0])
             out.append("")
             continue
         if found:
