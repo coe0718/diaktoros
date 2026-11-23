@@ -22,6 +22,7 @@ import test_triage_sweep as tts  # noqa: E402
 from diaktoros import gh  # noqa: E402
 
 PRS = [tts.issue(900 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)]
+ISSUE = tts.issue(8, age=7200.0)                # older than every PR before it, as listed
 
 
 class Base(tts.SweepBase):
@@ -31,7 +32,7 @@ class Base(tts.SweepBase):
         answers page 2. A smaller page, the places a resumed sweep reads again (F6), is cut
         from ``listing``: by default ``page1``, then the issue page 2 holds by default."""
         seen = []
-        listing = page1 + ([tts.issue(8)] if page2 is None else []) if listing is None else listing
+        listing = page1 + ([ISSUE] if page2 is None else []) if listing is None else listing
 
         def fetch(loop, path, *args, **kw):
             if "/issues?" not in path:
@@ -45,7 +46,7 @@ class Base(tts.SweepBase):
                 scope["deadline"] = time.monotonic() + left_after_page1
                 return page1, None
             if path.endswith("&page=2"):
-                return page2(path) if page2 else ([tts.issue(8)], None)
+                return page2(path) if page2 else ([ISSUE], None)
             return [], None
 
         with gh.gate_scope(time.monotonic() + budget, per_call=min(20.0, budget)) as scope, \
@@ -73,7 +74,7 @@ class ResumedSweep(Base):
         self.assertIn("the next sweep reads on from there", alerts[0])
         alerts, seen, _ = self.run_sweep(2.0)
         self.assertEqual((alerts, self.queued()), ([], [8]))
-        self.assertTrue(seen[1].endswith("&page=2"))          # after the places before it
+        self.assertTrue(seen[0].endswith("per_page=100&page=2"))   # the page, then the places
         alerts, seen, _ = self.run_sweep(15.0)         # whole: the next one starts from page 1
         self.assertNotIn("&page=", seen[0])
 
@@ -115,7 +116,7 @@ class ResumedSweep(Base):
         with mock.patch.object(self.st, "_save_strict", side_effect=fail), \
                 mock.patch.object(Path, "unlink", side_effect=OSError("Read-only file system")):
             alerts, seen, _ = self.run_sweep(15.0)      # from page 2, whole: page 1 not saved
-        self.assertTrue(seen[1].endswith("&page=2"))
+        self.assertTrue(seen[0].endswith("per_page=100&page=2"))
         self.assertEqual(len(alerts), 1, alerts)
         self.assertIn("could not reset where its listing starts", alerts[0])
 
@@ -139,7 +140,7 @@ class ResumedSweep(Base):
         self.assertEqual(sorted(self.queued()), list(range(100, 115)))
         self.assertIn("reads on from there", alerts[0])
         alerts, seen, _ = self.run_sweep(2.0, page1=page1)      # only now on to page 2
-        self.assertTrue(seen[1].endswith("&page=2"))
+        self.assertTrue(seen[0].endswith("per_page=100&page=2"))
         self.assertEqual((alerts, self.queued()[-1]), ([], 8))
 
     def test_a_slow_resumed_page_is_bounded_and_the_next_sweep_starts_over(self):
@@ -158,8 +159,8 @@ class ResumedSweep(Base):
             return None, "timed out"
         with mock.patch("time.monotonic", lambda: real() + skew[0]):
             alerts, seen, scope = self.run_sweep(20.0, page2=slow)
-        self.assertEqual(len(seen), 2)
-        self.assertTrue(seen[1].endswith("&page=2"))
+        self.assertEqual(len(seen), 1)                  # the page first: the places wait
+        self.assertTrue(seen[0].endswith("&page=2"))
         self.assertLessEqual(given[0], 15.0)            # 20 s less the 5 s held back
         self.assertGreater(scope["deadline"] - time.monotonic() - skew[0], 0)   # the rest's time
         self.assertEqual(len(alerts), 1, alerts)
@@ -182,13 +183,13 @@ class ShiftedListing(Base):
         PRs before it close. Returns the listing as the next sweep finds it."""
         self.run_sweep(2.0)
         self.assertEqual(self.queued(), [])
-        return PRS[closed:] + [tts.issue(8)]
+        return PRS[closed:] + [ISSUE]
 
     def test_an_issue_that_moved_onto_the_page_before_is_read_again(self):
         now = self.cut_then_close(1)
         alerts, seen, _ = self.run_sweep(2.0, page1=now[:100], page2=lambda _: (now[100:], None))
         self.assertEqual((alerts, self.queued()), ([], [8]))   # 101 is now 100: read, queued
-        self.assertIn("per_page=67&page=2", seen[0])           # places 68-134, around 101
+        self.assertIn("per_page=67&page=2", seen[1])           # places 68-134, around 101
 
     def test_more_closed_than_it_reads_again_starts_the_next_sweep_over(self):
         now = self.cut_then_close(40)                          # 61 left: places 68-134 empty
@@ -202,19 +203,21 @@ class ShiftedListing(Base):
         self.assertNotIn("&page=", seen[0])
         self.assertEqual((alerts, self.queued()), ([], [8]))
 
-    def test_closes_between_the_places_and_the_page_start_the_next_sweep_over(self):
-        # Vex's second probe: the places read again reach back to PR 999, then 40 PRs close
-        # before page 2 is read, so places 135-140 (the issue at 137) land on page 1, unread.
-        more = [tts.issue(1100 + n, pr=True) for n in range(63)]
-        was = PRS + more[:36] + [tts.issue(8)] + more[36:]              # 200: the issue at 137
+    def test_new_items_between_the_page_and_the_places_start_the_next_sweep_over(self):
+        # Vex's second probe, with the page now read first (F7): 40 PRs close before page 2, so
+        # the issue (place 137) is place 97, before it; then 60 new ones come before the places
+        # are read, so it is place 157, past them too. Neither read holds it: start over.
+        more = [tts.issue(1100 + n, pr=True, age=5400.0 + 3600.0 * (n >= 36)) for n in range(63)]
+        was = PRS + more[:36] + [ISSUE] + more[36:]                      # 200: the issue at 137
         self.run_sweep(2.0, page1=was[:100])                            # cut at page 2
-        now = was[40:]
-        alerts, _, _ = self.run_sweep(2.0, page1=now[:100], listing=was,
-                                      page2=lambda _: (now[100:200], None))
+        new = [tts.issue(1200 + n, pr=True, age=600.0) for n in range(60)] + was[40:]
+        alerts, seen, _ = self.run_sweep(2.0, listing=new, page2=lambda _: (was[140:200], None))
+        self.assertTrue(seen[0].endswith("per_page=100&page=2"))        # the page, then places
         self.assertEqual(self.queued(), [])
         self.assertEqual(len(alerts), 1, alerts)
         self.assertIn("the next sweep starts again from page 1", alerts[0])
-        alerts, seen, _ = self.run_sweep(2.0, page1=now[:100])          # page 1: the issue
+        alerts, seen, _ = self.run_sweep(15.0, page1=new[:100],         # and it does: page 2
+                                         page2=lambda _: (new[100:200], None))
         self.assertNotIn("&page=", seen[0])
         self.assertEqual(self.queued(), [8])
 

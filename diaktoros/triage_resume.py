@@ -7,20 +7,24 @@ move onto the page before it, which is not read again (review on #2578, F6). Tha
 between sweeps, and between any two requests of one sweep.
 
 So the sweep keeps the last item it read (number and ``created_at``) with the page
-(``boundary``), and a resumed sweep first reads again the ``SPAN`` places around that page's
+(``boundary``), and a resumed sweep (``resumed``) reads that page first, alone. The listing is
+proven to skip nothing (``proven``) when the page reaches back to the item kept (it is on the
+page, or the page's first item is newer than it, ``reaches_back``). Otherwise the sweep reads
+again, straight after that page and before any later one, the ``SPAN`` places around the page's
 start (``overlap``): one ``per_page=SPAN`` page, which for every page start the listing can
-resume at holds 19 or more places before it and one or more after it (``window``). The
-resumed listing is proven to skip nothing (``proven``) when two links hold:
+resume at holds 19 or more places before it and one or more after it (``window``). Then two
+links must hold:
 
-* those places reach back to the item kept: it is among them, or their first is newer than it,
-  so every item after it up to the page's start is among them (``reaches_back``);
-* they meet the page read next: one of their items past the page's start is on that page too,
-  so whatever moved between the two requests is on one or the other. When that page is empty,
-  they must have reached the listing's end themselves.
+* those places reach back to the item kept, so every item after it up to them is among them;
+* they share an item with the page, so whatever moved between the two requests is on one or the
+  other. When the page is empty, they must have reached the listing's end themselves.
+
+Reading the page first keeps the listing moving (F7): a fast page is never left without the
+budget by the places read before it, and a page that reaches back needs no second request.
 
 When either link fails (more closed than it reads again, nothing kept, or the list changed
 between the requests), the items read are still checked, and the next sweep starts over from
-page 1, which a listing always covers.
+page 1, which a listing always covers. So does a sweep the budget cuts before the places.
 """
 from __future__ import annotations
 
@@ -48,19 +52,55 @@ def window(page: int) -> tuple[int, int]:
     return start // SPAN + 1, start % SPAN
 
 
-def overlap(loop: dict, since: str, page: int) -> tuple[list | None, str]:
-    """The ``SPAN`` places around ``page``'s start in ``gh.open_issues_read``'s listing, read
-    inside the budget like any later page: ``(items, '')``, ``([], why)`` when the budget cut
-    it, or ``(None, reason)`` when it could not be read."""
+def _read(loop: dict, since: str, size: int, at: int, page: int) -> tuple[list | None, str]:
+    """One ``per_page=size`` page (``at``) of ``gh.open_issues_read``'s listing, read inside the
+    budget like any later page: ``(items, '')``, ``([], why)`` when the budget cut it, or
+    ``(None, reason)`` when it could not be read."""
     path = (f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=desc"
-            f"&since={since}&per_page={SPAN}&page={window(page)[0]}")
-    items, error, cut = gh_paging.later_page(lambda: gh.fetch(loop, path), "open issue", page)
+            f"&since={since}&per_page={size}&page={at}")
+    what = "open issue" + ("" if size == gh.REVIEW_PAGE_SIZE else " places around")
+    items, error, cut = gh_paging.later_page(lambda: gh.fetch(loop, path), what, page)
     if cut:
         return [], cut
-    if error or not isinstance(items, list) or len(items) > SPAN \
+    if error or not isinstance(items, list) or len(items) > size \
             or not all(isinstance(item, dict) for item in items):
-        return None, f"open issue places around page {page}: {error or 'invalid list'}"
+        return None, f"{what} page {page}: {error or 'invalid list'}"
     return items, ""
+
+
+def overlap(loop: dict, since: str, page: int) -> tuple[list | None, str]:
+    """The ``SPAN`` places around ``page``'s start, as ``_read`` returns them."""
+    return _read(loop, since, SPAN, window(page)[0], page)
+
+
+def resumed(loop: dict, since: str, start: int, kept: dict,
+            progress: dict) -> tuple[list | None, str, bool]:
+    """The listing from page ``start`` (``start`` up to ``gh.MAX_ISSUE_PAGES``; past it, the
+    probe ``gh.open_issues_read`` reads), with the places around it when the page does not reach
+    back to ``kept``: ``(issues, error, proven)``. A cut before the places sets
+    ``progress['next']`` to ``start``: the next sweep starts over."""
+    if start > gh.MAX_ISSUE_PAGES:
+        page, error = gh.open_issues_read(loop, since, start, progress)
+    else:
+        page, error = _read(loop, since, gh.REVIEW_PAGE_SIZE, start, start)
+        if error and page is not None:
+            progress["next"] = start
+    if error or page is None or reaches_back(kept, page):
+        head = []
+    else:
+        head, error = overlap(loop, since, start)
+        if error:
+            if head is not None:          # the places did not fit: the page alone proves nothing
+                progress["next"] = start
+            return (page if head is not None else None), error, False
+    rest = []
+    if not error and page is not None and start <= gh.MAX_ISSUE_PAGES \
+            and not ends(page, since):
+        rest, error = gh.open_issues_read(loop, since, start + 1, progress)
+        if rest is None:
+            return None, error, False
+    issues = None if page is None else joined(head, page + rest)
+    return issues, error, issues is not None and proven(kept, head, page)
 
 
 def reaches_back(kept: dict, items: list) -> bool:
@@ -73,13 +113,20 @@ def reaches_back(kept: dict, items: list) -> bool:
     return type(last) is int and bool(mark) and (last in numbers or bool(first) and first > mark)
 
 
-def proven(kept: dict, items: list, page: int, rest: list) -> bool:
-    """Whether a listing resumed at ``page`` skipped nothing: the places read again (``items``)
-    reach back to the item ``kept`` and meet ``rest``, the pages read after them."""
-    first = rest[:gh.REVIEW_PAGE_SIZE]
-    after = {item.get("number") for item in items[window(page)[1]:]}
-    meets = bool(after & {item.get("number") for item in first}) if first else len(items) < SPAN
-    return reaches_back(kept, items) and meets
+def ends(page: list, since: str) -> bool:
+    """Whether the listing ends at this page, as ``gh.open_issues_read`` reads it: a short page,
+    or one whose last item was created before ``since``."""
+    return len(page) < gh.REVIEW_PAGE_SIZE or gh._older_than(page[-1], epoch(since))
+
+
+def proven(kept: dict, head: list, page: list) -> bool:
+    """Whether a listing resumed at a page skipped nothing: the page (``page``) reaches back to
+    the item ``kept``, or the places read again (``head``) do and share an item with the page."""
+    if reaches_back(kept, page):
+        return True
+    numbers = {item.get("number") for item in page}
+    meets = bool(numbers & {item.get("number") for item in head}) if page else len(head) < SPAN
+    return reaches_back(kept, head) and meets
 
 
 def joined(head: list, rest: list) -> list:

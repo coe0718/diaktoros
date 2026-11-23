@@ -27,8 +27,10 @@ it resumes at is bounded like any later page; when even that does not fit, the n
 over from page 1 instead of trying it again (F5). It reads on only once every candidate on the
 pages it read was queued: one left (past ``PER_SWEEP``, or the ledger or worker down) has the next
 sweep read those pages again (F4). A page number is no stable boundary when issues close between
-sweeps or requests, so a resumed listing first reads the places around its page's start again
-(``triage_resume``): unless they prove it skipped nothing, the next sweep starts over (F6).
+sweeps or requests, so a resumed listing reads its page first, then, unless the page reaches back
+to where the last listing stopped, the places around the page's start again (``triage_resume``):
+unless they prove it skipped nothing, the next sweep starts over (F6). The page goes first so the
+places never leave a fast page without the budget (F7).
 """
 from __future__ import annotations
 
@@ -105,7 +107,7 @@ RESUME_NOTE = {"saved": ", the next sweep reads on from there",
                           "again from page 1",
                "stale": "; where it stopped could not be saved, and an older saved page could "
                         "not be cleared",
-               "restart": "; the page it resumed at did not fit the budget, so the next sweep "
+               "restart": "; where it resumed did not fit the budget, so the next sweep "
                           "starts again from page 1",
                "shifted": "; issues/PRs before where it resumed closed since it last read "
                           "them, so some may have moved onto pages it did not read again: the next "
@@ -166,14 +168,10 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     now = time.time() if now is None else now
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - HORIZON_S))
     (start, before), progress = resume_point(st), {}
-    # A resumed listing first reads the places around its page's start again, for what moved (F6).
-    head, error = triage_resume.overlap(loop, since, start) if start > 1 else ([], "")
-    rest, issues = [], head
-    if error and head is not None:        # the budget cut those places: none of the page either
-        progress["next"] = start
-    elif head is not None:
-        rest, error = gh.open_issues_read(loop, since, start, progress)
-        issues = None if rest is None else triage_resume.joined(head, rest)
+    if start > 1:                         # read on, and prove it skipped nothing (F6, F7)
+        issues, error, whole = triage_resume.resumed(loop, since, start, before, progress)
+    else:
+        (issues, error), whole = gh.open_issues_read(loop, since, 1, progress), True
     if issues is None:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
@@ -183,7 +181,7 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     # A resumed page that never fits starts the next sweep over, not over it again (F5), and so
     # does one not proven to skip nothing since where the last listing stopped (F6).
     cut_back = start > 1 and progress.get("next") == start
-    shifted = start > 1 and not cut_back and not triage_resume.proven(before, head, start, rest)
+    shifted = start > 1 and not cut_back and not whole
     kept = keep_resume(st, {} if cut_back or shifted else (before if start > 1 else {}) if held
                        else {"next": progress["next"], **triage_resume.boundary(issues)}
                        if "next" in progress else {})
