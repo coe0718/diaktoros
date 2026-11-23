@@ -22,7 +22,9 @@ marked ``met``). One that never closes shows as text, so its words are dropped, 
 A ``<!--`` inside a code span is text, not a comment (thirteenth review). Inline comments and
 code spans are read over a whole paragraph, as Markdown reads them, not line by line: a code span
 may run across lines (fourteenth review), and a backslash escapes the character after it, so an
-escaped backtick opens no code span (fifteenth review).
+escaped backtick opens no code span (fifteenth review). A marker line that cannot interrupt a
+paragraph is the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
+second F14): one that dedents past the item it continues is indented back into it.
 """
 from __future__ import annotations
 
@@ -59,6 +61,21 @@ def code_line(found, at: int, cols: list[int]) -> bool:
     return bool(found) and at - max((c for c in cols if c <= at), default=0) >= 4
 
 
+def kind(found) -> str:
+    """A list marker's kind: its bullet, or an ordered marker's ``.`` or ``)``."""
+    return found.group(2) if found.group(2) in "-*+" else found.group(2)[-1]
+
+
+def interrupts(found, at: int, cols: list[int], kinds: list[str]) -> bool:
+    """Whether a list-marker line ends the paragraph before it, as Markdown reads it: an item of
+    a list already open does, and so does the first item of a new list, unless it is empty or
+    numbered other than 1, which is the paragraph's text (second review of F14 on #2573)."""
+    deeper = [k for c, k in zip(cols, kinds) if at < c]      # the outermost: the list it is in
+    if deeper and deeper[0] == kind(found):
+        return True
+    return found.group(3) is not None and (kind(found) in "-*+" or int(found.group(2)[:-1]) == 1)
+
+
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
     (twelfth review on #2573); each line break they held is kept, so the lines still line up.
@@ -88,7 +105,7 @@ def unfenced(lines: list[str]) -> list[str]:
     hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
     evidence read as unmarked items). The lines left are read for inline comments a paragraph
     at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
-    out, fence, cols, blank, comment, para = [], None, [], False, None, []
+    out, fence, cols, kinds, blank, comment, para = [], None, [], [], False, None, []
 
     def flush():                          # the paragraph so far, read inline as one text
         out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
@@ -119,9 +136,12 @@ def unfenced(lines: list[str]) -> list[str]:
             continue
         item, found, opener = ITEM.match(line), FENCE.match(line), COMMENT.match(line)
         item = None if code_line(item, at, cols) else item
+        if item and para and not interrupts(item, at, cols, kinds):   # the paragraph's text
+            item, line = None, " " * max(at, cols[-1] if cols else 0) + line.lstrip()
         if item or found or opener or blank or ended:   # neither is a lazy continuation
             while cols and at < cols[-1]:
                 cols.pop()
+                kinds.pop()
         if item or found or opener or ended:   # a new block: its own paragraph
             flush()
         blank, col = False, cols[-1] if cols else 0
@@ -135,6 +155,7 @@ def unfenced(lines: list[str]) -> list[str]:
             continue
         if item:
             cols.append(item_col(item))
+            kinds.append(kind(item))
         out.append(line)
         para.append(line)
     flush()

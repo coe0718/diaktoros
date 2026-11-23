@@ -139,6 +139,16 @@ class HtmlComments(Mocked):
         self.assertIn('"- second: `a <!--` x" has no status', reason)
         self.assertEqual(check("- second: met `open\n\n- third: x <!-- not met --> met\n"), "")
 
+    def test_a_marker_that_cannot_interrupt_the_text_is_the_text(self):
+        # Second review of F14: ``2.`` cannot start a list inside a paragraph, so it is the
+        # item's text, and the code span runs on through it.
+        self.assertIn("`not met`", check("- second: met `example\n  2. text <!--` not met\n"))
+        self.assertEqual(check("- second: met\n2. more of its text\n"), "")      # one item
+        self.assertIn('"2. third: export flag" has no status',                       # a sibling
+                      check("1. second: met\n2. third: export flag\n"))
+        self.assertIn('"- third: export flag" has no status',                        # a bullet
+                      check("- second: met `x\n- third: export flag <!--` met\n"))
+
     def test_an_escaped_backtick_opens_no_code_span(self):
         # Fifteenth review (F15): ``\\``` read as a span opener, so a real comment showed.
         self.assertIn('"- second: export flag', check("- second: export flag \\`x <!-- met --> y`\n"))
