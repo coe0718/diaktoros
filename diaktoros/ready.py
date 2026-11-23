@@ -135,10 +135,10 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             add(PENDING, "review receipts unreadable: approval unknown")
         elif latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
             # #1245: a red merge check names the verdict, with the budget explain counts.
-            add(FAILURE, _changes_requested(loop, number, head, reviews))
+            add(FAILURE, _changes_requested(loop, st, pr, head, reviews))
         elif latest is None or gh.review_state(latest) != "APPROVED":
             # No verdict at the head yet is a review still to come.
-            add(PENDING, _not_approved(loop, st, number, head, reviews, author))
+            add(PENDING, _not_approved(loop, st, number, head, reviews, author, pr))
         else:
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
@@ -213,21 +213,41 @@ def _held_for_a_ruling(loop: dict, st, number: int, head: str, reviews,
     return why
 
 
-def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author: str) -> str:
+def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author: str,
+                  pr: dict | None = None) -> str:
     """Why a head has no approval yet. A review-only author's PR that has spent its verdict cap
-    (#1797) says so: no review is coming until a maintainer grants another round."""
-    said = f"not approved at head {head[:7]}"
-    if gate.review_cap_hit(loop, st, number, head, len(gate.verdicts(reviews, loop)), author):
-        said += " — review cap reached; a maintainer grants another round"
+    (#1797) says so: no review is coming until a maintainer grants another round, and how (#2620:
+    the re-request only once the reviewer is no longer pending)."""
+    said = f"not approved at head {head[:7]}" + _cap_reached(loop, st, number, head, reviews,
+                                                            author, pr, push_first=False)
     return _with_turn(loop, number, head, "reviewer", said)
 
 
-def _changes_requested(loop: dict, number: int, head: str, reviews: list) -> str:
-    """A change request at the head, with the budget ``explain`` counts (#1245) and the fixer's
-    turn answering it (#753)."""
+def _changes_requested(loop: dict, st, pr: dict, head: str, reviews: list) -> str:
+    """A change request at the head, with the budget ``explain`` counts (#1245), a review-only
+    PR's spent cap (#2622 review, F2) and the fixer's turn answering it (#753)."""
+    number = pr.get("number")
+    author = str((pr.get("user") or {}).get("login") or "").lower()
     return _with_turn(loop, number, head, "fixer",
                       f"changes requested at head {head[:7]} "
-                      f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)")
+                      f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)"
+                      + _cap_reached(loop, st, number, head, reviews, author, pr, push_first=True))
+
+
+def _cap_reached(loop: dict, st, number: int, head: str, reviews: list, author: str, pr,
+                 push_first: bool) -> str:
+    """" — review cap reached; …" for a review-only PR at its spent cap (#1797), with how a
+    maintainer grants the next round (#2620: the re-request only once the reviewer is no longer
+    pending); "" otherwise. ``push_first``: this head has its verdict, so the author pushes a new
+    head before a grant, as ``explain`` says."""
+    from . import review_asks
+    if not gate.review_cap_hit(loop, st, number, head, len(gate.verdicts(reviews, loop)), author):
+        return ""
+    hint = review_asks.rerequest_hint(loop, pr)
+    return (" — review cap reached; " + ("the author pushes a new head first (this head already "
+                                         "has a verdict), then " if push_first else "")
+            + f"a maintainer grants another round: `hermes dk review --loop {loop['id']} --pr "
+            f"{number} --another-round`" + (f", or {hint}" if hint else ""))
 
 
 def _with_turn(loop: dict, number: int, head: str, seat: str, said: str) -> str:
