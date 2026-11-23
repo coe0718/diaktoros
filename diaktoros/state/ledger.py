@@ -159,54 +159,69 @@ def claim_lock(db) -> Iterator[int]:
         os.close(lock)                    # frees the flock too
 
 
+class BarrierCut(OSError):
+    """``owe`` cut its own add short: the cut add's line starts at byte ``at`` (#2643)."""
+
+    def __init__(self, at: int):
+        super().__init__(errno.EIO, "the claim barrier could not be written")
+        self.at = at
+
+
 def _owing(lock: int) -> tuple[set[str], list[str]]:
     """What the barrier holds: its log (``owe``) replayed into ids, each ``+`` line adding one and
     each ``-`` line removing one, and cut adds. An add cut short (a last line with no newline, or
     one ``owe`` ended with ``~``) may have stopped inside its id, so it holds every id it begins
-    (#2643; ``+`` alone, all) until the writer that cut it ends it with a ``*`` line. A clear cut
-    short is not read, so either way the id stays held (#2634 review F8)."""
+    (#2643; ``+`` alone, all) until a ``*@<offset>`` line lifts the one starting at that byte,
+    which only the writer that cut it writes (``owe``'s ``mine``; #2645). A clear or lift cut
+    short is not read, so the barrier fails closed (#2634 review F8)."""
     data, at = b"", 0
     while chunk := os.pread(lock, 65536, at):
         data, at = data + chunk, at + len(chunk)
-    *lines, tail = data.decode(errors="replace").split("\n")
     ids: set[str] = set()
-    cuts: list[str] = []
-    for text in [*lines, tail + "~"] if tail[:1] == "+" else lines:
+    cuts: dict[int, str] = {}
+    start = 0
+    for raw in data.split(b"\n"):
+        text, at, start = raw.decode(errors="replace"), start, start + len(raw) + 1
         mark, rest = text[:1], text[1:]
+        if start > len(data):                   # the last line, with no newline
+            rest += "~" if mark == "+" else ""
+            mark = mark if mark == "+" else ""
         if mark == "+" and rest.endswith("~"):
-            cuts.append(rest.rstrip("~"))
+            cuts[at] = rest.rstrip("~")
         elif mark == "+":
             ids.add(rest)
         elif mark == "-" and not rest.endswith("~"):
             ids.discard(rest)
-        elif mark == "*" and rest in cuts:
-            cuts.remove(rest)
-    return ids, cuts
+        elif mark == "*" and rest[:1] == "@" and rest[1:].isdigit():
+            cuts.pop(int(rest[1:]), None)
+    return ids, list(cuts.values())
 
 
-def owe(lock: int, run_id: str, owed: bool = True, own_cut: bool = False) -> None:
+def owe(lock: int, run_id: str, owed: bool = True, mine=()) -> None:
     """Under ``claim_lock``, record in its file (``owed``) or clear the reviewer run ``run_id``
     whose owed shadow and stop could not be written (#2634 review F4, round 6): the barrier
     ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
     stop. Each change is a line appended to a log, written whole (a short write is finished, not
-    taken as done) and synced, so an update cut short never loses an id already marked. A cut
-    line is ended with ``~`` before the next, and stays a cut add (``_owing``); with ``own_cut``,
-    the caller cut it adding ``run_id`` under this same lock, so it is ended by that whole add
-    and a ``*`` line (#2643). The log is emptied only once it holds no id and no cut add."""
+    taken as done) and synced, so an update cut short never loses an id already marked; a cut
+    line is ended with ``~`` first, and stays a cut add (``_owing``). An add this call cuts raises
+    ``BarrierCut`` with its offset. ``mine`` are such offsets of the caller's own earlier adds of
+    ``run_id`` under this same lock: each is lifted (after the add, before the clear; #2643,
+    #2645). The log is emptied only once it holds no id and no cut add."""
     if not run_id or "\n" in run_id or "~" in run_id:
         raise ValueError("invalid run id for the claim barrier")
     end = os.lseek(lock, 0, os.SEEK_END)
-    tail = os.pread(lock, end - (start := max(0, end - len(run_id) - 2)), start).decode(
-        errors="replace").rsplit("\n", 1)[-1] if end else ""
-    data = ("~\n" if tail else "") + ("+" if owed else "-") + run_id + "\n"
-    if own_cut and owed and tail[:1] == "+" and ("+" + run_id).startswith(tail):
-        data += "*" + tail[1:] + "\n"
-    data = data.encode()
-    while data:
-        wrote = os.pwrite(lock, data, end)
+    term = b"" if not end or os.pread(lock, 1, end - 1) == b"\n" else b"~\n"
+    record = (("+" if owed else "-") + run_id + "\n").encode()
+    lifts = "".join(f"*@{at}\n" for at in mine).encode()
+    data = term + (record + lifts if owed else lifts + record)
+    cut = (end + len(term), end + len(term) + len(record)) if owed else (0, 0)
+    done = 0
+    while done < len(data):
+        wrote = os.pwrite(lock, data[done:], end + done)
         if wrote <= 0:
-            raise OSError(errno.EIO, "the claim barrier could not be written")
-        data, end = data[wrote:], end + wrote
+            raise BarrierCut(cut[0]) if cut[0] < end + done < cut[1] else OSError(
+                errno.EIO, "the claim barrier could not be written")
+        done += wrote
     os.fsync(lock)
     if not owed and _owing(lock) == (set(), []):
         os.ftruncate(lock, 0)

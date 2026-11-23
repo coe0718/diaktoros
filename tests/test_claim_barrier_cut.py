@@ -6,6 +6,7 @@ running reviewer's receipt is still refused. A cut that the same redelivery can 
 lifted once its shadow row is in, so it holds nothing after.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import pathlib
 import sqlite3
 import sys
@@ -37,9 +38,12 @@ class ABarrierCutInsideTheId(race._Race):
             return real(fd, data, at) if times is not None and cuts[0] > times else 0
         return mock.patch.object(ledger.os, "pwrite", pwrite)
 
-    def lock_bytes(self):
+    def lock_path(self):
         db = pathlib.Path(self.sup().db)
-        return db.with_name(db.name + ".claims.lock").read_bytes()
+        return db.with_name(db.name + ".claims.lock")
+
+    def lock_bytes(self):
+        return self.lock_path().read_bytes()
 
     def test_a_cut_inside_the_id_with_every_write_after_failing_still_refuses(self):
         # The adjudicator's and Vex's round-9 probe: 5 bytes, then nothing.
@@ -63,6 +67,20 @@ class ABarrierCutInsideTheId(race._Race):
             self.assertEqual(self.enqueue(loop), "duplicate running")
         self.assertEqual(self.lock_bytes(), b"")
         self.claim()
+
+    def test_another_writers_cut_outlives_a_redelivery_whose_add_wrote_nothing(self):
+        # #2644 review F1: a writer died after "+"; this redelivery's add writes nothing, then
+        # commits its shadow row and clears. The dead writer's cut add still holds, so a turn
+        # with no shadow row is refused.
+        loop = self.queued_unsampled()
+        self.lock_path().write_bytes(b"+")
+        with self.race("running"), self.cut_after(0, times=1):
+            self.assertEqual(self.enqueue(loop), "duplicate running")
+        with ledger.claim_lock(self.sup().db) as held, \
+                contextlib.closing(sqlite3.connect(self.sup().db)) as con:
+            self.assertEqual(ledger._owing(held), (set(), [""]))
+            self.assertTrue(ledger.owes(held, con, "a-turn-with-no-shadow-row"))
+        self.claim()                            # this turn's own shadow row is in
 
 
 if __name__ == "__main__":

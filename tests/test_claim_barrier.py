@@ -1,13 +1,14 @@
-"""The receipt barrier beside the ledger (``ledger.owe``; #2634 review F8, #2643).
+"""The receipt barrier beside the ledger (``ledger.owe``; #2634 review F8, #2643, #2645).
 
 Each change is a line appended to the claim lock's file and synced. A short write is finished,
 not taken as done; a write that makes no progress raises. An update cut short never loses an id
 already marked. An add cut short may have stopped inside its id, so it holds every id it begins
-until the writer that cut it ends it whole; a clear cut short is not read. The barrier fails
-closed.
+until the writer that cut it lifts it by its offset, which no other writer knows; a clear or a
+lift cut short is not read. The barrier fails closed.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,19 +32,20 @@ class Barrier(unittest.TestCase):
     def held(self, *ids, cuts=()):
         self.assertEqual(ledger._owing(self.lock), (set(ids), list(cuts)))
 
-    def test_a_short_write_is_finished(self):
-        real = os.pwrite
+    def writes(self, *sizes):
+        """``pwrite`` writes ``sizes[n]`` bytes on its n-th call, then all it is given."""
+        real, calls = os.pwrite, iter(sizes)
+        return mock.patch.object(ledger.os, "pwrite", lambda fd, data, at: real(
+            fd, data[:next(calls, len(data))], at))
 
-        def one_byte(fd, data, at):        # writes, and reports, one byte at a time
-            return real(fd, data[:1], at)
+    def test_a_short_write_is_finished(self):
         ledger.owe(self.lock, "run-a")
-        with mock.patch.object(ledger.os, "pwrite", one_byte):
+        with self.writes(*[1] * 6):             # one byte at a time
             ledger.owe(self.lock, "run-b")
         self.held("run-a", "run-b")
 
     def test_a_write_that_makes_no_progress_raises(self):
-        with mock.patch.object(ledger.os, "pwrite", return_value=0), \
-                self.assertRaises(OSError):
+        with self.writes(0), self.assertRaises(OSError):
             ledger.owe(self.lock, "run-a")
 
     def test_an_add_cut_inside_its_id_holds_every_id_it_begins(self):
@@ -63,22 +65,46 @@ class Barrier(unittest.TestCase):
         self.cut(b"+run-a")                     # #2634 review F8: all but the newline
         self.held(cuts=["run-a"])
 
-    def test_the_writer_that_cut_its_add_ends_it_whole(self):
-        self.cut(b"+run-")
-        ledger.owe(self.lock, "run-a", own_cut=True)
-        self.held("run-a")
-        ledger.owe(self.lock, "run-a", False)
+    def test_the_writer_that_cut_its_add_lifts_it_by_its_offset(self):
+        ledger.owe(self.lock, "run-z")
+        with self.writes(3, 0), self.assertRaises(ledger.BarrierCut) as cut:
+            ledger.owe(self.lock, "run-a")
+        self.assertEqual(cut.exception.at, len(b"+run-z\n"))
+        self.held("run-z", cuts=["ru"])
+        ledger.owe(self.lock, "run-a", False, mine=[cut.exception.at])
+        ledger.owe(self.lock, "run-z", False)
         self.assertEqual(self.path.read_bytes(), b"")
 
-    def test_an_own_cut_that_is_not_its_own_stays(self):
-        self.cut(b"+run-b")                     # not a beginning of "+run-a"
-        ledger.owe(self.lock, "run-a", own_cut=True)
-        self.held("run-a", cuts=["run-b"])
+    def test_another_writers_add_that_wrote_nothing_lifts_nothing(self):
+        # #2644 review F1: A crashed after "+"; B's add writes nothing, then B adds and clears.
+        self.cut(b"+")
+        with self.writes(0), self.assertRaises(OSError) as failed:
+            ledger.owe(self.lock, "run-b")
+        self.assertNotIsInstance(failed.exception, ledger.BarrierCut)
+        ledger.owe(self.lock, "run-b")
+        ledger.owe(self.lock, "run-b", False)
+        self.held(cuts=[""])
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE runs(id, repo, pr, head, turn_key, seat)")
+        self.assertTrue(ledger.owes(self.lock, con, "victim"))   # no shadow row: refused
 
-    def test_an_ending_cut_short_lifts_nothing(self):
+    def test_a_lift_cut_short_is_finished_by_a_later_one(self):
+        # #2645: the writer's own "+" is cut; ending it writes "~", its add, then not the lift.
+        with self.writes(1, 0), self.assertRaises(ledger.BarrierCut) as cut:
+            ledger.owe(self.lock, "abce2222")
+        mine = [cut.exception.at]
+        with self.writes(len(b"~\n+abce2222\n"), 0), self.assertRaises(OSError) as failed:
+            ledger.owe(self.lock, "abce2222", mine=mine)
+        self.assertNotIsInstance(failed.exception, ledger.BarrierCut)
+        self.held("abce2222", cuts=[""])
+        ledger.owe(self.lock, "abce2222", False, mine=mine)
+        self.assertEqual(self.path.read_bytes(), b"")
+
+    def test_a_lift_naming_no_cut_add_lifts_nothing(self):
         self.cut(b"+run-")
-        ledger.owe(self.lock, "run-a")
-        self.cut(b"*run")                        # the end of a cut add, itself cut short
+        ledger.owe(self.lock, "run-a", mine=[1, 99])
+        self.cut(b"*@0")                         # a lift cut short is not read either
         ledger.owe(self.lock, "run-b")
         self.held("run-a", "run-b", cuts=["run-"])
 
