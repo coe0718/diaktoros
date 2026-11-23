@@ -1311,8 +1311,11 @@ class RealBareBranch(unittest.TestCase):
                 new = cas(pinned)              # main moved on since: the pinned commit still counts
                 self.assertEqual(git("--git-dir", remote, "rev-parse",
                                      "refs/heads/diaktoros/issue-12"), new)
-                self.assertEqual(git("--git-dir", remote, "rev-list", "--parents", "-n", "1", new),
-                                 f"{new} {pinned}")
+                # Built on the pinned commit, then main's tip merged in so it opens up to date (#2591).
+                _, fix, tip = git("--git-dir", remote, "rev-list", "--parents", "-n", "1", new).split()
+                self.assertEqual(git("--git-dir", remote, "rev-list", "--parents", "-n", "1", fix),
+                                 f"{fix} {pinned}")
+                self.assertEqual(tip, later)
                 self.assertEqual(git("--git-dir", remote, "rev-parse", "refs/heads/main"), later)
                 with self.assertRaises(broker.BrokerDenied):
                     cas(pinned, content=b"another fix")   # the branch exists: never overwritten

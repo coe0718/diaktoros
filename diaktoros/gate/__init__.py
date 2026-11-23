@@ -514,6 +514,16 @@ def is_ruled_approval(review, loop: dict) -> bool:
     return isinstance(review, dict) and not is_reviewer(review, loop)
 
 
+def reviewer_approved(latest, loop: dict) -> bool:
+    """Whether ``latest`` (the head's effective verdict, ``latest_effective_review_at_head``) is
+    the reviewer's own approval (#1706): an approval, and not the adjudicator's on its ACCEPT
+    ruling (#905), which stands at a head where the reviewer's own verdict still requests
+    changes. A shadow escalation, and the ruling prompt it leads to, say the reviewer approved
+    the head: only this counts for it."""
+    return (isinstance(latest, dict) and gh.review_state(latest) == "APPROVED"
+            and not is_ruled_approval(latest, loop))
+
+
 def blocking_reviews(reviews: list) -> list:
     """The reviews GitHub may still count against the merge (#905): each login's newest
     approval, change request or dismissal, where that is a change request. Every login counts,
