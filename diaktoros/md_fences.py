@@ -8,21 +8,16 @@ four or more columns past its container's content column is indented code (``cod
 
 A fence (three or more backticks or tildes) opens fenced code only up to three columns past the
 content column of the list item it sits in (0 outside a list): more is indented code, or text
-(eighth review). The block runs to a closing fence of its character at least as long, at
-most three columns past that same column; or to a line that dedents out of its list item, which
-ends the item and the block with it; or to the end. An HTML comment (``<!--`` opening a line, at
-most three columns past that same column) is blanked the same way, through the line holding
-``-->``, or to a line that dedents out of its list item, as a fence does (tenth and eleventh
-reviews). A comment inside a line is hidden too: ``visible``
-drops it from the line, and one it leaves open hides the lines after it up to its ``-->``, or to
-the next blank line, item, fence or comment line (twelfth review: ``- x <!-- met -->`` read as
-marked ``met``). One that never closes hides its words: they are never counted.
-A ``<!--`` in a code span is text (thirteenth review). Inline comments and code spans are read
-over a whole paragraph, not line by line: a code span may run across lines (fourteenth), and an
-escaped backtick opens none (fifteenth). A marker line that cannot interrupt a paragraph is
-the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
-second F14): one that dedents past the item it continues is indented back into it. Nor is a
-line that only looks like a fence or comment opener (sixteenth review) a break in the paragraph.
+(eighth review). It runs to a closing fence of its character at least as long, at most three
+columns past that column, to a line that dedents out of its item, or to the end. An HTML comment
+opening a line there is blanked the same way, through its ``-->`` (tenth, eleventh reviews).
+``visible`` drops a comment inside a line, and an inline tag but not its text (an attribute is
+not shown: twenty-first); one left open hides the lines after it to its ``-->`` or the next
+blank line, item, fence or comment line (twelfth), and its words if it never closes. A ``<!--``
+in a code span is text (thirteenth); inline comments and code spans are read over a paragraph,
+so a span may cross lines (fourteenth), and an escaped backtick opens none (fifteenth). A marker
+line that cannot interrupt a paragraph is its text (``interrupts``: ``2. text`` under an item's
+text, second F14), as is a line that only looks like a fence or comment opener (sixteenth).
 Every other HTML block (``html_end``, as CommonMark lists them) is raw HTML, not Markdown, so
 no line in it is an item or heading (seventeenth review: a command beginning ``- `` in ``<pre>``
 evidence read as an unmarked requirement). A ``<pre>``, ``<script>``, ``<style>`` or
@@ -50,10 +45,10 @@ HTML = [(re.compile(start, re.I), end and re.compile(end, re.I)) for start, end 
     (r"<!--", r"-->"), (r"<\?", r"\?>"), (r"<![A-Za-z]", r">"), (r"<!\[CDATA\[", r"\]\]>"),
     (rf"</?(?:{_BLOCK_TAGS})(?:\s|/?>|$)", None),
     (rf"(?:<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$", None))]
-# An inline token: a backslash escape (ASCII punctuation), a backtick run or a comment opener.
-INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|<!--")
 # In shown HTML: a comment's start or end, or a tag (its attributes are not shown text).
 TAG = re.compile(rf"<!--|-->|<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>")
+# An inline token: a backslash escape (ASCII punctuation), a backtick run, a comment or a tag.
+INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|" + TAG.pattern.replace("-->|", "", 1))
 LIST = re.compile(r"</?[uo]l\b", re.I)                 # an HTML list's tag
 
 
@@ -145,7 +140,8 @@ def shown(line: str, top: bool, state: list) -> list[str]:
 
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
-    (twelfth review on #2573); each line break they held is kept, so the lines still line up.
+    (twelfth review on #2573) or tags (an attribute is not shown: twenty-first); each line break
+    they held is kept, so the lines still line up.
     A code span is text, so a ``<!--`` inside one opens nothing (thirteenth review), and it may
     run across lines (fourteenth); an unmatched backtick run is text. A backslash escapes the
     character after it: an escaped backtick opens no span, an escaped ``<`` no comment (fifteenth).
@@ -158,6 +154,10 @@ def visible(text: str) -> str:
             out.append(text[at:start])
             at = len(text) if end < 0 else end + 3
             out.append("\n" * text.count("\n", start, at))
+            continue
+        if token.group()[0] == "<":                     # a tag: its attributes are not shown
+            out.append(text[at:start] + " " + "\n" * token.group().count("\n"))
+            at = stop
             continue
         if token.group()[0] == "`":                     # a code span: kept as it is
             close = re.compile(rf"(?<!`){token.group()}(?!`)").search(text, stop)

@@ -231,6 +231,16 @@ class HtmlBlocks(Mocked):
             with self.subTest(body):
                 self.assertEqual(check(body), "")
 
+    def test_an_inline_tags_attribute_marks_nothing(self):
+        # Twenty-first: in a Markdown item an inline tag's attribute is not shown either, so a
+        # `met` in one marks nothing and a `not met` in one unmarks nothing; its text still counts.
+        self.assertIn("has no status", check('- second: <span title="met">export flag</span>\n'))
+        for body in ('- second: met <span title="not met">export flag</span>\n',
+                     '- second: <span title="x">export flag</span> met\n',
+                     '- second: <b>met</b> with `<span title="x">` as evidence\n'):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
 
 if __name__ == "__main__":
     unittest.main()
