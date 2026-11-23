@@ -127,8 +127,9 @@ def github_events(loop: dict, number: int, github: dict, events: list) -> list:
 
 
 def wait_events(db, repo: str, number: int, runs: list) -> list:
-    """Each logged wait (#2080) as an event: why the run waited and until when. The log keeps a
-    short head; the run's own row gives the full one. Logs from before #2080 hold none."""
+    """Each logged wait (#2080) as an event: why the run waited and until when. The reason is shown
+    whole, bounded as the log bounds it (``waits.REASON_MAX``, its end kept), so a claim-time
+    failure's closing claimant bracket is not cut off here (#2227). Logs from before #2080 hold none."""
     from .run_supervisor import waits
     heads = {str(run["id"]): run["head"] for run in runs}
     out = []
@@ -137,5 +138,5 @@ def wait_events(db, repo: str, number: int, runs: list) -> list:
         out.append({"at": stats._iso(wait["at"]) or 0.0, "kind": "wait", "who": wait["seat"],
                     "head": heads.get(wait["run"]) or "", "link": "",
                     "text": f"waiting (retry {wait['retries']}) until {until}: "
-                            f"{excerpt(wait['reason'])}"})
+                            f"{waits._reason(wait['reason'])}"})
     return out
