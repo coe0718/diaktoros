@@ -176,6 +176,14 @@ class HtmlBlocks(Mocked):
                       check("      <pre>\n\n- second: export flag\n"))
         self.assertEqual(check("- second: met\n\n      <ul><li>x</li></ul>\n"), "")
 
+    def test_indented_code_holds_no_status(self):
+        # #2642 F2: indented code is blanked as fenced code is, so a status, a deferral or an
+        # attribute in it is not read: none of these marks anything or looks an issue up.
+        for code in ('<span title="not met">evidence</span>', '<b title="deferred to #999">x</b>',
+                     "not met", "deferred to #999"):
+            with self.subTest(code):
+                self.assertEqual(check("      " + code + "\n"), "")
+
     def test_html_outside_an_approve_is_read_as_nothing(self):
         # A REQUEST_CHANGES or COMMENT review is not refused for it; what the HTML holds is not
         # read, so its `not met` marks nothing and its `- ` line is no item.
@@ -183,6 +191,15 @@ class HtmlBlocks(Mocked):
             with self.subTest(body):
                 self.assertEqual(check(body, "REQUEST_CHANGES"), "")
                 self.assertEqual(check(body, "COMMENT"), "")
+
+    def test_html_is_not_read_for_statuses_outside_an_approve(self):
+        # #2642 F3, with no marked item before the HTML: a status in it marks nothing, and a
+        # deferral in it looks no issue up.
+        def bare(body):
+            return issue_facts.check(LOOP, 7, "REQUEST_CHANGES", "## Requirements\n" + body)
+        self.assertIn("has no item marked", bare("<div>met</div>\n"))
+        self.assertIn("has no item marked", bare("<ul>\n<li>second: met</li>\n</ul>\n"))
+        self.assertEqual(bare("- first: met\n\n<div>deferred to #999</div>\n"), "")
 
 if __name__ == "__main__":
     unittest.main()

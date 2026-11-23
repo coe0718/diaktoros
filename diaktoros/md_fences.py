@@ -22,8 +22,10 @@ Raw HTML is outside the subset a review's Requirements section is read in (#2636
 block but a comment (``html_end``, as CommonMark lists them: ``<pre>``, ``<div>``, ``<ul>``, a lone
 tag) and every inline tag outside a code span is kept as ``RAW``, never parsed, so ``issue_facts``
 refuses an APPROVE that holds any and a reader never has to know what HTML shows. A block's lines
-are ``RAW`` through its closing tag, or to the next blank line. A lone tag cannot interrupt a
-paragraph, so there it is the paragraph's inline tag.
+are ``RAW`` through its closing tag, or to the next blank line; so is a comment's closing line
+that holds anything after its ``-->`` (``tail``). A lone tag cannot interrupt a paragraph, so
+there it is the paragraph's inline tag. Indented code is blanked, as fenced code is: neither its
+statuses nor its HTML are read (#2642 F2).
 """
 from __future__ import annotations
 
@@ -99,6 +101,13 @@ def html_end(text: str, para: list) -> tuple | None:
     return None
 
 
+def tail(line: str, shut) -> bool:
+    """Whether a comment block's closing line (``shut``: its ``-->``) holds more after it than
+    space or another comment: CommonMark keeps that whole line in the block, so what follows the
+    comment is raw HTML, ``<ul>`` and all (#2642 F1)."""
+    return bool(shut) and bool(visible(line[shut.end():]).strip())
+
+
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
     (twelfth review on #2573), and each inline tag ``RAW`` (#2636); each line break they held is
@@ -144,9 +153,10 @@ def unfenced(lines: list[str]) -> list[str]:
         if html is not None and line.strip() and at < html[0]:
             html, ended = None, True               # its list item ended, and the block with it
         elif html is not None and (html[1] is not None or line.strip()):
-            col, end, mark = html                  # inside an HTML block, through its end
-            html = None if end is not None and end.search(line) else html
-            out.append(mark)
+            col, end, comment = html               # inside an HTML block, through its end
+            shut = end.search(line) if end is not None else None
+            html = None if shut else html
+            out.append(RAW if not comment or tail(line, shut) else "")
             continue
         html = None                                # a blank line ends one with no closing tag
         if fence is not None:
@@ -173,9 +183,9 @@ def unfenced(lines: list[str]) -> list[str]:
         found = None if deep or (found and found.group(1)[0] == "`" and "`" in found.group(2)) \
             else found
         opener = None if deep else opener
-        if deep and not para and not item:        # indented code: kept, never read inline
+        if deep and not para and not item:        # indented code: blanked, as fenced code is
             blank = False
-            out.append(line)
+            out.append("")
             continue
         if item and para and not interrupts(item, at, cols, kinds):   # the paragraph's text
             item, line = None, " " * max(at, cols[-1] if cols else 0) + line.lstrip()
@@ -187,9 +197,10 @@ def unfenced(lines: list[str]) -> list[str]:
             flush()
         blank, col = False, cols[-1] if cols else 0
         if opener:                                 # a comment is hidden; other HTML is RAW
-            end, mark = opener[0], "" if line.lstrip().startswith("<!--") else RAW
-            html = None if end is not None and end.search(line) else (col, end, mark)
-            out.append(mark)
+            end, comment = opener[0], line.lstrip().startswith("<!--")
+            shut = end and end.search(line, line.index("<!--") + 2 if comment else 0)
+            html = None if shut else (col, end, comment)
+            out.append(RAW if not comment or tail(line, shut) else "")
             continue
         if found:
             fence = (found.group(1)[0], len(found.group(1)), col)

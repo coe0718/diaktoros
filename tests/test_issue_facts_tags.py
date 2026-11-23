@@ -46,6 +46,16 @@ class RawHtml(Mocked):
             with self.subTest(body):
                 self.assertEqual(check(body), "")
 
+    def test_html_after_a_comment_on_its_line_is_refused(self):
+        # #2642 F1: CommonMark keeps a comment block's whole closing line in the block, so HTML
+        # after the ``-->`` is raw HTML; another comment there is not.
+        for body in ("<!-- note --><ul><li>second: export flag</li></ul>\n",
+                     "<!-- note --> <b>second: met</b>\n", "<!--\nnote --><ul><li>x</li></ul>\n",
+                     "  <!-- a --> b <!-- c --><i>met</i>\n"):
+            with self.subTest(body):
+                self.assertIn(RAW, check(body))
+        self.assertEqual(check("<!-- a --> <!-- b -->\n<!--\nc -->  \n"), "")
+
     def test_an_unmarked_markdown_item_beside_a_comment_is_still_refused(self):
         self.assertIn('"- second: export flag" has no status',
                       check("<!-- note -->\n- second: export flag\n"))
