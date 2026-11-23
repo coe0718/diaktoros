@@ -407,6 +407,64 @@ class Worker(Base):
         self.assertEqual(state, ("cancelled", run_supervisor.REVIEW_HEAD_MOVED))
 
 
+    def test_a_head_that_moves_while_the_pr_stages_cancels_the_review(self):
+        # #2610: the claim and launch read the old head; the push lands before staging, whose
+        # own read refuses the stale head. That is #2468's move, not a failure: cancelled with
+        # its reason, so the watchdog delivers the review to the new head.
+        from diaktoros import trusted_fetch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            runtime = root / "runtime.json"
+            runtime.write_text("{}")
+            runtime.chmod(0o600)
+            sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
+            with mock.patch.object(sup, "_spawn"):
+                sup.enqueue("d", REPO, 7, HEAD, "reviewer")
+            with ledger.connect(sup.db) as con:
+                con.execute("UPDATE runs SET state='launching', owner='w', generation='g'")
+                run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+            world = World([changed(1)])
+            staged = []
+
+            def stage_the_real_way(loop, scope, *args, **kwargs):
+                staged.append(scope.role)
+                return trusted_turn._stage_pr(loop, scope, root / "export", [])
+            settings = {k: str(root) for k in ("source", "venv", "runtime", "rust")}
+            with mock.patch("diaktoros.seat_model.load_runtime", return_value=settings), \
+                 mock.patch("diaktoros.seat_model.resolve_seat"), \
+                 mock.patch.object(config, "by_repo",
+                                   return_value={**self.loop, "state_dir": str(root / "state")}), \
+                 mock.patch.object(gh, "fetch", side_effect=world.fetch), \
+                 mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                 mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
+                 mock.patch.object(trusted_fetch, "stage",
+                                   side_effect=trusted_fetch.FetchDenied("stale PR head")), \
+                 mock.patch.object(trusted_turn, "run_turn", side_effect=stage_the_real_way), \
+                 mock.patch.object(sup, "recover"):
+                sup._run_production(run_id, "w")
+            with ledger.connect(sup.db) as con:
+                state = con.execute("SELECT state, error FROM runs").fetchone()
+        self.assertEqual(staged, ["reviewer"])
+        self.assertEqual(state, ("cancelled", run_supervisor.REVIEW_HEAD_MOVED))
+
+    def test_only_a_reviews_stale_head_is_a_move(self):
+        from diaktoros import trusted_fetch
+        from types import SimpleNamespace
+        for role, message, raised in (
+                ("reviewer", "stale PR head", run_supervisor.ReviewHeadMoved),
+                ("fixer", "stale PR head", trusted_fetch.FetchDenied),
+                ("reviewer", "PR repository, base or ref changed", trusted_fetch.FetchDenied),
+                ("reviewer", "PR unavailable or closed", trusted_fetch.FetchDenied)):
+            with self.subTest(role=role, message=message):
+                scope = SimpleNamespace(repo=REPO, number=7, head=HEAD, branch="b", role=role)
+                with mock.patch.object(trusted_fetch, "stage",
+                                       side_effect=trusted_fetch.FetchDenied(message)), \
+                        self.assertRaises(raised) as caught:
+                    trusted_turn._stage_pr(self.loop, scope, Path("/nonexistent"), [])
+                self.assertIs(type(caught.exception), raised)
+
+
 class Sandbox(unittest.TestCase):
     def dirs(self, root):
         paths = {}
