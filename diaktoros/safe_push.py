@@ -260,6 +260,7 @@ def _confirm_ref(loop: dict, ref_path: str, branch: str, login: str, new_head: s
 
 def _audit(loop: dict, record: dict) -> None:
     """Durable metadata journal; failure aborts the write."""
+    broker.audit_vocabulary(record.get("role"), record.get("operation"))
     audit = config.state_dir(loop) / "broker-audit.jsonl"
     if not audit.parent.is_dir() or audit.parent.is_symlink():
         raise broker.BrokerDenied("durable audit directory unavailable")
