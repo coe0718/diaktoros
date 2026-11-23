@@ -174,6 +174,36 @@ class OnePoller(Volume):
             self.s.linger_for_ci(sleep=sleep)
         self.assertLessEqual(recovered[0], 5 + run_supervisor.POLL_SLICE_S + 1)
 
+    def settle(self, delivery, pr, repo, due_in):
+        """A row of ``repo`` settling after a maintainer's reply, due ``due_in`` from now."""
+        self.hold(delivery, pr, due_in=due_in)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET repo=?, error=? WHERE delivery=?",
+                        (repo, run_supervisor.SETTLE_HOLD, delivery))
+
+    def test_a_settling_row_is_waited_for_by_its_repos_worker_while_another_polls(self):
+        # #2569 merged into #2609: the poller polls the CI holds of every repo but only its own
+        # repo's settling rows, so a worker spawned for a settling row whose poller lock is
+        # taken waits for that row itself, and for nothing else.
+        from diaktoros.run_supervisor import poller
+        self.settle('mine', 1, 'o/r', due_in=40)
+        self.settle('theirs', 2, 'x/y', due_in=10)
+        self.hold('held', 3, due_in=20)
+        first = poller.lock(self.db)                    # a worker of another repo polls
+        self.addCleanup(first.close)
+        self.assertEqual(poller.due(self.sup(production_claim=True)), self.now[0] + 20)
+        start, recovered = self.now[0], []
+
+        def recover():
+            recovered.append(self.now[0] - start)
+            with ledger.connect(self.db) as con:
+                con.execute("UPDATE runs SET state='pending' WHERE delivery='mine'")
+        self.s.settle_repos = frozenset({'o/r'})
+        self.s.recover = Mock(side_effect=recover)
+        self.s.linger_for_ci(sleep=self.sleeper())
+        self.assertEqual(len(recovered), 1)
+        self.assertGreaterEqual(recovered[0], 40)       # not at x/y's row or the CI hold
+
 
 class NoReadForARowThatCannotStart(Volume):
     def claim_with(self, api):

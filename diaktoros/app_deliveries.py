@@ -22,6 +22,7 @@ from . import gh
 
 MAX_PAGES = 3            # 300 deliveries, as ``trace`` searches each repo hook
 PAGE = 100
+SEARCHED = MAX_PAGES * PAGE  # what ``latest``, ``find`` and ``ping`` search, named when not found
 _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
@@ -97,7 +98,7 @@ def find(loop: dict, delivery: str) -> tuple[dict | None, str, str]:
                 break
     if number is None:
         return None, "", (f"no delivery {wanted!r} in {loop.get('ingress_app')}'s webhook log "
-                          f"(the last {MAX_PAGES * PAGE} were searched)")
+                          f"(the last {SEARCHED} were searched)")
     found = _call(loop, f"/app/hook/deliveries/{number}")
     request = found.data.get("request") if isinstance(found.data, dict) else None
     payload = request.get("payload") if isinstance(request, dict) else None
@@ -128,9 +129,10 @@ def ping(loop: dict, *, wait: float | None = None, sleep=time.sleep,
         if newest:
             break
     if newest is None:
-        return hook_ping.SILENT, (f"⚠️ {app}'s webhook log holds no ping to redeliver (GitHub keeps "
-                                  "recent deliveries only, and an App's webhook has no ping "
-                                  "endpoint) — nothing proven yet; the next real delivery is the "
+        return hook_ping.SILENT, (f"⚠️ {app}'s webhook log holds no ping to redeliver among its "
+                                  f"newest {SEARCHED} deliveries (GitHub keeps recent deliveries "
+                                  "only, and an App's webhook has no ping endpoint) — nothing "
+                                  "proven yet; the next real delivery is the "
                                   f"evidence: `hermes dk doctor --loop {loop['id']}`")
     sent = _call(loop, f"/app/hook/deliveries/{newest['id']}/attempts", "POST")
     if sent.error:

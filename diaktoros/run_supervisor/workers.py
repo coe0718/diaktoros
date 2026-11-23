@@ -46,6 +46,10 @@ def process_state(pid: int | None, launched: float | None) -> str:
 
 
 LINGER_MARK = '.linger.'
+# The repo of the settling row a submit spawned this worker for (#2569).
+SETTLE_REPO_ENV = envnames.name('SETTLE_REPO')
+
+
 def linger_mark(db: Path, pid: int) -> Path:
     """The file ``<ledger>.linger.<pid>`` that process ``pid`` keeps beside the ledger while it
     is inside ``linger_for_ci`` (#1811): the mark by which a test's cleanup tells a lingering
@@ -320,7 +324,7 @@ def lingering(db: Path):
 class WorkerLifecycle:
     """The worker-lifecycle and recovery methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
-    def _spawn(self):
+    def _spawn(self, settle_repo: str | None = None):
         # Trusted supervisor process only, never the credential-owning gateway agent.
         if not self.fixture_mode and not self.production_config:
             return
@@ -349,6 +353,8 @@ class WorkerLifecycle:
             util.leak_guard_env(env)
 
         env[WORKER_ENV] = "1"  # hostdirs: a worker never creates host state (#108)
+        if settle_repo:
+            env[SETTLE_REPO_ENV] = settle_repo
         from .. import app_tokens, gh_calls
         gh_calls.prepare(host_home)       # so the worker can count its GitHub calls there
         app_tokens.prepare(host_home)     # and share the host's App tokens (#1780)
@@ -692,11 +698,13 @@ class WorkerLifecycle:
             return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
                                "LIMIT 1", (repo, pr, head, seat)).fetchone() is not None
 
+    # The repos of the settling rows this supervisor submitted or was spawned for (#2569).
+    settle_repos: frozenset = frozenset()
+
     def settling(self) -> bool:
-        """Whether a run waits out a reply's settle window (``SETTLE_HOLD``, #2248)."""
-        with self._connect() as con:
-            return con.execute("SELECT 1 FROM runs WHERE state='waiting' AND error=? LIMIT 1",
-                               (run_supervisor.SETTLE_HOLD,)).fetchone() is not None
+        """Whether a run of ``settle_repos`` waits out a reply's settle window (``SETTLE_HOLD``,
+        #2248, #2569)."""
+        return bool(self.settle_repos) and poller.settle_due(self) is not None
 
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, or backing a claim off after a failed GitHub read,
@@ -705,15 +713,16 @@ class WorkerLifecycle:
         sweep interval later, would otherwise start a row waiting out a backoff (#1302). Only a
         row due within this linger's window is waited for: the second and later read-failure
         backoffs (4 min and up) are the watchdog sweep's, as before. A fix turn settling after a
-        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by any worker.
+        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by a worker of its
+        repo (#2569).
 
-        One poller per ledger (#2609): each lingerer polled every held row, not only its own,
-        and every wake could start a worker that lingered too. With ~30 PRs held for CI, workers
-        kept starting each other: 9,200 in an hour, and GitHub's read limit ran out. Now only
-        the worker holding ``<ledger>.poller`` polls; one that finds it held leaves the polling
-        to it. Any worker takes the polling up when rows are due soon and nobody polls, and a
-        poller that stops at ``POLLER_MAX_S`` with rows still due soon starts its successor."""
-        if not self.held_for_ci and not self.settling() and not self._due_soon():
+        One poller per ledger (#2609): with ~30 PRs held for CI, lingerers that each polled every
+        held row kept starting each other: 9,200 in an hour, and GitHub's read limit ran out. Now
+        only the worker holding ``<ledger>.poller`` polls; one that finds it held leaves the polling
+        to it, but for its own repo's settling rows. Any worker takes the polling up when rows
+        are due soon and nobody polls, and a poller that stops at ``POLLER_MAX_S`` with rows
+        still due soon starts its successor."""
+        if not self.held_for_ci and not self.settling() and not poller.due_soon(self):
             return
         def marked_sleep(seconds):
             # Marked only while asleep (#1811): a worker in its database reads or in recover()
@@ -724,6 +733,8 @@ class WorkerLifecycle:
         while True:
             held = poller.lock(self.db)
             if held is False:
+                if self.settling():     # its own settling rows: no other repo's poller waits
+                    poller.wait(self, marked_sleep, end, poller.settle_due)
                 return                  # another worker polls
             try:
                 stuck = poller.wait(self, marked_sleep, end)
@@ -731,8 +742,7 @@ class WorkerLifecycle:
                 if held is not None:
                     held.close()        # the kernel drops the lock with the descriptor
             # Read again once the lock is released (review of #2612): a worker that held a row
-            # while this one was stopping found the lock taken and left that row to it. Every
-            # worker writes its hold before it tries the lock, so this read sees it.
+            # meanwhile left it to this one, and it writes its hold before it tries the lock.
             due = self._polled_due()
             if due is None or due > time.time() + poller.window() or due == stuck:
                 return                  # nothing due soon, or only the row recover() can't move
@@ -743,11 +753,6 @@ class WorkerLifecycle:
     def _polled_due(self) -> float | None:
         """The earliest due time of a waiting row a lingerer polls, or None (``poller.due``)."""
         return poller.due(self)
-
-    def _due_soon(self) -> bool:
-        """Whether a polled row falls due within a linger's window from now."""
-        due = self._polled_due()
-        return due is not None and due <= time.time() + poller.window()
 
 
 def _worker_gone(row) -> bool:
