@@ -478,7 +478,13 @@ using the same code as the command named in it:
    loop, nothing to require`.
 6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
    Skipped, with a line saying so, when the record has `armed` `passed` and the hooks are still
-   as recorded (`--arm` included); a stale `armed` stage asks again.
+   as recorded (`--arm` included); a stale `armed` stage asks again. One exception (#1713): an
+   `armed` stage that is stale only because `live_turn` is (the PR's head or the reviewer prompt
+   moved since the live turn) while the hooks still match what `arm` recorded counts as armed,
+   since `setup` never re-runs the live turn and a new PR head says nothing about the hooks.
+   `onboard` still shows that `armed` as `stale` (`live_turn is stale, and this was shown
+   against it`). A stale `identities`, `loop` or `model` stage, or `armed` invalidated by an
+   earlier stage re-recorded against other inputs, still asks again.
 
 At the end (also when step 4 stops it) `setup` prints the [`onboard`](#onboard) summary: each
 stage's status and the next command, read-only. `--dry-run` stops before steps 4 to 6 and
@@ -2160,7 +2166,13 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
   If the owning worker is already gone (its lease expired), nothing reads the request; the
   next recovery sweep (`recover()`) ends the run the same way: `cancelled` when nothing was
-  written, `uncertain` (naming the cancel) after a write-ahead record. An expired lease does
+  written, freeing the seat and handing back an adjudicator's breach marker as the worker
+  would (#1767), and `uncertain` (naming the cancel, the seat still held) after a write-ahead
+  record. That cleanup touches only what the lost launch itself took: the seat claim and the
+  marker carry the launch that took them, so a `retry` that has relaunched the run in the
+  meantime keeps its claim, its in-flight mark (cleared only together with the lost launch's
+  own claim, in one step) and its `adjudicating` marker, and a marker the lost launch never
+  started (a gateway's, another run's) is left alone. An expired lease does
   not prove the turn stopped, so this happens only when the run's recorded process is provably
   gone (the check `reconcile` uses). A live or unrecorded process, or a fixer run with a push
   intent, stays `uncertain` in quarantine, holding its PR, until `reconcile`.
