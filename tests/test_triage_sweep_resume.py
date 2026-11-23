@@ -10,6 +10,7 @@ Driven through ``watchdog.sweep_loop`` with the real ``gh.open_issues_read``: pa
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import re
 import sys
 import time
 import unittest
@@ -25,18 +26,21 @@ PRS = [tts.issue(900 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)]
 
 class Base(tts.SweepBase):
     def run_sweep(self, left_after_page1: float, page2=None, budget: float = 20.0, page1=PRS,
-                  places=None):
+                  listing=None):
         """One sweep; page 1 (``page1``) leaves ``left_after_page1`` seconds. ``page2(path)``
-        answers page 2, and ``places`` the places before it a resumed sweep reads again (F6):
-        by default, the end of ``page1``."""
+        answers page 2. A smaller page, the places a resumed sweep reads again (F6), is cut
+        from ``listing``: by default ``page1``, then the issue page 2 holds by default."""
         seen = []
+        listing = page1 + ([tts.issue(8)] if page2 is None else []) if listing is None else listing
 
         def fetch(loop, path, *args, **kw):
             if "/issues?" not in path:
                 return [], None               # the sweep's other reads: nothing to say
             seen.append(path)
-            if "per_page=25&page=4" in path:      # places 76 to 100, before page 2 (F6)
-                return (page1 if places is None else places)[-25:], None
+            small = re.search(r"per_page=(\d+)&page=(\d+)$", path)
+            if small and small.group(1) != "100":       # the places read again (F6)
+                size, at = int(small.group(1)), int(small.group(2))
+                return listing[(at - 1) * size:at * size], None
             if "&page=" not in path:
                 scope["deadline"] = time.monotonic() + left_after_page1
                 return page1, None
@@ -170,7 +174,8 @@ class ResumedSweep(Base):
 class ShiftedListing(Base):
     """Review on #2578, F6: the saved page is an offset into a list that changes. A PR before the
     cut closes, the eligible issue moves from place 101 onto page 1, and a sweep that resumed at
-    page 2 skipped it, said nothing and started the next listing over past it."""
+    page 2 skipped it, said nothing and started the next listing over past it. The same holds
+    when they close between the places read again and the page (second F6 review)."""
 
     def cut_then_close(self, closed: int):
         """Page 1 is 100 PRs, the issue is place 101; the sweep is cut there, then ``closed``
@@ -183,11 +188,11 @@ class ShiftedListing(Base):
         now = self.cut_then_close(1)
         alerts, seen, _ = self.run_sweep(2.0, page1=now[:100], page2=lambda _: (now[100:], None))
         self.assertEqual((alerts, self.queued()), ([], [8]))   # 101 is now 100: read, queued
-        self.assertIn("per_page=25&page=4", seen[0])           # in the places before page 2
+        self.assertIn("per_page=67&page=2", seen[0])           # places 68-134, around 101
 
     def test_more_closed_than_it_reads_again_starts_the_next_sweep_over(self):
-        now = self.cut_then_close(30)                          # 71 left: places 76-100 empty
-        alerts, _, _ = self.run_sweep(2.0, page1=now, page2=lambda _: ([], None), places=[])
+        now = self.cut_then_close(40)                          # 61 left: places 68-134 empty
+        alerts, _, _ = self.run_sweep(2.0, page1=now, page2=lambda _: ([], None), listing=now)
         self.assertEqual(self.queued(), [])
         self.assertEqual(len(alerts), 1, alerts)
         self.assertIn("resumed its listing at page 2; issues/PRs before where it resumed closed",
@@ -196,6 +201,30 @@ class ShiftedListing(Base):
         alerts, seen, _ = self.run_sweep(2.0, page1=now)       # and it does: the issue is read
         self.assertNotIn("&page=", seen[0])
         self.assertEqual((alerts, self.queued()), ([], [8]))
+
+    def test_closes_between_the_places_and_the_page_start_the_next_sweep_over(self):
+        # Vex's second probe: the places read again reach back to PR 999, then 40 PRs close
+        # before page 2 is read, so places 135-140 (the issue at 137) land on page 1, unread.
+        more = [tts.issue(1100 + n, pr=True) for n in range(63)]
+        was = PRS + more[:36] + [tts.issue(8)] + more[36:]              # 200: the issue at 137
+        self.run_sweep(2.0, page1=was[:100])                            # cut at page 2
+        now = was[40:]
+        alerts, _, _ = self.run_sweep(2.0, page1=now[:100], listing=was,
+                                      page2=lambda _: (now[100:200], None))
+        self.assertEqual(self.queued(), [])
+        self.assertEqual(len(alerts), 1, alerts)
+        self.assertIn("the next sweep starts again from page 1", alerts[0])
+        alerts, seen, _ = self.run_sweep(2.0, page1=now[:100])          # page 1: the issue
+        self.assertNotIn("&page=", seen[0])
+        self.assertEqual(self.queued(), [8])
+
+    def test_the_places_read_again_hold_both_sides_of_every_page_start(self):
+        from diaktoros import triage_resume as resume
+        for page in range(2, gh.MAX_ISSUE_PAGES + 2):
+            at, before = resume.window(page)
+            start = (page - 1) * gh.REVIEW_PAGE_SIZE                    # places before the page
+            self.assertEqual((at - 1) * resume.SPAN + before, start, page)
+            self.assertTrue(19 <= before < resume.SPAN, (page, before))
 
     def test_the_kept_item_proves_the_places_reach_back_or_nothing_does(self):
         from diaktoros import triage_resume as resume
