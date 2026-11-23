@@ -127,7 +127,7 @@ class RunIntake:
         # Re-delivery of an old row never upgrades its admission.
         from .. import config
         lock = config.push_policy_lock() if self.production_config and seat == 'fixer' else nullcontext()
-        with lock, self._connect() as con:
+        with lock, shadow_owing.claim_lock(self.db, seat), self._connect() as con:
             admitted = 0
             if self.production_config and seat == 'fixer':
                 loop = config.by_repo(repo)

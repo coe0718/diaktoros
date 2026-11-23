@@ -11,8 +11,9 @@ did. A row with no write-ahead record gets its shadow on the gate's snapshot (it
 recorded only after its receipt claim). Unkept: a claimed row is failed, and a running one is
 stopped and can post no review.
 
-Round 4 (F4): the same when the shadow row's INSERT or the COMMIT fails. An operator's stop and
-``hermes dk retry`` are in ``test_shadow_owed_stops``.
+Round 4 (F4): the same when the shadow row's INSERT or the COMMIT fails. Round 5: a receipt claim
+between that failed transaction and the stop waits for the stop (``ledger.claims``). An
+operator's stop and ``hermes dk retry`` are in ``test_shadow_owed_stops``.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import contextlib
 import pathlib
 import sqlite3
 import sys
+import threading
 import time
 import unittest
 from contextlib import closing
@@ -168,6 +170,41 @@ class AShadowRowThatCannotBeWritten(_Race):
 
     def test_a_commit_that_fails_still_stops_the_running_turn(self):
         loop = self.queued_unsampled()
+        with self.race("running"), self.failing_commit(), \
+                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            self.enqueue(loop)
+        self.assertEqual(self.rows(), [("reviewer", "running")])
+        self.assertTrue(self.stopped().startswith(OWED))
+
+    def test_a_claim_right_after_the_rollback_waits_for_the_stop(self):
+        # Round 5: Vex's probe claimed the receipt on another connection just after the failed
+        # transaction's ROLLBACK, before the stop, and it was granted: a review with no shadow.
+        loop = self.queued_unsampled()
+        got, threads = [], []
+
+        def claim(run_id):
+            try:
+                review_receipt.ReceiptLedger(self.sup().db, run_id, "g1").claim(5)
+                got.append("claimed")
+            except review_receipt.ReceiptDenied as exc:
+                got.append(str(exc))
+
+        def in_the_gap():                  # unlocked, the claim lands here, before the stop
+            threads.append(threading.Thread(target=claim, args=(self.sup().get(REVIEWER)["id"],)))
+            threads[0].start()
+            threads[0].join(1.0)
+        with self.race("running"), self.failing_commit(in_the_gap), \
+                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            self.enqueue(loop)
+        threads[0].join(10)
+        self.assertEqual(got, ["this reviewer turn was asked to stop: no review is posted"])
+        with closing(sqlite3.connect(self.sup().db)) as con:
+            self.assertEqual(con.execute("SELECT count(*) FROM review_receipts").fetchone(), (0,))
+        self.assertTrue(self.stopped().startswith(OWED))
+
+    def failing_commit(self, after_rollback=None):
+        """Fail the redelivery's COMMIT once its shadow row is in, leaving its transaction to
+        ``fails_closed``; run ``after_rollback`` just after that transaction's ROLLBACK."""
         real, armed = Supervisor._connect, [True]
 
         class Failing:
@@ -182,17 +219,16 @@ class AShadowRowThatCannotBeWritten(_Race):
                 if sql == "COMMIT" and self.shadow and armed[0]:
                     armed[0] = False
                     raise sqlite3.OperationalError("disk I/O error")
-                return self.con.execute(sql, *args)
+                done = self.con.execute(sql, *args)
+                if sql == "ROLLBACK" and self.shadow and after_rollback:
+                    after_rollback()
+                return done
 
         @contextlib.contextmanager
         def connect(sup):
             with real(sup) as con:
                 yield Failing(con)
-        with self.race("running"), mock.patch.object(Supervisor, "_connect", connect), \
-                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
-            self.enqueue(loop)
-        self.assertEqual(self.rows(), [("reviewer", "running")])
-        self.assertTrue(self.stopped().startswith(OWED))
+        return mock.patch.object(Supervisor, "_connect", connect)
 
 
 if __name__ == "__main__":

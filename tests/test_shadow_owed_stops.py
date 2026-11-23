@@ -2,6 +2,7 @@
 round 4).
 
 F5: an event never turns an operator's stop into one it re-arms, whichever stop came first.
+F7 (round 5): an operator's stop before the receipt claim posts no review.
 F6: ``hermes dk retry``'s planner (the CLI's and the Desktop's) and ``status``/``explain`` offer
 the stopped turn, which re-arms with its shadow. A lost worker's stop keeps that cause too.
 """
@@ -17,10 +18,10 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import config, retry_action  # noqa: E402
+from diaktoros import attribution, broker, config, gh, retry_action, review_receipt  # noqa: E402
 from diaktoros.run_supervisor import OPERATOR_CANCEL, views, workers  # noqa: E402
 from test_shadow_owed_race import OWED, _Race  # noqa: E402
-from test_shadow_rearm import REVIEWER  # noqa: E402
+from test_shadow_rearm import HEAD, REVIEWER  # noqa: E402
 
 
 class AnOperatorsStop(_Race):
@@ -45,6 +46,30 @@ class AnOperatorsStop(_Race):
         broken.rmdir()
         self.assertTrue(self.enqueue(loop).startswith("duplicate cancelled: cancelled by an operator"))
 
+    def test_an_operators_stop_before_the_claim_posts_no_review(self):
+        # Review F7: the receipt refuses any asked stop, an operator's included, not only one
+        # for the shadow; the review is never claimed or sent.
+        self.assertEqual(self.enqueue(self.loop()), "enqueued")
+        with closing(sqlite3.connect(self.sup().db)) as con, con:
+            con.execute("UPDATE runs SET state='running', owner='w', generation='g1', lease=?, "
+                        "launch_intent=? WHERE delivery=?", (time.time() + 600, time.time(),
+                                                             REVIEWER))
+        row = self.sup().get(REVIEWER)
+        self.assertEqual(self.sup().cancel(row["id"])["state"], "stopping")
+        sent = []
+        scope = mock.Mock(repo="acme/widgets", number=8, head=HEAD, branch="fix-8")
+        with mock.patch.object(broker, "authorize", return_value="rev"), \
+                mock.patch.object(gh, "principal", return_value={"id": 5, "login": "rev"}), \
+                mock.patch.object(gh, "api", side_effect=lambda *a, **k: sent.append(k)), \
+                mock.patch.object(review_receipt, "generation_for", return_value="g1"), \
+                mock.patch.object(attribution, "stamp", side_effect=lambda lp, body, **k: body), \
+                self.assertRaisesRegex(review_receipt.ReceiptDenied, "asked to stop"):
+            review_receipt.submit({"read_token": "reader"}, scope, review_receipt.ReceiptLedger(
+                self.sup().db, row["id"], "g1"), "APPROVE", "Ship it.")
+        self.assertEqual([k for k in sent if k.get("method") == "POST"], [])
+        with closing(sqlite3.connect(self.sup().db)) as con:
+            self.assertEqual(con.execute("SELECT count(*) FROM review_receipts").fetchone(), (0,))
+
 
 class RetriedThroughThePlanner(_Race):
     """Review F6: `hermes dk retry` and the Desktop offer a turn stopped for its shadow."""
@@ -65,7 +90,6 @@ class RetriedThroughThePlanner(_Race):
                                         read_pr=lambda: True)
         self.assertEqual([entry["state"] for entry in done["rearmed"]], ["cancelled"], done)
         self.assertEqual(self.rows(), [("reviewer", "pending"), ("shadow", "pending")])
-
 
 
 class ALostWorker(_Race):

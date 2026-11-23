@@ -12,6 +12,7 @@ import contextlib
 import time
 
 from .. import run_supervisor
+from ..state import ledger
 
 # The reviewer row states a redelivery may still give the shadow its turn owes.
 UNENDED = ('pending', 'waiting', 'claimed', 'launching', 'running')
@@ -79,13 +80,23 @@ def stop(con, prior, outcome: str, unkept: str, now: float) -> str:
     return f"duplicate failed: {unkept}"
 
 
+def claim_lock(db, seat: str):
+    """Around ``submit``'s transaction for a reviewer's event: the ledger's claim lock
+    (``ledger.claim_lock``), so no receipt claim lands between a failed transaction and the stop
+    ``fails_closed`` then writes (#2634 review F4, round 5). Taken before ``BEGIN IMMEDIATE``,
+    as the claim takes it, so the two never wait on each other's locks."""
+    return ledger.claim_lock(db) if seat == "reviewer" else contextlib.nullcontext()
+
+
 @contextlib.contextmanager
 def fails_closed(sup, con, prior, shadow):
     """Around ``submit``'s redelivery and its COMMIT: a failure that ends the transaction itself
     (its COMMIT, or one SQLite rolls back whole) loses the shadow row with it, but not a worker
     already running the turn. So it is stopped in a fresh transaction, then the error is raised
-    and the gate holds the event (#2634 review F4). Taken before anything is written: a row
-    not ended, not asked to stop, with no write-ahead record, owing a shadow."""
+    and the gate holds the event (#2634 review F4). ``submit`` holds the claim lock (``claim_lock``)
+    throughout, so the turn's receipt cannot be claimed in between (round 5). Taken before
+    anything is written: a row not ended, not asked to stop, with no write-ahead record, owing
+    a shadow."""
     owed = (prior is not None and isinstance(shadow, tuple) and prior['state'] in UNENDED
             and prior['cancel_requested'] is None
             and run_supervisor.write_evidence(con, prior['id']) is None)

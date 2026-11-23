@@ -26,10 +26,15 @@ then refuses, it closes itself before raising.
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import os
 import sqlite3
+import time
 import traceback
 from pathlib import Path
 from typing import Callable, Iterator
+
+from .. import util
 
 # How long any connection to the run ledger waits for another's lock before giving up (#601).
 # Writes are short, but on a host also running heavy test suites each commit's fsync can stall,
@@ -37,6 +42,13 @@ from typing import Callable, Iterator
 # retry. ``timeout=LOCK_WAIT_S`` on connect, and ``BUSY_TIMEOUT`` where pragmas are set.
 LOCK_WAIT_S = 60
 BUSY_TIMEOUT = f"busy_timeout={LOCK_WAIT_S * 1000}"
+
+# The claim lock beside a run ledger (``claim_lock``), by the ledger's name; a ledger by any other
+# name (a test's) gets one named the same way.
+CLAIMS_LOCKS = {
+    "diaktoros-runs.sqlite": util.register_lock("diaktoros-runs.sqlite.claims.lock"),
+    "review-loop-runs.sqlite": util.register_lock("review-loop-runs.sqlite.claims.lock"),
+}
 
 # Frames that only open or wrap a connection; ``where`` looks past them to the operation.
 _PLUMBING = {"connect", "_connect", "_worker_connect", "read_only_connect", "__enter__",
@@ -114,3 +126,32 @@ def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
             exc.add_note(f"closing the ledger connection also failed: {close_exc!r}")
         raise
     con.close()
+
+
+@contextlib.contextmanager
+def claim_lock(db) -> Iterator[None]:
+    """One at a time across the host's processes, beside the ledger at ``db``: a reviewer's
+    receipt claim (``review_receipt.ReceiptLedger.claim``) and a redelivery deciding the shadow
+    that reviewer's turn owes (``run_supervisor.shadow_owing.claim_lock``). That redelivery's
+    transaction may fail after its shadow row was lost, and the turn is then stopped in a fresh
+    one; between the two, SQLite holds no lock, so a claim there would post a review with no
+    shadow (#2634 review F4, round 5). Held across both, this lock keeps the claim out until the
+    stop is written. A flock, so a holder that dies frees it; past ``LOCK_WAIT_S`` it raises
+    ``TimeoutError``, before anything is written or posted."""
+    path = Path(db)
+    name = CLAIMS_LOCKS.get(path.name) or path.name + ".claims.lock"
+    lock = os.open(path.with_name(name), os.O_RDWR | os.O_CREAT, 0o666)   # never written
+    try:
+        until = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= until:
+                    raise TimeoutError(f"{path}: its claim lock was held past {LOCK_WAIT_S}s") \
+                        from None
+                time.sleep(0.02)
+        yield
+    finally:
+        os.close(lock)                    # frees the flock too

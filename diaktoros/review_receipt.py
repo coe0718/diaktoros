@@ -119,7 +119,7 @@ class ReceiptLedger:
     def claim(self, principal_id, verdict=None):
         if type(principal_id) is not int or principal_id <= 0:
             raise ReceiptDenied('invalid reviewer principal')
-        with self._connect() as con:
+        with ledger.claim_lock(self.db), self._connect() as con:   # #2634 F4: see ledger.claim_lock
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT generation,seat,state,cancel_requested FROM runs WHERE id=?',
                               (self.run_id,)).fetchone()

@@ -185,8 +185,10 @@ class LedgerSides(Home):
         self.write_sides()
         migrate.files_step(cli_common._write_config, dry_run=False)
         self.assertEqual(self.sides("review-loop-runs"), [])
+        # The claim lock (#2634: old_install's reviewer enqueue took it) is a side file too.
         self.assertEqual(self.sides("diaktoros-runs"),
-                         ["diaktoros-runs.sqlite", "diaktoros-runs.sqlite.present",
+                         ["diaktoros-runs.sqlite", "diaktoros-runs.sqlite.claims.lock",
+                          "diaktoros-runs.sqlite.present",
                           "diaktoros-runs.sqlite.workers.log", "diaktoros-runs.sqlite.workers.log.1"])
 
     def test_a_rerun_moves_side_files_an_earlier_run_left_behind(self):
@@ -216,7 +218,8 @@ class LedgerSides(Home):
             real(path)
         with mock.patch.object(migrate, "_quiet_ledger", side_effect=quiet):
             migrate.files_step(cli_common._write_config, dry_run=False)
-        self.assertEqual(seen["sides"], ["review-loop-runs.sqlite.present",
+        self.assertEqual(seen["sides"], ["review-loop-runs.sqlite.claims.lock",
+                                         "review-loop-runs.sqlite.present",
                                          "review-loop-runs.sqlite.workers.log",
                                          "review-loop-runs.sqlite.workers.log.1"])
 
