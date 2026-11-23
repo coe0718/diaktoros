@@ -33,7 +33,9 @@ evidence read as an unmarked requirement). A ``<pre>``, ``<script>``, ``<style>`
 is, through its closing tag. Any other (``<div>``, ``<ul>``, a lone tag), up to a blank line, is
 shown text: kept, so a status in it still counts (eighteenth review: ``<li>two: not met</li>``
 was hidden), with a backslash before a leading marker, ``#`` or ``*`` (``literal``). A lone tag
-cannot interrupt a paragraph, so there it is the paragraph's text.
+cannot interrupt a paragraph, so there it is the paragraph's text. A shown ``<li>`` outside any
+Markdown item, in no HTML list nested in another, is a requirement item (``shown``: nineteenth
+review, ``<li>second: export flag</li>`` was approved with no status); inside one it is evidence.
 """
 from __future__ import annotations
 
@@ -55,6 +57,8 @@ HTML = [(re.compile(start, re.I), end and re.compile(end, re.I)) for start, end 
     (rf"(?:<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$", None))]
 # An inline token: a backslash escape (ASCII punctuation), a backtick run or a comment opener.
 INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|<!--")
+# In shown HTML: an HTML list opening or closing, or a list item opening.
+LI = re.compile(r"<(/?)(?:ul|ol)(?:\s[^>]*)?>|<li(?:\s[^>]*)?>", re.I)
 
 
 def width(text: str) -> int:
@@ -114,6 +118,28 @@ def literal(line: str) -> str:
     return line
 
 
+def shown(line: str, top: bool, state: list) -> list[str]:
+    """The lines a shown HTML block's ``line`` reads as: each ``<li>`` in it that is no deeper than
+    one HTML list starts a top-level item line (``- `` and its text, or the next text when it has
+    none), when the block is in no Markdown item (``top``); the rest is ``literal``. ``state`` is
+    the block's ``[HTML list depth, an item still waiting for its text]`` (nineteenth review)."""
+    if not top:
+        return [literal(line)]
+    segs, at, waiting = [], 0, state[1]
+    for tag in LI.finditer(line):
+        if not tag.group().lower().startswith("<li"):
+            state[0] = max(0, state[0] + (-1 if tag.group(1) else 1))
+        elif state[0] <= 1:
+            segs.append((waiting, line[at:tag.start()]))
+            at, waiting = tag.end(), True
+    out = []
+    for opens, text in segs + [(waiting, line[at:])]:
+        if text.strip():
+            out.append("- " + text.strip() if opens else literal(text))
+        state[1] = opens and not text.strip()
+    return out
+
+
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
     (twelfth review on #2573); each line break they held is kept, so the lines still line up.
@@ -144,6 +170,7 @@ def unfenced(lines: list[str]) -> list[str]:
     evidence read as unmarked items). The lines left are read for inline comments a paragraph
     at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
     out, fence, cols, kinds, blank, html, para, raw = [], None, [], [], False, None, [], None
+    state = [0, False]                    # a shown HTML block's, for ``shown``
 
     def flush():                          # the paragraph so far, read inline as one text
         out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
@@ -152,9 +179,10 @@ def unfenced(lines: list[str]) -> list[str]:
         at, ended = indent(line), False
         if raw is not None and line.strip() and at < raw:
             raw, ended = None, True                # its list item ended, and the block with it
-        elif raw is not None and line.strip():     # shown HTML: text, never an item (F18)
-            out.append(literal(line))
-            para.append(out[-1])
+        elif raw is not None and line.strip():     # shown HTML: text, or a <li> item (F18-19)
+            shown_ = shown(line, raw == 0, state)
+            out += shown_
+            para += shown_
             continue
         raw = None                                 # a blank line ends it, and is read as one
         if html is not None and line.strip() and at < html[0]:
@@ -197,7 +225,11 @@ def unfenced(lines: list[str]) -> list[str]:
             flush()
         blank, col = False, cols[-1] if cols else 0
         if opener and opener[0] is None:           # shown HTML, to the next blank line
-            raw, line = col, literal(line)
+            raw, state = col, [0, False]
+            shown_ = shown(line, raw == 0, state)
+            out += shown_
+            para += shown_
+            continue
         elif opener:                               # code or hidden HTML, through its end
             html = None if opener[0].search(line) else (col, opener[0])
             out.append("")

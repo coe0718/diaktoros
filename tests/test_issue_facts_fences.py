@@ -200,5 +200,23 @@ class HtmlBlocks(Mocked):
                 self.assertEqual(check(body), "")
 
 
+    def test_a_shown_html_list_item_is_a_requirement(self):
+        # Nineteenth review (F19): a shown <li> outside any Markdown item is an item, so an
+        # unmarked one is refused on APPROVE, as `- second: export flag` is.
+        for body in ("<ul>\n<li>second: export flag</li>\n</ul>\n",            # Vex's case
+                     "<ul><li>second: met</li><li>third: export flag</li></ul>\n",
+                     "<OL>\n  <li class=x>\n    third: export flag\n  </li>\n</OL>\n"):
+            with self.subTest(body):
+                self.assertIn("export flag", check(body))
+                self.assertIn("has no status", check(body))
+                self.assertEqual(check(body, "REQUEST_CHANGES"), "")
+        for body in ("<ul>\n<li>second: met</li>\n<li>third: deferred to #9</li>\n</ul>\n",
+                     "<ul>\n<li>second: met<ul><li>evidence: a.py:3</li></ul></li>\n</ul>\n",
+                     "- two: met\n\n  <ul>\n  <li>evidence: a.py:3</li>\n  </ul>\n",
+                     "<pre>\n<li>evidence: a.py:3</li>\n</pre>\n"):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
+
 if __name__ == "__main__":
     unittest.main()
