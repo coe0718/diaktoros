@@ -24,7 +24,8 @@ code spans are read over a whole paragraph, as Markdown reads them, not line by 
 may run across lines (fourteenth review), and a backslash escapes the character after it, so an
 escaped backtick opens no code span (fifteenth review). A marker line that cannot interrupt a
 paragraph is the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
-second F14): one that dedents past the item it continues is indented back into it.
+second F14): one that dedents past the item it continues is indented back into it. Nor is a
+line that only looks like a fence or comment opener (sixteenth review) a break in the paragraph.
 """
 from __future__ import annotations
 
@@ -136,6 +137,12 @@ def unfenced(lines: list[str]) -> list[str]:
             continue
         item, found, opener = ITEM.match(line), FENCE.match(line), COMMENT.match(line)
         item = None if code_line(item, at, cols) else item
+        # A fence or comment line too deep for its item, or a backtick fence with a backtick
+        # after it, is text: it ends no paragraph and closes no item (sixteenth review).
+        deep = at - max((c for c in cols if c <= at), default=0) > 3
+        found = None if deep or (found and found.group(1)[0] == "`" and "`" in found.group(2)) \
+            else found
+        opener = None if deep else opener
         if item and para and not interrupts(item, at, cols, kinds):   # the paragraph's text
             item, line = None, " " * max(at, cols[-1] if cols else 0) + line.lstrip()
         if item or found or opener or blank or ended:   # neither is a lazy continuation
@@ -145,11 +152,11 @@ def unfenced(lines: list[str]) -> list[str]:
         if item or found or opener or ended:   # a new block: its own paragraph
             flush()
         blank, col = False, cols[-1] if cols else 0
-        if opener and at - col <= 3:
+        if opener:
             comment = None if "-->" in opener.group(1) else col
             out.append("")
             continue
-        if found and at - col <= 3 and not (found.group(1)[0] == "`" and "`" in found.group(2)):
+        if found:
             fence = (found.group(1)[0], len(found.group(1)), col)
             out.append("")
             continue

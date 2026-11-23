@@ -149,6 +149,14 @@ class HtmlComments(Mocked):
         self.assertIn('"- third: export flag" has no status',                        # a bullet
                       check("- second: met `x\n- third: export flag <!--` met\n"))
 
+    def test_a_line_that_only_looks_like_a_fence_is_the_text(self):
+        # Sixteenth review (F16): a backtick fence with a backtick after it is no fence, so the
+        # code span runs on through it; a real fence still ends the paragraph and the span.
+        self.assertIn("`not met`", check("- second: met `example\n  ``` <!--` not met\n"))
+        self.assertIn("`not met`", check("- second: met `example\n        ~~~ <!--` not met\n"))
+        self.assertIn('"- second: `example" has no status',                     # a real one
+                      check("- second: `example\n  ```\n  met`\n  ```\n"))
+
     def test_an_escaped_backtick_opens_no_code_span(self):
         # Fifteenth review (F15): ``\\``` read as a span opener, so a real comment showed.
         self.assertIn('"- second: export flag', check("- second: export flag \\`x <!-- met --> y`\n"))
