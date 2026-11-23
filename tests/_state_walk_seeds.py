@@ -7,16 +7,51 @@ from __future__ import annotations
 import itertools
 import math
 
+from _state_walk_oracle import kind
+
 COMBINATIONS = 256      # most companion combinations tried for one call before failing closed
+_NONE = object()
 
 
-def alternative(alts: dict, file: str, value) -> None:
-    """Keep ``value``, one a call wrote into ``file``, among ``file``'s valid alternatives: each
-    distinct whole value, never folded into another, so two writers' conflicting values (one
-    ``{"ready": false}``, one ``{"ready": true}``) are both kept."""
-    have = alts.setdefault(file, [])
-    if value not in have:
-        have.append(value)
+def fold(samples: dict, alts: dict, file: str, value) -> bool:
+    """Fold ``value``, one a call wrote into ``file``, into the file's valid sample, and keep it
+    whole among its alternatives: each distinct value, never folded into another, so two
+    writers' conflicting values (``{"ready": false}``, ``{"ready": true}``) are both kept.
+    Whether either gained something, so discovery calls again each method that touches the file
+    (round 10: a new whole value that leaves the folded sample as it was counts too)."""
+    have, kept = samples.get(file, _NONE), alts.setdefault(file, {})
+    added = (key := repr(skeleton(value))) not in kept
+    if added:
+        kept[key] = value
+    if isinstance(have, dict) and isinstance(value, dict):
+        new = {**value, **have}
+    elif isinstance(have, list) and isinstance(value, list):
+        new = have + [v for v in value if v not in have]
+    elif have is _NONE or (have in ({}, []) and value not in ({}, [])):
+        new = value
+    else:
+        return added
+    samples[file] = new
+    return added or have is _NONE or kind(new) != kind(have) or len(new) > len(have)
+
+
+def skeleton(value):
+    """``value`` with what differs call to call blanked: a clock reading, a fresh random id, and
+    a count past 1 (each call can add one, so counts alone would never end discovery). Two
+    values alike but for these are one alternative. A branch opened only by one particular
+    count past 1, or one id, is not told apart: the bound discovery needs to end."""
+    if isinstance(value, dict):
+        return {skeleton(k): skeleton(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [skeleton(v) for v in value]
+    if isinstance(value, float) or (type(value) is int and abs(value) > 10 ** 8):
+        return "<clock>"
+    if type(value) is int and value not in (0, 1):
+        return "<n>"
+    if isinstance(value, str) and len(value) >= 8 and set(value.lower()) <= set("0123456789abcdef-") \
+            and len(set(value)) > 1:
+        return "<id>"
+    return value
 
 
 def variants(seed: dict, alts: dict, cap: int | None = None) -> list[dict] | None:
@@ -29,7 +64,7 @@ def variants(seed: dict, alts: dict, cap: int | None = None) -> list[dict] | Non
     files, options = sorted(seed), []
     for file in files:
         values, keys = [seed[file]], {repr(seed[file])}
-        for value in alts.get(file, ()):
+        for value in alts.get(file, {}).values():
             if (key := repr(value)) not in keys:
                 keys.add(key)
                 values.append(value)

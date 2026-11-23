@@ -39,7 +39,7 @@ from diaktoros import state
 from _state_walk_cases import (  # noqa: F401 - re-exported for the tests
     ANY_SHAPE, ARGS, EMPTY, FLAT, HEAD, HINTS, JUNK_STRINGS, KEEPS, KEY, LIST, LOCK, METHOD_ARGS,
     NEVER, RAISES, SCALARS, SHAPES, SKIP, new_loop)
-from _state_walk_seeds import alternative, seeds
+from _state_walk_seeds import fold, seeds
 from _state_walk_oracle import (  # noqa: F401 - re-exported for the tests
     conforms, healing, kind, plain, returns, strings)
 from _state_walk_trace import (  # noqa: F401 - re-exported for the tests
@@ -96,21 +96,8 @@ class Walk:
         return outcome, seen, written
 
     def sample(self, file: str, value) -> bool:
-        """Fold a value a call wrote into ``file``'s valid sample, keeping it whole among the
-        file's alternatives too; whether the sample gained a part."""
-        alternative(self.alts, file, value)
-        have = self.samples.get(file, _MISSING)
-        if isinstance(have, dict) and isinstance(value, dict):
-            new = {**value, **have}
-        elif isinstance(have, list) and isinstance(value, list):
-            new = have + [v for v in value if v not in have]
-        elif have is _MISSING or (have in ({}, []) and value not in ({}, [])):
-            new = value
-        else:
-            return False
-        grew = have is _MISSING or (kind(new) != kind(have) or len(new) > len(have))
-        self.samples[file] = new
-        return grew
+        """Fold a value a call wrote into ``file``'s sample and alternatives (``fold``)."""
+        return fold(self.samples, self.alts, file, value)
 
     def clean_call(self, name: str) -> set[str]:
         """Call ``name`` on an empty dir: record its result and writes; the names it touched."""
@@ -146,6 +133,9 @@ class Walk:
             todo = again | {name for name, seen in touched.items() if seen & grown}
             if not todo:
                 break
+        else:                            # still finding state after ROUNDS: fail closed
+            self.uncovered |= {f"{name} (discovery): still reaching new state after {ROUNDS} "
+                               "rounds, so its files may not all be found" for name in todo}
         self.files = sorted(set().union(spelled_json(self.cls), *touched.values(),
                                         {state.OBSERVATIONS_FILE, "kv.json"}))
         return self.files
