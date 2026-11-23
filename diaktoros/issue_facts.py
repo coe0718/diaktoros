@@ -318,8 +318,9 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
         return ("the Requirements section holds raw HTML (a tag or an HTML block outside code): "
                 "write each requirement as a Markdown list item, with any HTML evidence in a "
                 "fenced code block; nothing was written, resubmit")
-    # Outside an APPROVE, a line that holds raw HTML is not read: none of its statuses count.
-    items = [line for line in items if md_fences.RAW not in line]
+    # Outside an APPROVE, nothing from the first raw HTML on is read: an element left open runs
+    # on through any later line, nested items too, so no status after it counts (#2642 F5).
+    items = items[:next((i for i, line in enumerate(items) if md_fences.RAW in line), len(items))]
     # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
     marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
     statuses = [found for _, found in marked if found]

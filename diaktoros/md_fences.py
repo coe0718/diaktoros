@@ -117,8 +117,7 @@ def visible(text: str) -> str:
     A code span is text, so a ``<!--`` inside one opens nothing (thirteenth review), and it may
     run across lines (fourteenth); an unmatched backtick run is text. A backslash escapes the
     character after it: an escaped backtick opens no span, an escaped ``<`` no comment (fifteenth).
-    A comment that never closes hides the rest of the paragraph. Text after a tag may be inside
-    it, so each later line of the paragraph is ``RAW`` too: none of it is read (#2642 F5)."""
+    A comment that never closes hides the rest of the paragraph."""
     out, at = [], 0
     while (token := INLINE.search(text, at)) is not None:
         start, stop = token.span()
@@ -137,10 +136,7 @@ def visible(text: str) -> str:
             stop = close.end() if close else stop
         out.append(text[at:stop])
         at = stop
-    lines = ("".join(out) + text[at:]).split("\n")
-    first = next((i for i, line in enumerate(lines) if RAW in line), len(lines))
-    return "\n".join(line if i <= first or RAW in line else line + RAW
-                     for i, line in enumerate(lines))
+    return "".join(out) + text[at:]
 
 
 def unfenced(lines: list[str]) -> list[str]:

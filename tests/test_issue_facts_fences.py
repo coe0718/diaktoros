@@ -200,9 +200,11 @@ class HtmlBlocks(Mocked):
         self.assertIn("has no item marked", bare("<div>met</div>\n"))
         self.assertIn("has no item marked", bare("<ul>\n<li>second: met</li>\n</ul>\n"))
         self.assertEqual(bare("- first: met\n\n<div>deferred to #999</div>\n"), "")
-        # F5: an inline tag's text, and every line after it in its paragraph, is not read either.
+        # F5: nothing from the first raw HTML on is read, as an element left open runs on, even
+        # through a nested item (second round).
         for body in ("- first: <b>met</b>\n", "- first: <?x met ?>\n", "- first: x <b>\nmet</b>\n",
-                     "- first: x\n<b>\nmet\n</b>\n"):
+                     "- first: x\n<b>\nmet\n</b>\n", "- first: <b>\n  - second: met\n  </b>\n",
+                     "- first: <b>\n\n- second: met\n"):
             with self.subTest(body):
                 self.assertIn("has no item marked", bare(body))
         self.assertEqual(bare("- first: met\n- second: met <b>deferred to #999</b>\n"), "")
