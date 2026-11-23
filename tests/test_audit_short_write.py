@@ -49,10 +49,10 @@ class AuditShortWriteTests(unittest.TestCase):
         self.assertEqual(self.audit.read_text(), "")
 
     def test_safe_push_audit_shares_the_rule_and_cuts_the_partial_line(self):
-        safe_push._audit(self.loop, {"operation": "push", "n": 1})
+        safe_push._audit(self.loop, {"role": "fixer", "operation": "push", "n": 1})
         with mock.patch.object(broker.os, "write", short_write()):
             with self.assertRaisesRegex(OSError, "short audit write"):
-                safe_push._audit(self.loop, {"operation": "push", "n": 2})
+                safe_push._audit(self.loop, {"role": "fixer", "operation": "push", "n": 2})
         self.assertEqual([r["n"] for r in self.lines()], [1])
 
 

@@ -343,7 +343,7 @@ class RealHomeWrites(unittest.TestCase):
                 ("route_intent.record", lambda: route_intent.record(loop, {})),
                 ("broker._audit", lambda: broker._audit(loop, "acme/widgets", 7, "a" * 40, "fix-7",
                                                         "fixer", "push", "fixer")),
-                ("safe_push._audit", lambda: safe_push._audit(loop, {"operation": "push"})),
+                ("safe_push._audit", lambda: safe_push._audit(loop, {"role": "fixer", "operation": "push"})),
                 ("config.artifacts_dir", lambda: config.artifacts_dir(loop, 7)),
                 ("isolation.ensure", lambda: isolation.ensure({**loop, "clone": str(self.source)}, 7,
                                                               "reviewer")),

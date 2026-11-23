@@ -10,10 +10,12 @@ cannot follow fails the test, so a new writer can never pass it unseen.
 """
 import _home_guard  # noqa: F401
 import ast
+import json
 import os
 from pathlib import Path
 import re
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -220,7 +222,14 @@ class OperationsReadBack(unittest.TestCase):
             with self.subTest(operation=operation):
                 broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', 'reader', operation, 'x')
                 self.assertEqual(self.latest()['operation'], operation)
-        broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', 'reader', '/home/x', 'x')
+        # #2637: a foreign operation is refused at the writer; one already in the file reads
+        # unknown on the Desktop.
+        with self.assertRaisesRegex(broker.BrokerDenied, 'not in the audit vocabulary'):
+            broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', 'reader', '/home/x', 'x')
+        path = config.state_dir(self.loop) / 'broker-audit.jsonl'
+        line = json.loads(path.read_text().splitlines()[-1])
+        with path.open('a') as out:
+            out.write(json.dumps({**line, 'operation': '/home/x', 'at': time.time() + 1}) + '\n')
         self.assertEqual(self.latest()['operation'], 'unknown')
 
     def test_the_real_filing_writers_read_back_as_themselves(self):
