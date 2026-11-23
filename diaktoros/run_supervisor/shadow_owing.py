@@ -96,13 +96,23 @@ def fails_closed(sup, con, prior, shadow, held=None):
     and the gate holds the event (#2634 review F4). ``submit`` holds the claim lock (``claim_lock``)
     throughout, so the turn's receipt cannot be claimed in between (round 5). Taken before
     anything is written: a row not ended, not asked to stop, with no write-ahead record, owing
-    a shadow. The lock's file (``held``) is marked first (``ledger.owe``) and cleared only once the
-    stop commits, so if the stop cannot be written either the receipt stays refused until the
-    turn's shadow row is in (round 6); if neither can be written, the error says so. A shadow
-    owed but unkept (a ``str``) is owed all the same: its stop can fail too (round 7)."""
+    a shadow (unkept, a ``str``, too: round 7).
+
+    The receipt barrier beside the lock (``held``, ``ledger.owe``) is written ahead, before the
+    redelivery writes anything, and cleared only once its transaction or the stop commits, so
+    the receipt stays refused until the turn's shadow row is in (round 6) if neither commits,
+    or if the process dies before either does (round 8). A barrier that cannot be written then
+    is tried again after a failure; if the barrier, the shadow row and the stop all refuse every
+    write, nothing durable is left to hold, and the error says so."""
     owed = (prior is not None and shadow is not None and prior['state'] in UNENDED
             and prior['cancel_requested'] is None
             and run_supervisor.write_evidence(con, prior['id']) is None)
+    barred = None
+    if owed:
+        try:
+            ledger.owe(held, prior['id'])
+        except Exception as exc:
+            barred = exc
     try:
         yield
     except Exception as exc:
@@ -110,10 +120,12 @@ def fails_closed(sup, con, prior, shadow, held=None):
             raise
         with contextlib.suppress(Exception):
             con.execute("ROLLBACK")
-        try:
-            ledger.owe(held, prior['id'])
-        except Exception as barred:
-            exc.add_note(f"its receipt barrier could not be written either: {barred!r}")
+        if barred is not None:
+            try:
+                ledger.owe(held, prior['id'])
+            except Exception as again:
+                exc.add_note(f"its receipt barrier could not be written either: {barred!r}, "
+                             f"then {again!r}")
         with contextlib.suppress(Exception), sup._connect() as fresh:
             fresh.execute("BEGIN IMMEDIATE")
             row = fresh.execute("SELECT * FROM runs WHERE id=?", (prior['id'],)).fetchone()
@@ -127,3 +139,6 @@ def fails_closed(sup, con, prior, shadow, held=None):
             fresh.execute("COMMIT")
             ledger.owe(held, prior['id'], False)    # the stop stands now and refuses the receipt
         raise
+    if owed:
+        with contextlib.suppress(Exception):    # its shadow row, or its stop, is in now
+            ledger.owe(held, prior['id'], False)

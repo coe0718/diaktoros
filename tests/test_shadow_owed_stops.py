@@ -6,11 +6,13 @@ F7 (round 5): an operator's stop before the receipt claim posts no review.
 F6: ``hermes dk retry``'s planner (the CLI's and the Desktop's) and ``status``/``explain`` offer
 the stopped turn, which re-arms with its shadow. A lost worker's stop keeps that cause too.
 F4 (round 6): a stop that cannot be written either still refuses the receipt, until the turn's
-shadow row is in; round 7: so does one for a shadow owed but unkept, and a barrier written short.
+shadow row is in; round 7: so does one for a shadow owed but unkept, and a barrier written short;
+round 8: the barrier is written ahead, so a process that dies mid-redelivery leaves it.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import pathlib
 import sqlite3
 import sys
@@ -21,10 +23,10 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import attribution, broker, config, gh, retry_action, review_receipt  # noqa: E402
-from diaktoros.run_supervisor import OPERATOR_CANCEL, views, workers  # noqa: E402
+from diaktoros.run_supervisor import OPERATOR_CANCEL, Supervisor, views, workers  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 from test_shadow_owed_race import OWED, AShadowRowThatCannotBeWritten, _Race  # noqa: E402
-from test_shadow_rearm import HEAD, REVIEWER  # noqa: E402
+from test_shadow_rearm import HEAD, REVIEWER, SHADOW  # noqa: E402
 
 
 class AnOperatorsStop(_Race):
@@ -118,35 +120,71 @@ class AStopThatCannotBeWritten(_Race):
         self.assertEqual(self.enqueue(loop), "duplicate running")
         self.claim()
 
-    def test_a_barrier_written_short_still_holds(self):
-        # Round 7, F8: Vex's probe wrote all but the barrier's last byte and reported that.
+    def test_a_barrier_cut_short_then_unwritable_still_holds(self):
+        # Round 8, F8 (Vex's probe): the barrier writes all but its newline, then nothing more;
+        # the COMMIT fails and so does the stop. The barrier is written ahead and read cut.
         loop = self.queued_unsampled()
         self.refuse_stops()
-        real, short = ledger.os.pwrite, [True]
+        real = ledger.os.pwrite
 
         def pwrite(fd, data, at):
-            if short[0] and len(data) > 1:
-                short[0] = False
-                return real(fd, data[:-1], at)
-            return real(fd, data, at)
+            return real(fd, data[:-1], at) if len(data) > 1 else 0
         with self.race("running"), self.failing_commit(), \
                 mock.patch.object(ledger.os, "pwrite", pwrite), \
-                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O") as raised:
             self.enqueue(loop)
-        self.assertFalse(short[0])
+        self.assertIn("barrier could not be written either", " ".join(raised.exception.__notes__))
+        self.assertEqual(self.rows(), [("reviewer", "running")])
+        self.assertIsNone(self.sup().get(REVIEWER)["cancel_requested"])
         with self.assertRaisesRegex(review_receipt.ReceiptDenied, "owes a shadow"):
             self.claim()
+
+    def test_a_process_that_dies_mid_redelivery_leaves_the_barrier(self):
+        # Round 8, F8: the barrier is written before the redelivery, so a process that dies
+        # before its COMMIT (and so before any stop) still refuses the receipt.
+        loop = self.queued_unsampled()
+        with self.race("running"), self.dying_commit(), self.assertRaises(SystemExit):
+            self.enqueue(loop)
+        self.assertEqual(self.rows(), [("reviewer", "running")])
+        with self.assertRaisesRegex(review_receipt.ReceiptDenied, "owes a shadow"):
+            self.claim()
+        self.assertEqual(self.enqueue(loop), "duplicate running")    # control: the shadow row
+        self.claim()
+
+    def dying_commit(self):
+        """The process dies at the redelivery's COMMIT, once its shadow row is in."""
+        real, seen = Supervisor._connect, [False]
+
+        def execute(con, sql, *args):
+            seen[0] = seen[0] or bool(args and SHADOW in args[0])
+            if sql == "COMMIT" and seen[0]:
+                raise SystemExit(1)
+            return con.execute(sql, *args)
+
+        @contextlib.contextmanager
+        def connect(sup):
+            with real(sup) as con:
+                yield mock.Mock(wraps=con, execute=lambda sql, *a: execute(con, sql, *a))
+        return mock.patch.object(Supervisor, "_connect", connect)
 
     def test_a_stop_that_is_written_clears_the_barrier(self):
         loop = self.queued_unsampled()
         with self.race("running"), self.failing_commit(), \
                 self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
             self.enqueue(loop)
-        lock = pathlib.Path(self.sup().db).with_name(pathlib.Path(self.sup().db).name
-                                                     + ".claims.lock")
-        self.assertEqual(lock.read_bytes(), b"")
+        self.assertEqual(self.lock_file().read_bytes(), b"")
         with self.assertRaisesRegex(review_receipt.ReceiptDenied, "asked to stop"):
             self.claim()
+
+    def test_a_redelivery_that_commits_clears_the_barrier(self):
+        loop = self.queued_unsampled()
+        with self.race("running"):
+            self.assertEqual(self.enqueue(loop), "duplicate running")
+        self.assertEqual(self.lock_file().read_bytes(), b"")
+
+    def lock_file(self):
+        db = pathlib.Path(self.sup().db)
+        return db.with_name(db.name + ".claims.lock")
 
 
 class RetriedThroughThePlanner(_Race):

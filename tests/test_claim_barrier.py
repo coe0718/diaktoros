@@ -1,8 +1,9 @@
-"""The receipt barrier beside the ledger (``ledger.owe``; #2634 review, round 7, F8).
+"""The receipt barrier beside the ledger (``ledger.owe``; #2634 review, rounds 7-8, F8).
 
 Each change is a line appended to the claim lock's file and synced. A short write is finished,
 not taken as done; a write that makes no progress raises. An update cut short never loses an id
-already marked, and a clear cut short leaves its id held, so the barrier fails closed.
+already marked, an add cut short is read as ended, and a clear cut short is not read, so
+the barrier fails closed.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
@@ -41,9 +42,15 @@ class Barrier(unittest.TestCase):
         ledger.owe(self.lock, "run-a")
         with open(self.path, "ab") as f:
             f.write(b"+run-b-cut")             # a crash mid-line: no newline
-        self.assertEqual(ledger._owing(self.lock), {"run-a"})
+        self.assertEqual(ledger._owing(self.lock), {"run-a", "run-b-cut"})   # read as ended
         ledger.owe(self.lock, "run-c")
-        self.assertLessEqual({"run-a", "run-c"}, ledger._owing(self.lock))
+        self.assertEqual(ledger._owing(self.lock), {"run-a", "run-b-cut", "run-c"})
+
+    def test_an_add_cut_before_its_newline_holds_its_id(self):
+        # Round 8, F8: all but the newline written, then nothing more.
+        with open(self.path, "ab") as f:
+            f.write(b"+run-a")
+        self.assertEqual(ledger._owing(self.lock), {"run-a"})
 
     def test_a_clear_cut_short_leaves_its_id_held(self):
         ledger.owe(self.lock, "run-a")

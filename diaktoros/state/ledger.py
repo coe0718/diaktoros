@@ -161,12 +161,14 @@ def claim_lock(db) -> Iterator[int]:
 
 def _owing(lock: int) -> set[str]:
     """The run ids the barrier holds: its log (``owe``) replayed, a ``+`` line adding an id and a
-    ``-`` line removing one. A last line with no newline was cut short and is not read."""
+    ``-`` line removing one. A last line with no newline was cut short: an add is read as the
+    next ``owe`` ends it, and a clear is not read, so either way the id stays held (round 8)."""
     data, at = b"", 0
     while chunk := os.pread(lock, 65536, at):
         data, at = data + chunk, at + len(chunk)
+    *lines, cut = data.split(b"\n")
     ids: set[str] = set()
-    for line in data.split(b"\n")[:-1]:
+    for line in [*lines, cut] if cut[:1] == b"+" else lines:
         text = line.decode(errors="replace")
         if text[:1] == "+":
             ids.add(text[1:])
@@ -181,8 +183,8 @@ def owe(lock: int, run_id: str, owed: bool = True) -> None:
     ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
     stop. Each change is a line appended to a log, written whole (a short write is finished, not
     taken as done) and synced, so an update cut short never loses an id already marked: a cut
-    line is ended before the next, and read as an unknown or no line (round 7, F8). The log is
-    emptied only once it holds no id."""
+    line is ended before the next (round 7, F8), and read as ``_owing`` says. The log is emptied
+    only once it holds no id."""
     if not run_id or "\n" in run_id:
         raise ValueError("invalid run id for the claim barrier")
     end = os.lseek(lock, 0, os.SEEK_END)
