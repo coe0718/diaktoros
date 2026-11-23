@@ -84,8 +84,21 @@ class BackupError(RuntimeError):
 
 
 class NothingWritten(BackupError):
-    """``put_files`` failed while staging, before any live file was swapped (#2594 review): the
-    restore wrote nothing, so its caller may treat it as a refusal."""
+    """A restore failed before any live file was swapped (#2594 review): in ``put_files``'
+    staging, or in the reads before it. It wrote nothing, so its caller may treat it as a
+    refusal."""
+
+
+@contextlib.contextmanager
+def nothing_written():
+    """Raise any ``Exception`` inside as :class:`NothingWritten`: for the steps of a restore before
+    its first live write (a ``KeyboardInterrupt`` is not wrapped)."""
+    try:
+        yield
+    except NothingWritten:
+        raise
+    except Exception as exc:
+        raise NothingWritten(str(exc)) from exc
 
 
 def backups_dir() -> pathlib.Path:
@@ -630,17 +643,14 @@ def put_files(archive: pathlib.Path, manifest: dict) -> int:
     staged: list[tuple[pathlib.Path, pathlib.Path, bool]] = []
     undo: list[tuple[pathlib.Path, pathlib.Path | None]] = []
     try:
-        try:
-            with tarfile.open(archive, "r:gz") as tar:
-                for entry in manifest["files"]:
-                    member = tar.getmember(entry["member"])
-                    if not member.isfile():
-                        raise BackupError(f"{archive}: {entry['member']} is not a regular file")
-                    target = pathlib.Path(entry["path"])
-                    staged.append((_stage(tar.extractfile(member), target), target,
-                                   entry.get("kind") == "ledger"))
-        except Exception as exc:          # no live file swapped yet: only temp files to drop
-            raise NothingWritten(str(exc)) from exc
+        with nothing_written(), tarfile.open(archive, "r:gz") as tar:   # no live file swapped yet
+            for entry in manifest["files"]:
+                member = tar.getmember(entry["member"])
+                if not member.isfile():
+                    raise BackupError(f"{archive}: {entry['member']} is not a regular file")
+                target = pathlib.Path(entry["path"])
+                staged.append((_stage(tar.extractfile(member), target), target,
+                               entry.get("kind") == "ledger"))
         try:
             _swap_in(staged, undo)
         except BaseException as exc:

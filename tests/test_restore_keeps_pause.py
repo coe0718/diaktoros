@@ -152,6 +152,17 @@ class FailedRestoreKeepsTheRightPause(Fixture):
         self.assertEqual(code, 2, text)
         self.assertIsNone(migrate.migrating())
 
+    def test_a_read_that_fails_before_staging_keeps_the_interrupted_pause(self):
+        # The archive checks and the pre-restore snapshot run before any live write too.
+        for where in ("unsafe", "existing"):
+            with self.subTest(where=where):
+                self.plant()
+                target = restore_checks if where == "unsafe" else backup
+                with mock.patch.object(target, where, side_effect=OSError(5, "I/O error")):
+                    code, text = self.restore(force=True)
+                self.assert_refused_and_still_paused(code, text, "I/O error")
+                self.assertIn("nothing was written", text)
+
     def test_a_swap_that_fails_and_is_rolled_back_keeps_restores_own_marker(self):
         self.plant()
         with self.queue_fails_to_swap(rollback_fails=False):
