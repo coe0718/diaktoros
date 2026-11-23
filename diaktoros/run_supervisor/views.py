@@ -187,19 +187,23 @@ def rearm_note(db: str | Path, repo: str, pr: int, head: str, seat: str, loop_id
     read with no write (#2608: such a turn, ended by a spent rate limit, waits for no one), as
     ``next_step`` gives it; "" for any other turn, or an unreadable ledger. Newest: a head can
     hold several turns of a seat, one per turn key (a reconsidered review, #1334)."""
+    # Read here, not through ``runs_view``, which lists only a PR's 100 oldest actionable runs
+    # (#2613 review, F10): the newest turn and its write evidence, whatever the PR's history.
     try:
         con = read_only_connect(db)
         if con is None:
             return ''
         try:
-            newest = con.execute("SELECT id FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
-                                 "ORDER BY created DESC LIMIT 1", (repo, pr, head, seat)).fetchone()
+            found = con.execute("SELECT id, repo, pr, head, seat, state, error FROM runs WHERE "
+                                "repo=? AND pr=? AND head=? AND seat=? ORDER BY created DESC "
+                                "LIMIT 1", (repo, pr, head, seat)).fetchone()
+            row = dict(found) if found is not None else None
+            if row is not None:
+                row['write'] = run_supervisor.write_evidence(con, row['id'])
         finally:
             con.close()
     except sqlite3.Error:
         return ''
-    row = next((row for row in read_only_view(db, repo, pr) or []
-                if newest is not None and row['id'] == newest[0]), None)
     if (row is None or row['state'] != 'failed' or row.get('write') is not None
             or run_supervisor.CLAIM_READ_FAILED not in str(row['error'] or '')):
         return ''

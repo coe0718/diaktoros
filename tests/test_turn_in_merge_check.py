@@ -160,6 +160,19 @@ class Ready(Ledger, tmc.KindsBase):
                 self.assertNotIn("re-arm", said)
                 self.assertNotIn("; ", said.split("reviewer turn", 1)[1])
 
+    def test_the_re_arm_is_named_whatever_the_prs_history(self):
+        # Review of #2613, F10: the run listing holds a PR's 100 oldest actionable runs; the
+        # current failed claim read, newer than 100 failed turns at other heads, still gets it.
+        now = time.time()
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
+                     created=now - 1000 + n)
+        self.add("reviewer", "failed", f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}"
+                 ": PR unreadable (GitHub read failed)", created=now)
+        self.assertEqual(len(views.read_only_view(self.db, "acme/widgets", 7)), 100)
+        self.assertIn("re-arm: hermes dk retry --loop w --pr 7 --seat reviewer",
+                      " ".join(text for _, text in self.kinds(reviews=[])))
+
     def test_a_change_request_names_the_fixers_turn(self):
         self.add("fixer", "running")
         self.assertEqual(self.kind_of("changes requested at head aaaaaaa (1 of 3 verdicts) — "
