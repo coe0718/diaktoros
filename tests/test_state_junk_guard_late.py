@@ -25,7 +25,8 @@ registered writer whose fold is at a path its entry does not name.
 
 Round 15: an integer past 10**8 is a count, not a clock, so two writers' large counts
 (``la_one``, ``lb_two``) are two alternatives and the reader that opens a file only on the second
-(``lc_read``) reaches it.
+(``lc_read``) reaches it. #2638: a reader whose large integer result on junk differs from
+the missing file's (``ld_result``) fails the walk rather than reading as equal to it.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -133,6 +134,11 @@ class LateMixin:
         path = self.dir / ("late-" + "largest" + ".json")     # spelled nowhere whole
         return {**json.loads(path.read_text())} if path.exists() else {}
 
+    def ld_result(self) -> int:                               # junk changes its result
+        path = self.dir / "late-result.json"
+        self._load(path, {})
+        return 100000002 if path.exists() else 100000001
+
     def hh_grow(self) -> None:                                # never the same twice
         data = self._load(self.dir / "late-grow.json", [])
         self._save(self.dir / "late-grow.json", [*(data if isinstance(data, list) else []), "x"])
@@ -212,6 +218,11 @@ class TheWalkCatchesLateValues(unittest.TestCase):
         self.assertIn("kb_read (discovery): it touches fix-asks.json, whose counts are folded, and "
                       "is not a reader its tally names", uncovered)
         self.assertNotIn("fix_ask_set (discovery)", uncovered)    # the registered tally passes
+
+    def test_a_large_result_that_differs_on_junk_fails_the_walk(self):
+        failures = self.walk.run(["ld_result"])
+        self.assertTrue(any("read junk as 100000002, not as a missing file (100000001)" in f
+                            for f in failures), failures)
 
     def test_state_that_never_settles_fails_closed(self):
         failures = self.walk.run(["hh_grow"])
