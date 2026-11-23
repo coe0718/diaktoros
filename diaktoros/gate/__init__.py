@@ -199,7 +199,8 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
                                     settle=settle)
         if snapped and outcome == "enqueued":
             # Re-arms or refuses a shadow row that was already there (#1139); the one just
-            # written is pending, and stays as it is.
+            # written is pending, and stays as it is. A re-armed reviewer turn's missing shadow
+            # row is written in the re-arm's own transaction (#2076).
             shadows.enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     return outcome
 
