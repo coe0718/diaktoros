@@ -9,19 +9,26 @@ from .. import util
 def sweep_native(worker):
     from . import workers
     if sys.platform == 'darwin' and not worker.fixture_mode and not workers.in_worker():
-        from .. import native_cleanup
-        for name in ('native-cleanup', 'native-proof-cleanup'):
-            root = worker.db.parent.resolve() / name
-            attribute = name.replace('-', '_')
-            setattr(worker, attribute + '_parent', root)
-            if not (root.exists() or root.is_symlink()):
-                continue
-            try:
-                result = native_cleanup.bounded_sweep(root)
-            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                result = {'status': 'unverified', 'results': [], 'reason': str(exc)}
-                util.log(f'{name} sweep unverified; receipts retained: {exc}')
-            setattr(worker, attribute + '_results', result)
+        # Each attribute by name, not a computed setattr (main's audit-vocabulary scan).
+        base = worker.db.parent.resolve()
+        worker.native_cleanup_parent = base / 'native-cleanup'
+        if (result := _sweep(worker.native_cleanup_parent)) is not None:
+            worker.native_cleanup_results = result
+        worker.native_proof_cleanup_parent = base / 'native-proof-cleanup'
+        if (result := _sweep(worker.native_proof_cleanup_parent)) is not None:
+            worker.native_proof_cleanup_results = result
+
+
+def _sweep(root):
+    """One cleanup pool's bounded sweep, or None when the pool is absent."""
+    from .. import native_cleanup
+    if not (root.exists() or root.is_symlink()):
+        return None
+    try:
+        return native_cleanup.bounded_sweep(root)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        util.log(f'{root.name} sweep unverified; receipts retained: {exc}')
+        return {'status': 'unverified', 'results': [], 'reason': str(exc)}
 
 
 def reconcile(worker, run_id: str, *, reason: str, acknowledge_no_live_worker: bool,

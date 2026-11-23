@@ -106,11 +106,14 @@ class Record:
             raise
 
     def close(self):
-        for name in ('lease', 'directory'):
-            descriptor = getattr(self, name)
-            if descriptor is not None:
-                os.close(descriptor)
-                setattr(self, name, None)
+        # Each attribute by name, not a computed setattr: main's audit-vocabulary scan reads any
+        # setattr of a computed name on a parameter as a possible rebinding of a guard constant.
+        if self.lease is not None:
+            os.close(self.lease)
+            self.lease = None
+        if self.directory is not None:
+            os.close(self.directory)
+            self.directory = None
 
     def __enter__(self):
         return self

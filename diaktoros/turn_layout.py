@@ -17,11 +17,14 @@ class TurnLayout:
     query: Path
 
     def __post_init__(self):
+        # Checked, not converted: every caller passes a Path, and converting a frozen field
+        # takes object.__setattr__, which main's audit-vocabulary scan reads as a write it
+        # cannot name (so every audit guard would fail closed).
         for name in self.__dataclass_fields__:
-            path = Path(getattr(self, name))
-            if not path.is_absolute() or any(ord(c) < 32 or c in '`:' for c in str(path)):
+            path = getattr(self, name)
+            if (not isinstance(path, Path) or not path.is_absolute()
+                    or any(ord(c) < 32 or c in '`:' for c in str(path))):
                 raise ValueError('turn paths must be absolute and safe for command examples')
-            object.__setattr__(self, name, path)
 
     @classmethod
     def linux(cls):
