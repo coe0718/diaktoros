@@ -118,13 +118,28 @@ def _never_module(target, up, modules) -> bool:
 
 
 _SETATTR = {'setattr', '__setattr__', '__builtins__', 'builtins'}
+# Dynamic code (fourteenth review): it may bind any name in the namespace it runs in, so every
+# spelling fails closed, a direct call included; an attribute ``compile`` is ``re.compile``.
+_DYNAMIC = {'exec', 'eval', 'compile', 'FunctionType'}
+
+
+def _dynamic(node) -> bool:
+    if isinstance(node, ast.Attribute):
+        return node.attr in _DYNAMIC - {'compile'}
+    if isinstance(node, ast.alias):
+        return node.name.rpartition('.')[2] in _DYNAMIC
+    return (node.id if isinstance(node, ast.Name)
+            else getattr(node, 'value', None) if isinstance(node, ast.Constant) else None) in _DYNAMIC
 
 
 def _other_setattr(node, up) -> bool:
     """Whether ``node`` spells ``setattr`` any way but a direct ``setattr(…)`` call (twelfth review
     on #2587): the name passed or bound again (``set_attr = setattr``), ``__setattr__``, the
     ``builtins`` module, or its name as a string (``getattr(builtins, 'setattr')``). What such a
-    spelling writes cannot be read, so the guard fails closed on it."""
+    spelling writes cannot be read, so the guard fails closed on it. So does any spelling of
+    dynamic code (``exec``, ``eval``, ``compile``, ``FunctionType``), called or not."""
+    if _dynamic(node):
+        return True
     if isinstance(node, ast.Name) and node.id in _SETATTR:
         call = up.get(node)
         return not (node.id == 'setattr' and isinstance(node.ctx, ast.Load)

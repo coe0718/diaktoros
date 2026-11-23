@@ -10,6 +10,8 @@ which is that package's attribute and may be a scanned module it exported. Twelf
 ``setattr`` spelled any way but a direct call (bound to another name, read from ``builtins``,
 passed on, or ``__setattr__``), whose writes the guard cannot read. Thirteenth: nor through a
 direct ``setattr`` whose arguments are unpacked (``*`` or ``**``), which the guard cannot read.
+Fourteenth: nor through dynamic code (``exec``, ``eval``, ``compile``), which may bind any name in
+the namespace it runs in; ``re.compile`` is no such code.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -75,6 +77,12 @@ REBOUND = {
         "setattr(*(sys.modules[__name__], 'ALLOWED_2587', ('reviewer', 'intruder')))\n",
     'by setattr with unpacked keywords': "import synthetic\n"
         "setattr(synthetic, *('ALLOWED_2587',), ('intruder',), **{})\n",
+    # Fourteenth: dynamic code run in a scanned module's namespace.
+    'by exec in its namespace': "exec(\"ALLOWED_2587 = ('reviewer', 'intruder')\")\n",
+    'by exec imported under a name': "from builtins import exec as run\n"
+        "run(\"ALLOWED_2587 = ('intruder',)\")\n",
+    'by eval of an assignment': "eval(\"(ALLOWED_2587 := ('intruder',))\")\n",
+    'by compiled code': "code = compile(\"ALLOWED_2587 = ('intruder',)\", 'x', 'exec')\n",
 }
 # Reads of a namespace dict, and a computed setattr on another package's module or on a caught
 # exception, in the scope that name resolves in, rebind nothing here.
@@ -83,7 +91,9 @@ READ_ONLY = ("x = globals().get('ALLOWED_2587')\ny = vars(object())['a']\n"
              "try:\n    pass\nexcept ValueError as exc:\n    setattr(exc, name, True)\n"
              # Tenth: a parameter of the same name in another function shadows nothing here.
              "def other(os, exc):\n    return os, exc\n"
-             "def safe(name):\n    setattr(os, name, os.getcwd)\n")
+             "def safe(name):\n    setattr(os, name, os.getcwd)\n"
+             # Fourteenth: a pattern compiled by ``re`` runs no code.
+             "import re\npattern = re.compile('ALLOWED_2587')\n")
 
 
 def real():
