@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 
 STATES = ("fixed", "open", "withdrawn")
 MISSED = "missed earlier"
@@ -25,6 +26,7 @@ CATEGORIES = ("correctness", "test", "requirement", "docs", "security", "other")
 _TAG = r"(?:\[[A-Za-z-]+\][\s:]*)?"
 _CATEGORY = re.compile(r"^\s*\[([A-Za-z-]+)\]")
 _LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(F\d+)\b(.*)$")
+_ID = re.compile(r"F\d+")                  # an id the parser makes, of any length
 _STATUS = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(fixed|open|withdrawn)\b", re.IGNORECASE)
 
 
@@ -67,14 +69,23 @@ def category_of(rest: str) -> str:
     return name if name in CATEGORIES else "other"
 
 
+def order(fid) -> tuple[int, str, str]:
+    """A finding id's sort key: in number order at any length, and never raising (``int`` refuses
+    a run past 4,300 digits), so no id the parser accepts is dropped to sort it (review on #2589,
+    F6). Its digits are read as the parser reads them (``\\d``: any decimal digit, '٣' as 3) and
+    leading zeroes do not count (F7); the id itself settles a tie (F0001 and F1)."""
+    raw = str(fid)[1:]
+    number = "".join(str(unicodedata.decimal(ch, ch)) for ch in raw).lstrip("0") or "0"
+    return len(number), number, raw
+
+
 def open_ids(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry, dict) else None
     found = found if isinstance(found, dict) else {}
     # Host state may hold a key the parser never makes (hand edit, partial write): skip it.
     return sorted((k for k, v in found.items()
-                   if isinstance(k, str) and re.fullmatch(r"F\d+", k)
-                   and isinstance(v, dict) and v.get("state") == "open"),
-                  key=lambda k: int(k[1:]))
+                   if isinstance(k, str) and _ID.fullmatch(k)
+                   and isinstance(v, dict) and v.get("state") == "open"), key=order)
 
 
 # GitHub lists at most 300 files in a /compare response and sets no flag when it cut the list.
@@ -273,8 +284,9 @@ def check_citations(loop: dict, number: int, verdict: str, body: str, failing=()
     return ""
 
 
-def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
-    """The entry after this review: new findings open, states updated, ``last_head`` moved."""
+def apply(entry: dict, head: str, body: str, at: float | None = None, review=None) -> dict:
+    """The entry after this review: new findings open, states updated, ``last_head`` moved. A
+    new finding keeps the id of the GitHub review that raised it (``review``), when known."""
     entry = {**entry, "findings": {k: dict(v) for k, v in (entry.get("findings") or {}).items()}}
     later = bool(entry.get("last_head"))
     now = time.time() if at is None else at
@@ -284,6 +296,8 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
                 "state": "open", "text": rest[:300], "head": head, "category": category_of(rest),
                 "missed": later and MISSED in rest.lower(), "at": now,
                 "stated_at": now, "last_text": rest[:300]}
+            if review is not None:
+                entry["findings"][fid]["review"] = review
         elif fid in entry["findings"]:
             item = entry["findings"][fid]
             item["state"] = kind
@@ -296,17 +310,29 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
     return entry
 
 
-def record(loop: dict, number: int, head: str, body: str) -> None:
+def recorded_before(entry: dict, review) -> dict:
+    """The ids ``entry`` records, less those the GitHub review ``review`` (its id) raised (review
+    on #2573): the broker records a review before the gate reads it, so its new ``F1: fixed-size
+    buffer`` must still read as new, not as ``fixed``. Told by the id the record keeps, never by
+    text, which an earlier finding can share with this review's state line for it (F6). One
+    recorded with no id reads as recorded before."""
+    found = entry.get("findings") if isinstance(entry, dict) else None
+    found = found if isinstance(found, dict) else {}
+    return {fid: item for fid, item in found.items() if review is None
+            or not (isinstance(item, dict) and item.get("review") == review)}
+
+
+def record(loop: dict, number: int, head: str, body: str, review=None) -> None:
     from . import state as state_mod
     st = state_mod.state_for(loop)
     with st.locked():
-        st.findings_put(number, apply(st.findings_get(number), head, body))
+        st.findings_put(number, apply(st.findings_get(number), head, body, review=review))
 
 
 def lines(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
     out = []
-    for fid in sorted(found, key=lambda k: int(k[1:]) if k[1:].isdigit() else 0):
+    for fid in sorted(found, key=order):
         item = found[fid]
         if isinstance(item, dict):
             out.append(f"{fid} {item.get('state', '?')}"

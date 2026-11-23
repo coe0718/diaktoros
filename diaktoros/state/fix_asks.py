@@ -5,6 +5,7 @@ state's ``dir``, ``locked``, ``_load`` and ``_save_strict``, and adds no state o
 """
 
 from __future__ import annotations
+from ..util import plain_number
 
 import secrets
 
@@ -20,7 +21,7 @@ class FixAsks:
         out = {}
         for name in ("open", "count", "handoff"):
             part = raw.get(name)
-            out[name] = ({str(k): v for k, v in part.items() if str(k).isdigit()
+            out[name] = ({str(k): v for k, v in part.items() if plain_number(str(k)) is not None
                           and (name == "count") == (type(v) is int)}
                          if isinstance(part, dict) else {})
         approved = raw.get("approved")
@@ -103,7 +104,8 @@ class FixAsks:
         done: list[bool] = []
 
         def change(data):
-            ask = data["open"].get(str(number)) or {}
+            ask = data["open"].get(str(number))
+            ask = ask if isinstance(ask, dict) else {}     # a junk entry reads as none (#80)
             if expect is not None and ask != expect:
                 return
             data["handoff"][str(number)] = {"kind": ask.get("kind", ""), "text": ask.get("text", ""),

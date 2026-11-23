@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .state.ledger import read_only
-from .util import epoch
+from .util import iso_epoch
 
 SCHEMA = 1
 ISSUE_PAGES = 30
@@ -149,8 +149,8 @@ def closed_listing(loop: dict, since: float) -> tuple[dict | None, bool]:
             continue
         pull = item.get("pull_request") if isinstance(item.get("pull_request"), dict) else None
         out[number] = {"reason": str(item.get("state_reason") or ""),
-                       "created": epoch(item.get("created_at")),
-                       "merged": epoch(pull.get("merged_at")) if pull else None}
+                       "created": iso_epoch(item.get("created_at")),
+                       "merged": iso_epoch(pull.get("merged_at")) if pull else None}
     return out, bool(reason)
 
 
