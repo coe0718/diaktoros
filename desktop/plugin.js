@@ -150,9 +150,10 @@ async function readView(path, kind) {
       ? (value.eligible ? word(value.head) : (value.head === '' || word(value.head)))
       : (value.eligible ? sha(value.head) : (value.head === '' || sha(value.head)))))
   // A withheld recorded head arrives as '' (the backend never echoes a malformed one): admitted,
-  // and read as unknown, so one bad ledger row cannot blank the whole list.
+  // and read as unknown, so one bad ledger row cannot blank the whole list. Any other head is a
+  // short SHA or an issue seat's word (#2475), never free text painted verbatim.
   const run = value => object(value) && count(value.pr) && value.pr > 0 &&
-    text(value.seat) && typeof value.head === 'string' && text(value.state) &&
+    text(value.seat) && (value.head === '' || sha(value.head) || value.head === 'issue') && text(value.state) &&
     ['pending', 'claimed', 'launching', 'running', 'waiting', 'uncertain', 'failed',
       'cancelled'].includes(value.state) &&
     typeof value.why === 'string' && retry(value.retry)
@@ -1248,7 +1249,7 @@ function validateRecords(data, loop) {
         (row.pr === null || count(row.pr)) && sha(row.head) && number(row.first_at) && number(row.last_at) && count(row.attempts) && count(row.redrives) :
         kind === 'broker' ? number(row.at) && count(row.pr) && sha(row.head) &&
           category(row.role, ['reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer', 'reader', 'review_only_update', 'update_behind', 'unknown']) &&
-          category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'unknown']) &&
+          category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'labels_failed', 'ruled_approval', 'ruled_dismissal', 'file_shadow_issue', 'file_ruling_issue', 'shadow_issue_labels', 'shadow_issue_labels_missing', 'ruling_issue_labels', 'ruling_issue_labels_missing', 'unknown']) &&
           category(row.phase, ['recorded', 'attempt', 'reconciled', 'unknown']) &&
           category(row.outcome, ['recorded', 'published', 'not_published', 'unchanged', 'unknown', 'published_pr_unverified']) :
         kind === 'observer' ? category(row.event, ['opened', 'handoff', 'verdict', 'approved', 'escalation', 'ruling', 'stall', 'closed', 'triaged', 'fixing', 'fixed', 'failed', 'held', 'conflict', 'ci_failed', 'updated', 'main_red', 'stale_approval', 'human_paths', 'ready_set', 'digest', 'report', 'unknown']) &&
@@ -1719,6 +1720,11 @@ function DrawerDeps({ loop, pr, d }) {
       const waived = data.waivers_available ? involved(data.waivers) : []
       if (data.waivers_available === false) body.push(jsx(Muted, { text: 'Waiver history unavailable · not read.' }, 'waivers-unavailable'))
       if (waived.length) body.push(jsx('div', { children: waiverRows(waived) }, 'waivers'))
+      // The host lists the first 50 waivers only (#2476): say so here, as for declared ones.
+      const unread = data.waivers_available ? data.waivers_total - data.waivers.length : 0
+      if (unread > 0) body.push(jsx(Muted, { text: waived.length
+        ? 'Only ' + data.waivers.length + ' of ' + data.waivers_total + ' waivers were read; #' + n + ' may have more.'
+        : 'None of the ' + data.waivers.length + ' waivers read involve #' + n + '; ' + unread + ' more were not read.' }, 'waivers-cut'))
     }
   }
   return jsx(Section, { title: 'Issue dependencies', children: jsx('div', { role: 'region', 'aria-label': 'Drawer issue dependencies', className: 'flex min-w-0 flex-col gap-2', children: body }) })

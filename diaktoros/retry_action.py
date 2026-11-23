@@ -26,8 +26,8 @@ import re
 import time
 
 from . import config, gate, pacing, scope_lock, stats
-from .run_supervisor import (ISSUE_SEATS, Supervisor, operator_cancelled, policy_cancelled,
-                             intake, views, write_evidence)
+from .run_supervisor import (ISSUE_SEATS, Supervisor, intake, issue_fix_off_reason,
+                             operator_cancelled, policy_cancelled, views, write_evidence)
 
 # The seats ``retry`` accepts (the CLI parser's own list). A shadow run is retried only by name.
 SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
@@ -69,6 +69,17 @@ def identity(seat: str, head) -> str:
     one display rule), so it is never a join key or a confirmation.
     """
     return str(head) if stats.run_head(seat, head) else ""
+
+
+def shown_head7(rows: list[dict], head) -> str:
+    """``head``'s display form for a refusal line, or ``''`` when it is withheld. A refusal
+    reaches the Desktop as a 409 body, so a malformed head is never cut into it (#2406). A
+    well-formed SHA is shown on its own (``stats.recorded_head``), even with no row: the CLI's
+    tiebreaker can resolve the live PR head to one the ledger never ran. Only an issue seat's
+    ``config.TRIAGE_HEAD`` needs a row there (``stats.run_head``, the one display rule)."""
+    return stats.recorded_head(head) or next(
+        (shown for shown in (stats.run_head(row["seat"], head) for row in rows
+                             if row["head"] == head) if shown), "")
 
 
 def confirmation(seat: str, head) -> str:
@@ -144,7 +155,8 @@ def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None) ->
     out["offered"] = [row for row in rows if row["head"] == head and offered(row)]
     if not out["offered"]:
         stuck = ", ".join(f"{row['seat']} {row['state']}" for row in rows if row["head"] == head)
-        out["message"] = f"#{pr} @ {out['head7']}: nothing to retry — {stuck}"
+        at = shown_head7(rows, head) or "a withheld head"
+        out["message"] = f"#{pr} @ {at}: nothing to retry — {stuck}"
         return out
     for row in out["offered"]:
         wrote = write_evidence(con, row["id"])
@@ -172,6 +184,20 @@ def fixer_policy(loop: dict) -> str:
         return "the loop configuration is unusable, so a fixer turn could not publish"
 
 
+def issue_fix_policy(loop: dict) -> str:
+    """Why an issue_fixer retry would be refused now, or ``""`` (#2469): ``Supervisor.retry``'s
+    own refusal, from the same ``issue_fix_off_reason`` read, so the page withholds a button that
+    could only be refused."""
+    try:
+        reason = issue_fix_off_reason(loop)
+    except Exception:                        # an unusable loop config refuses the retry too
+        reason = "the loop configuration is unusable"
+    if not reason:
+        return ""
+    return (f"refused: {reason}, so an issue fix could not publish; turn it on (triage with a "
+            "fix label, and unattended fixer pushes), then retry")
+
+
 def page_targets(con, repo: str, loop: dict | None = None) -> dict:
     """``{(pr, seat, head7, state): entry}`` for the page's Retry buttons, from one ledger read.
 
@@ -190,6 +216,7 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
         groups.setdefault((row["pr"], row["seat"]), []).append(row)
     out: dict = {}
     policy_off = fixer_policy(loop) if loop is not None else ""
+    issue_off = issue_fix_policy(loop) if loop is not None else ""
     listing = views.open_listing(loop) if loop is not None else None
     for (pr, seat), group in groups.items():
         offerable_rows = [row for row in group if offered(row)]
@@ -221,6 +248,8 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
                 entry["reason"] = bounded(closed)
             elif seat == "fixer" and policy_off:
                 entry["reason"] = bounded(policy_off)
+            elif seat == "issue_fixer" and issue_off:
+                entry["reason"] = bounded(issue_off)
             else:
                 wrote = write_evidence(con, row["id"])
                 if wrote is None:
@@ -271,6 +300,15 @@ def closed_refusal(loop: dict, pr: int, offered_rows: list[dict], listing: dict 
     return ""
 
 
+def _moved(loop: dict, pr: int, confirm_head: str, found: dict) -> str:
+    """``perform``'s refusal of a stale confirmation (#371), naming the head now by the display
+    rule: a malformed recorded head is withheld, never cut into the 409 (#2406)."""
+    now = shown_head7(found["rows"], found["head"]) or "a withheld head"
+    return (f"[{loop['id']}] #{pr}: refused: the run's head moved since you confirmed "
+            f"{str(confirm_head)[:7]} (it is {now} now) — nothing was re-armed; check the row "
+            "and retry")
+
+
 def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confirm_head: str | None = None,
             resolve_head=None, read_pr=None, reveal_errors: bool = False) -> dict:
     """Re-arm what ``retry`` would re-arm, and answer in structured form.
@@ -305,9 +343,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
     # A confirmation is about one run at one head. If that head has moved, refuse rather than
     # silently re-arm whatever is newest now (#371).
     if confirm_head and not confirms(found["head"], confirm_head):
-        out["message"] = (f"[{loop['id']}] #{pr}: refused: the run's head moved since you "
-                          f"confirmed {str(confirm_head)[:7]} (it is {found['head7']} now) — "
-                          "nothing was re-armed; check the row and retry")
+        out["message"] = _moved(loop, pr, confirm_head, found)
         return out
     closed = closed_refusal(loop, pr, found["offered"], read_pr=read_pr)
     if closed:

@@ -648,6 +648,10 @@ class IssueSeatRetry(Fixture):
         # #2397 review F1: an issue fixer's rows can be recorded at the word and at a commit. The
         # older row's verdict names the newer head, so its target must describe THAT head; a
         # word target with a SHA head (or the reverse) is a shape the page rejects, /now and all.
+        # Issue fixes are on here: with them off no issue_fixer row is offered (#2469).
+        patch = mock.patch.object(config, "issue_fixes_off", return_value=())
+        patch.start()
+        self.addCleanup(patch.stop)
         for pr, (older, newer) in ((30, (config.TRIAGE_HEAD, HEAD)),
                                    (31, (HEAD, config.TRIAGE_HEAD))):
             self.row("failed", seat="issue_fixer", pr=pr, head=older)

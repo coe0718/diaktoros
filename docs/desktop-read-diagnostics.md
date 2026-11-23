@@ -43,9 +43,11 @@ caller therefore retains validated local installation checks without weakening t
 local-only credential boundary. A transport failure (no response at all) also attempts that
 offline read, with a **GitHub probe unavailable** disclosure: this means the probe could not be
 obtained, not that GitHub itself is down. The page reads a status only from an error the Desktop
-transport phrases as `<status>: <JSON body>`; any other failure, including an HTTP error whose
-body is not JSON (a proxy's HTML 503, say), is handled as a transport failure and gets this
-disclosure too (#2470). An HTTP 503 with a JSON body also attempts the offline read and
+transport phrases as `<status>: {…}`: a body that starts with `{` and ends with `}`, whether or
+not it parses as JSON (#2538). Any other failure, including an HTTP error whose body is not
+brace-delimited (a proxy's HTML 503, or a JSON array or string), is handled as a transport
+failure and gets this disclosure too (#2470). An HTTP 503 with a brace-delimited body (`{}` and
+`{not json}` alike) also attempts the offline read and
 discloses only **Probed health read failed (HTTP 503); this response does not say where or
 why**. A 503 names no origin: the route maps every unexpected error anywhere in the probed read
 to it, whether a local read or a network probe that raised, and a proxy in front of the host
@@ -64,8 +66,8 @@ Before caching either response, its `loop` must match the selection, every check
 known status plus valid detail/fix/paused fields, `read_at` must be valid, and counts must equal
 the checks returned. A probed response must have `offline: false`; a fallback must have
 `offline: true`. The client records the fallback reason as `probeFailure: 'caller'`,
-`'http503'` (a 503 with a JSON body, origin unknown) or `'unreachable'` (no response, or an error
-without a JSON body), without exposing raw errors or treating local checks as proof
+`'http503'` (a 503 with a brace-delimited body, origin unknown) or `'unreachable'` (no response,
+or an error without a brace-delimited body), without exposing raw errors or treating local checks as proof
 of GitHub reachability.
 
 The page does not currently re-scope server query keys by active profile/connection, so a

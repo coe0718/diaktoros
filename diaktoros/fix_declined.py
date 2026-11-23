@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import time
 
-from .util import log
+from .util import log, plain_number
 
 FILE = "declined-fixes.json"
 
@@ -31,7 +31,7 @@ def entries(st) -> dict[int, dict]:
         return {}
     out = {}
     for key, entry in (data.items() if isinstance(data, dict) else ()):
-        if str(key).isdigit() and isinstance(entry, dict) and isinstance(entry.get("reason"), str):
+        if plain_number(str(key)) is not None and isinstance(entry, dict) and isinstance(entry.get("reason"), str):
             label = entry.get("label")
             if label not in LABEL_STATES:
                 label = GONE if entry.get("label_gone") is True else UNKNOWN
