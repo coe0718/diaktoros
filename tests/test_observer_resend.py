@@ -17,7 +17,9 @@ import _ledger_guard  # noqa: E402
 setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
-class ObserverResendTests(unittest.TestCase):
+class Fixture(unittest.TestCase):
+    """A loop whose observer route fails every POST until ``fix_route`` (shared, #2629 F2)."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -53,6 +55,8 @@ class ObserverResendTests(unittest.TestCase):
         self.assertTrue(entry.get("posting_at"), "the failed attempt marked its POST")
         return key
 
+
+class ObserverResendTests(Fixture):
     def test_a_retryable_failure_reclaimed_and_killed_is_resent(self):
         # #1968: the sweep's re-claim must not keep the failed attempt's `posting_at`, or a sweep
         # killed before its own mark leaves a claim the next sweep can only quarantine.
