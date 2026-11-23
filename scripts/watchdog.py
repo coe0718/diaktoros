@@ -46,6 +46,7 @@ from diaktoros import ci_event, conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import push_settle  # noqa: E402
+from diaktoros import review_asks  # noqa: E402
 from diaktoros import ruling_issues  # noqa: E402
 from diaktoros import shadow_issues  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
@@ -645,6 +646,11 @@ def _stall_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, review
     # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
     # Its verdicts still have a cap (review_only_cap): at it, the next move is a maintainer's.
     review_only = author in config.review_only(loop)
+    if (review_only and len(changes) >= config.review_only_cap(loop)
+            and not st.review_cap_granted(number, head, len(changes))):
+        # #2620: a pending request makes a maintainer's re-request send nothing. Pushes and
+        # strangers' requests leave one the gate never sees, so every sweep reconciles it.
+        review_asks.clear_pending_request(loop, st, number, head, len(changes), pr)
     if parked is not None:
         kind = parked
     elif not at_head and isinstance(st.human_hold(number, head), dict):

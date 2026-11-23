@@ -123,6 +123,29 @@ class ClaimWaits(sm.Base):
         [event] = history_sources.wait_events(self.sup.db, "acme/widgets", 7, [])
         self.assertTrue(event["text"].endswith("plugin 03ffe0f]"), event)
 
+    def test_a_long_read_failure_the_rate_limit_explains_keeps_both_ends(self):
+        """#2608: the limit's note leads the reason and the claimant bracket closes it; the log
+        line keeps both however long the read error between them."""
+        from diaktoros import claimant, gh_calls
+        from diaktoros.run_supervisor import CI_HOLD_READ_S, LIMIT_WAIT
+        loaded = "03ffe0f" + "a" * 33
+        for kept in (mock.patch.dict(gh_calls._seen, {}, clear=True),
+                     mock.patch.object(gh_calls, "_limited", [])):
+            kept.start()
+            self.addCleanup(kept.stop)
+        gh_calls._note_spent(self.loop["read_token"], {"remaining": "0",
+                                                       "reset": str(int(time.time() + 900))}, "spent")
+        self.hold()
+        self.age(CI_HOLD_READ_S + 5)
+        with mock.patch.object(claimant, "LOADED", loaded), \
+             mock.patch.object(claimant, "installed_commit", return_value=loaded):
+            self.claim(events_error="HTTP 502: " + "upstream said no " * 40)
+        self.assertEqual(self.row()[0], "waiting")
+        [line] = waits_in(self.log)
+        self.assertTrue(line["reason"].startswith(f"{CLAIM_READ_FAILED}: {LIMIT_WAIT} at "), line)
+        self.assertTrue(line["reason"].endswith("plugin 03ffe0f]"), line)
+        self.assertEqual(line["retries"], "0")
+
     def test_a_wait_is_not_appended_past_the_log_cap(self):
         """#2302: a worker's wait line never grows the log past WORKER_LOG_MAX, the cap a worker's
         stderr keeps too (``waits.within_cap``); the host's next spawn rotates it."""
