@@ -125,6 +125,13 @@ class HtmlComments(Mocked):
         reason = check("- second: met <!-- open\n- third: export flag\n")
         self.assertIn('"- third: export flag" has no status', reason)  # shown, not hidden
 
+    def test_a_comment_opener_inside_a_code_span_hides_nothing(self):
+        # Thirteenth review (F13): `<!--` in a code span hid the `not met` after it.
+        self.assertIn("`not met`", check("- second: met `<!--` not met\n"))
+        self.assertIn("`not met`", check("- second: met ``a ` <!--`` not met\n"))
+        self.assertIn('"- second: x `', check("- second: x ` <!-- met -->\n"))  # no span: hidden
+        self.assertEqual(check("- second: `<!--` x <!-- not met --> met\n"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

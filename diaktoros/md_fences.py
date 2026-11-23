@@ -19,6 +19,7 @@ item blanked the top-level items after it). A comment inside a line is hidden to
 drops it from the line, and one it leaves open hides the lines after it up to its ``-->``, or to
 the next blank line, item, fence or comment line (twelfth review: ``- x <!-- met -->`` read as
 marked ``met``). One that never closes shows as text, so its words are dropped, never counted.
+A ``<!--`` inside a code span is text, not a comment (thirteenth review).
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ import re
 ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 COMMENT = re.compile(r"^[ \t]*<!--(.*)$")
+TICKS = re.compile(r"`+")
 
 
 def width(text: str) -> int:
@@ -55,17 +57,25 @@ def code_line(found, at: int, cols: list[int]) -> bool:
 
 def visible(line: str, hidden: bool) -> tuple[str, bool]:
     """``line`` without the inline HTML comments in it, and whether one is still open at its end;
-    ``hidden``: one was open at its start (twelfth review on #2573)."""
+    ``hidden``: one was open at its start (twelfth review on #2573). A code span is text, so a
+    ``<!--`` inside one opens nothing (thirteenth review); an unmatched backtick run is text."""
     out, at = "", 0
     while True:
-        start = 0 if hidden else line.find("<!--", at)
+        if hidden:
+            end = line.find("-->", at)
+            if end < 0:
+                return out, True
+            at, hidden = end + 3, False
+            continue
+        start, tick = line.find("<!--", at), TICKS.search(line, at)
         if start < 0:
             return out + line[at:], False
-        out += line[at:start]
-        end = line.find("-->", start + (0 if hidden else 2))
-        if end < 0:
-            return out, True
-        at, hidden = end + 3, False
+        if tick and tick.start() < start:               # a code span first: kept as it is
+            close = re.compile(rf"(?<!`){tick.group()}(?!`)").search(line, tick.end())
+            stop = close.end() if close else tick.end()
+            out, at = out + line[at:stop], stop
+            continue
+        out, at, hidden = out + line[at:start], start + 2, True   # ``<!-->`` closes at once
 
 
 def unfenced(lines: list[str]) -> list[str]:
