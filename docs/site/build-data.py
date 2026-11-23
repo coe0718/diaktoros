@@ -4,10 +4,14 @@
 The page prefers live API data in the browser; this script refreshes the
 checked-in snapshot used as the offline/API-outage fallback.
 
-The Pages deploy workflow runs this before publishing so the launch page's
-statistics (release, stars, PR/issue counts, commit activity, last push)
-are read from the repository at build time instead of typed by hand. Safe to run locally; on API failure
-the previous snapshot is kept.
+The Pages deploy workflow (.github/workflows/deploy-site.yml) runs this
+before publishing, on every push to main and every published release, so
+the launch page's statistics (release, stars, PR/issue counts, commit
+activity, last push) are read from the repository at build time instead of
+typed by hand. The refreshed file goes into the deployed artifact only;
+nothing is committed. Safe to run locally; on API failure the previous
+snapshot is kept: the newer of the checked-in file and, given
+``--previous``, the data.json the site last published.
 """
 import json
 import os
@@ -37,6 +41,15 @@ def api(path):
     req = urllib.request.Request(API + path, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)
+
+
+def _util():
+    """The plugin's helpers (standard library only), from the checkout this runs in."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from diaktoros import util
+    return util
 
 
 def _rel_time(iso):
@@ -81,67 +94,140 @@ def commit_activity():
     return []
 
 
-def main():
-    prev = {}
-    if os.path.exists(OUT):
-        with open(OUT) as f:
-            prev = json.load(f)
-    data = dict(prev)
+def _load(path):
+    """A snapshot as a dict, or None when it is missing or not a JSON object."""
     try:
-        repo = api("/repos/%s/%s" % (OWNER, REPO))
-        data["stars"] = repo["stargazers_count"]
-        data["forks"] = repo["forks_count"]
-        data["open_issues_count"] = repo["open_issues_count"]
-        data["pushed_at"] = repo["pushed_at"]
+        with open(path) as f:
+            snap = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return snap if isinstance(snap, dict) else None
 
-        rel = api("/repos/%s/%s/releases/latest" % (OWNER, REPO))
-        data["version"] = rel["tag_name"]
-        data["version_url"] = rel["html_url"]
-        data["released"] = rel["published_at"][:10]
 
-        def count(query):
-            return api("/search/issues?q=%s&per_page=1" % query)["total_count"]
+def _stamp(snap, key):
+    return _util().iso_epoch(snap.get(key))
 
-        data["prs_merged"] = count("repo:%s/%s+type:pr+is:merged" % (OWNER, REPO))
-        data["loop_prs_merged"] = count(
-            "repo:%s/%s+type:pr+is:merged+author:drey-coe1" % (OWNER, REPO))
-        data["issues_closed"] = count("repo:%s/%s+type:issue+is:closed" % (OWNER, REPO))
-        data["prs_open"] = count("repo:%s/%s+type:pr+is:open" % (OWNER, REPO))
 
-        try:
-            weeks = commit_activity()
-            # Still empty after every retry: a zero there would
-            # overwrite a real snapshot with nothing.
-            activity_ok = False
-            if weeks:
-                data["commits_year"] = sum(w["total"] for w in weeks)
-                activity_ok = True
-        except Exception:
-            activity_ok = False
-            pass  # endpoint computes async; keep the previous value
+def _newer(snap, than):
+    """Whether ``snap`` is shown fresher than ``than``.
 
-        # Derived, same formulas as the page's derive().
-        if data.get("prs_merged"):
-            data["loop_share"] = "%d%%" % round(
-                100 * data["loop_prs_merged"] / data["prs_merged"])
-        if data.get("open_issues_count") is not None and data.get("prs_open") is not None:
-            data["issues_open"] = data["open_issues_count"] - data["prs_open"]
-        data["last_activity"] = _rel_time(data["pushed_at"])
+    Freshness is ``refreshed_at``, stamped by every successful refresh, not
+    ``pushed_at``: stars, counts and releases change without a push (Vex,
+    PR #2570 r2). A stamped snapshot beats an unstamped or earlier one; only
+    two snapshots written before the stamp existed compare a strictly later
+    ``pushed_at``.
+    """
+    mine, theirs = _stamp(than, "refreshed_at"), _stamp(snap, "refreshed_at")
+    if theirs is not None:
+        return mine is None or theirs >= mine
+    if mine is not None:
+        return False
+    pushed, was = _stamp(snap, "pushed_at"), _stamp(than, "pushed_at")
+    return pushed is not None and (was is None or pushed > was)
 
-        # The stamp dates the whole snapshot: only advance it when the
-        # commit count was actually refreshed, or a retained count would
-        # wear a newer date than its own (Vex, PR #1750 rounds 2-3). A
-        # retained count with no earlier date stays undated: stamping
-        # it today would claim an age nobody knows. commit_activity()
-        # asks the still-computing endpoint again first, so the date is
-        # held back only when every attempt this run came back empty,
-        # the last attempt raised (an empty HTTP 202 body fails to parse
-        # as JSON in api(), so it raises rather than reading empty), or
-        # the weeks it returned could not be summed (#1773, #2438).
-        if activity_ok:
-            data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        data.pop("error", None)
+
+def base_snapshot(previous=()):
+    """The snapshot a refresh starts from, and keeps when the API fails.
+
+    The deploy refreshes into the artifact only, so the checked-in file can
+    be older than what the site last published. Each ``previous`` file (the
+    published data.json, and the build cache's copy of the last snapshot)
+    beats it when shown fresher, so an outage keeps the newest figures
+    rather than rolling them back, even when the published file cannot be
+    fetched either (Vex, PR #2570 r1, r3).
+    """
+    best = _load(OUT) or {}
+    for path in previous:
+        snap = _load(path)
+        if snap and _newer(snap, best):
+            best = snap
+    return best
+
+
+def refresh(data):
+    """Refresh ``data`` in place from the API; any failed read raises."""
+    repo = api("/repos/%s/%s" % (OWNER, REPO))
+    data["stars"] = repo["stargazers_count"]
+    data["forks"] = repo["forks_count"]
+    data["open_issues_count"] = repo["open_issues_count"]
+    data["pushed_at"] = repo["pushed_at"]
+
+    rel = api("/repos/%s/%s/releases/latest" % (OWNER, REPO))
+    data["version"] = rel["tag_name"]
+    data["version_url"] = rel["html_url"]
+    data["released"] = rel["published_at"][:10]
+
+    def count(query):
+        return api("/search/issues?q=%s&per_page=1" % query)["total_count"]
+
+    data["prs_merged"] = count("repo:%s/%s+type:pr+is:merged" % (OWNER, REPO))
+    data["loop_prs_merged"] = count(
+        "repo:%s/%s+type:pr+is:merged+author:drey-coe1" % (OWNER, REPO))
+    data["issues_closed"] = count("repo:%s/%s+type:issue+is:closed" % (OWNER, REPO))
+    data["prs_open"] = count("repo:%s/%s+type:pr+is:open" % (OWNER, REPO))
+
+    try:
+        weeks = commit_activity()
+        # Still empty after every retry: a zero there would
+        # overwrite a real snapshot with nothing.
+        activity_ok = False
+        if weeks:
+            data["commits_year"] = sum(w["total"] for w in weeks)
+            activity_ok = True
+    except Exception:
+        activity_ok = False
+        pass  # endpoint computes async; keep the previous value
+
+    # Derived, same formulas as the page's derive().
+    if data.get("prs_merged"):
+        data["loop_share"] = "%d%%" % round(
+            100 * data["loop_prs_merged"] / data["prs_merged"])
+    if data.get("open_issues_count") is not None and data.get("prs_open") is not None:
+        data["issues_open"] = data["open_issues_count"] - data["prs_open"]
+    data["last_activity"] = _rel_time(data["pushed_at"])
+
+    # The stamp dates the whole snapshot: only advance it when the
+    # commit count was actually refreshed, or a retained count would
+    # wear a newer date than its own (Vex, PR #1750 rounds 2-3). A
+    # retained count with no earlier date stays undated: stamping
+    # it today would claim an age nobody knows. commit_activity()
+    # asks the still-computing endpoint again first, so the date is
+    # held back only when every attempt this run came back empty,
+    # the last attempt raised (an empty HTTP 202 body fails to parse
+    # as JSON in api(), so it raises rather than reading empty), or
+    # the weeks it returned could not be summed (#1773, #2438).
+    if activity_ok:
+        data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # When this snapshot was taken, whatever moved: what base_snapshot()
+    # compares (Vex, PR #2570 r2). ``generated`` dates the commit count.
+    data["refreshed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data.pop("error", None)
+
+
+def _write(data):
+    """Whole or not at all, through the repo's one publishing helper (#2159)."""
+    _util().atomic_write(OUT, json.dumps(data, indent=2) + "\n", mode=0o644)
+
+
+def main(argv=None):
+    """``build-data.py [--previous SNAPSHOT_JSON]...``"""
+    argv = list(argv or [])
+    previous = argv[1::2]
+    if argv[::2] != ["--previous"] * len(previous):
+        print("usage: build-data.py [--previous SNAPSHOT_JSON]...", file=sys.stderr)
+        return 2
+    prev = base_snapshot(previous)
+    # Written first, so a step killed mid-refresh (the deploy bounds it)
+    # still publishes the newest snapshot rather than the checked-in one.
+    _write(prev)
+    # All or nothing: the refresh works on a copy, so a read that fails
+    # half-way never leaves new figures beside old ones (Vex, PR #2570 r1).
+    staged = dict(prev)
+    try:
+        refresh(staged)
+        data = staged
     except Exception as exc:  # keep the previous snapshot on failure
+        data = dict(prev)
         data["error"] = "%s: %s" % (type(exc).__name__, exc)
         print("warning: %s; kept previous data.json" % data["error"], file=sys.stderr)
 
@@ -151,11 +237,10 @@ def main():
         "url": "https://github.com/%s/%s/pull/530" % (OWNER, REPO),
         "title": "Add fix_ci to every settings path",
     }
-    with open(OUT, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    _write(data)
     print(json.dumps(data, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main(sys.argv[1:]))

@@ -673,8 +673,24 @@ def _post(loop: dict, block: dict, tag: str, delivery: str = "", urgent: bool = 
 
 def _claim(entry: dict) -> dict:
     """``entry`` as a ``pending`` claim of this writer: one whose sender marks ``posting_at``
-    before its POST (see :data:`POSTING_MARKED`). Every claim is written through here."""
-    return {**entry, "status": "pending", POSTING_MARKED: True}
+    before its POST (see :data:`POSTING_MARKED`). Every claim is written through here. A claim is
+    a new attempt whose POST has not begun, so an earlier attempt's ``posting_at`` is dropped
+    (#1968): kept, it would make a claim killed before its own mark look as if it had posted."""
+    fresh = {k: v for k, v in entry.items() if k != "posting_at"}
+    return {**fresh, "status": "pending", POSTING_MARKED: True}
+
+
+def _quarantine(entries: dict, entry: dict, error: str) -> None:
+    """Make a claim the sweep will not resend, and a digest's waiting members, ``uncertain``: the
+    one state ``settle`` accepts and ``owed_entries`` lists (#1320, #1970). Members are
+    ``digesting``, or ``queued`` again after a pre-POST failure, which ``flush`` never rebuilds
+    under a ``failed`` digest key."""
+    entry["status"] = "uncertain"
+    entry["error"] = error
+    for member in entry.get("batch") or []:
+        record = entries.get(member)
+        if isinstance(record, dict) and record.get("status") in ("digesting", "queued"):
+            record["status"] = "uncertain"
 
 
 def _never_posted(entry: dict) -> bool:
@@ -949,6 +965,11 @@ def retry(loop: dict, st) -> int:
                 if (status == "failed" and entry.get("retryable") is True
                         and int(entry.get("attempts") or 0) < MAX_ATTEMPTS):
                     pending.append((key, dict(entry)))
+                elif status == "failed" and entry.get("retryable") is True and entry.get("batch"):
+                    # #1970: a digest whose last allowed attempt failed before its POST. Left
+                    # `failed`, its members stay `queued` for ever; settle it like #1320's.
+                    _quarantine(data["entries"], entry,
+                                       "the POST failed before it began on its last attempt; settle it")
                 elif (status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S
                         and _never_posted(entry)
                         and (int(entry.get("attempts") or 0) < MAX_ATTEMPTS
@@ -968,14 +989,10 @@ def retry(loop: dict, st) -> int:
                     # #1320: this also takes a digest's pre-POST claim already at the cap. It is
                     # not resent, so its members must not stay `digesting`: claim and members
                     # become `uncertain`, the one state `settle` accepts and `owed_entries` lists.
-                    entry["status"] = "uncertain"
-                    entry["error"] = ("sender died before receipt; POST outcome unknown; reconcile manually"
-                                      if not _never_posted(entry) else
-                                      "sender stopped before the POST on its last attempt; settle it")
-                    for member in entry.get("batch") or []:
-                        record = data["entries"].get(member)
-                        if isinstance(record, dict) and record.get("status") == "digesting":
-                            record["status"] = "uncertain"
+                    _quarantine(data["entries"], entry,
+                                       "sender died before receipt; POST outcome unknown; reconcile manually"
+                                       if not _never_posted(entry) else
+                                       "sender stopped before the POST on its last attempt; settle it")
             for key, entry in pending:
                 data["entries"][key] = {**_claim(entry), "at": now}
             _save(st.observations, data)

@@ -22,7 +22,11 @@ from pathlib import Path
 
 from .. import envnames
 
-REASON_MAX = 300
+# A logged reason's bound, and how much of its end a longer one keeps (#2227): a claim-time read
+# failure ends with the claimant bracket (``turns._claim_read_reason``), up to about 220
+# characters naming the plugin commit, and the log is the only record of it once the row moves on.
+REASON_MAX = 600
+REASON_TAIL = 240
 # Set by ``_spawn`` in a worker's environment when its stderr is the worker log: the log's
 # ``<device>:<inode>`` as the host opened it, so ``cap_stderr`` caps that file even if a later
 # spawn rotated the path away before the worker got there (#2302).
@@ -129,7 +133,12 @@ def _utc(at) -> str:
 
 
 def _reason(text) -> str:
-    return " ".join(str(text or "").split())[:REASON_MAX]
+    """``text`` on one line, at most ``REASON_MAX`` characters: a longer one keeps its start and
+    its last ``REASON_TAIL`` characters, joined by an ellipsis, so its closing bracket survives."""
+    line = " ".join(str(text or "").split())
+    if len(line) <= REASON_MAX:
+        return line
+    return line[:REASON_MAX - REASON_TAIL - 1] + "…" + line[-REASON_TAIL:]
 
 
 def _parse(line: str) -> dict | None:
