@@ -445,7 +445,10 @@ def cmd_migrate(args) -> int:
         with migrate.hold() as left:
             if left is not None:
                 print(f"migrate: picking up — {migrate.describe(left)}")
-            return _migrate(args, left)
+            code = _migrate(args, left)
+            if code == 2:                 # refused before any move: still paused (#2323)
+                migrate.keep_left(left)
+            return code
     except migrate.MigrationBusy as exc:
         print(f"cannot migrate: {exc}")
         return 2

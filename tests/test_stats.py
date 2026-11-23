@@ -45,6 +45,20 @@ class Window(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 stats.parse_since(bad, NOW)
 
+    def test_live_states_are_run_supervisors_not_ended_plus_uncertain(self):
+        # #2073: the report's live set is derived, not a hand-kept copy that can drift.
+        from diaktoros import explain
+        self.assertEqual(set(stats.LIVE_STATES), {*run_supervisor.NOT_ENDED, "uncertain"})
+        self.assertEqual(set(stats.LIVE_STATES), set(explain.LIVE_TURN))
+
+    def test_a_new_supervisor_state_reaches_the_live_set(self):
+        # #2073 (review on #2574): a state added to NOT_ENDED is live in the report too.
+        import importlib
+        self.addCleanup(importlib.reload, stats)           # after the patch below is undone
+        with mock.patch.object(run_supervisor, "NOT_ENDED",
+                               (*run_supervisor.NOT_ENDED, "future_state")):
+            self.assertIn("future_state", importlib.reload(stats).LIVE_STATES)
+
     def test_summary(self):
         self.assertIsNone(stats.summary([]))
         got = stats.summary([10, 20, 30, 40, 1000])
@@ -388,6 +402,25 @@ class Ledger(unittest.TestCase):
         self.assertEqual(data["shadow_found"], found)
         self.assertIn("shadow-found issues: 3 filed, 2 later fixed · m-a 3 filed, 2 fixed "
                       "(some PRs not read)", stats.report_text(data))
+
+    def test_shadow_found_an_unreadable_fix_pr_is_partial_not_unfixed(self):
+        # #1981: a fix PR GitHub could not read (None, or the read raising) is not "not fixed":
+        # the count says partial. An issue another of whose PRs merged is fixed, not partial.
+        self.shadow_issue(30, "m-a", 530, "posted", NOW - 5000)
+        self.proposal(530, "pr", 630, NOW - 1000)
+        for states in ({630: None}, {}):
+            def pr_state(number, states=states):
+                if number not in states:
+                    raise OSError("GitHub down")
+                return states[number]
+            found = stats.shadow_found(self.db, REPO, NOW - 7 * DAY, NOW, pr_state)
+            self.assertEqual((found["fixed"], found["partial"]), (0, True))
+        self.proposal(530, "pr", 631, NOW - 900)
+        found = stats.shadow_found(self.db, REPO, NOW - 7 * DAY, NOW,
+                                   lambda n: {631: "merged"}.get(n))
+        self.assertEqual((found["fixed"], found["partial"]), (1, False))
+        found = stats.shadow_found(self.db, REPO, NOW - 7 * DAY, NOW, lambda n: "open")
+        self.assertEqual((found["fixed"], found["partial"]), (0, False))
 
     def reviewed(self, pr, head, model):
         run_id = self.turn(pr, "reviewer", NOW - 5000)
