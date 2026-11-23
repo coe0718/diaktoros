@@ -46,7 +46,7 @@ def process_state(pid: int | None, launched: float | None) -> str:
 
 
 LINGER_MARK = '.linger.'
-# The repo whose settling reply row a submit spawned this worker to wait for (#2569).
+# The repo of the settling row a submit spawned this worker for (#2569).
 SETTLE_REPO_ENV = envnames.name('SETTLE_REPO')
 
 
@@ -326,7 +326,6 @@ class WorkerLifecycle:
 
     def _spawn(self, settle_repo: str | None = None):
         # Trusted supervisor process only, never the credential-owning gateway agent.
-        # ``settle_repo``: the repo of the settling row this worker is for (#2569).
         if not self.fixture_mode and not self.production_config:
             return
         operation = "_fixture-worker" if self.fixture_mode else "_production-worker"
@@ -699,12 +698,12 @@ class WorkerLifecycle:
             return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
                                "LIMIT 1", (repo, pr, head, seat)).fetchone() is not None
 
-    # The repos whose settling rows this supervisor submitted, or a submit spawned it for.
+    # The repos of the settling rows this supervisor submitted or was spawned for (#2569).
     settle_repos: frozenset = frozenset()
 
     def settling(self) -> bool:
-        """Whether a run waits out a reply's settle window (``SETTLE_HOLD``, #2248) in one of
-        ``settle_repos``: another loop's settling row is its own worker's to wait for (#2569)."""
+        """Whether a run of ``settle_repos`` waits out a reply's settle window (``SETTLE_HOLD``,
+        #2248, #2569)."""
         if not self.settle_repos:
             return False
         repos = sorted(self.settle_repos)
@@ -721,7 +720,7 @@ class WorkerLifecycle:
         row due within this linger's window is waited for: the second and later read-failure
         backoffs (4 min and up) are the watchdog sweep's, as before. A fix turn settling after a
         maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by a worker of its
-        repo (``settle_repos``, #2569)."""
+        repo (#2569)."""
         if not self.held_for_ci and not self.settling():
             return
         def marked_sleep(seconds):
@@ -737,7 +736,7 @@ class WorkerLifecycle:
         deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
                   run_supervisor.CLAIM_READ_FAILED)
-        repos = sorted(self.settle_repos)       # settling rows of this worker's repos only (#2569)
+        repos = sorted(self.settle_repos)
         recovered = None
         while time.time() < deadline:
             with self._connect() as con:
