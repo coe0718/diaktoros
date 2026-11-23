@@ -83,7 +83,8 @@ class OperatorNotices:
         (``gate.shadows.fixer_answers_upheld``), still open at the ruled head when the notice goes
         out (the outbox may send late, and the fixer's claim supersedes a moved or closed PR:
         #2491 review F3), whose shadow-fix turn has not ended unanswered with no sweep re-arming
-        it (``gate.shadows.shadow_fix_turn``, #2563). False when any of that cannot be read: the
+        it (``gate.shadows.shadow_fix_turn``, #2563). False when any of that cannot be read, that
+        turn's ledger row included (``strict``: unreadable is not "no turn yet", #2599): the
         operator is then told the decision is theirs."""
         if row['verdict'] != 'REJECT' or 'shadow_run' not in row.keys() or not row['shadow_run']:
             return False
@@ -101,7 +102,7 @@ class OperatorNotices:
                     or not gate.shadows.fixer_answers_upheld(loop, int(row['pr']))):
                 return False
             state, how, _key = gate.shadows.shadow_fix_turn(loop, int(row['pr']), row['head'],
-                                                            db=self.db)
+                                                            db=self.db, strict=True)
             return not (state and not how)
         except Exception:
             return False
