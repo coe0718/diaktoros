@@ -273,8 +273,9 @@ def check_citations(loop: dict, number: int, verdict: str, body: str, failing=()
     return ""
 
 
-def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
-    """The entry after this review: new findings open, states updated, ``last_head`` moved."""
+def apply(entry: dict, head: str, body: str, at: float | None = None, review=None) -> dict:
+    """The entry after this review: new findings open, states updated, ``last_head`` moved. A
+    new finding keeps the id of the GitHub review that raised it (``review``), when known."""
     entry = {**entry, "findings": {k: dict(v) for k, v in (entry.get("findings") or {}).items()}}
     later = bool(entry.get("last_head"))
     now = time.time() if at is None else at
@@ -284,6 +285,8 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
                 "state": "open", "text": rest[:300], "head": head, "category": category_of(rest),
                 "missed": later and MISSED in rest.lower(), "at": now,
                 "stated_at": now, "last_text": rest[:300]}
+            if review is not None:
+                entry["findings"][fid]["review"] = review
         elif fid in entry["findings"]:
             item = entry["findings"][fid]
             item["state"] = kind
@@ -296,11 +299,23 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
     return entry
 
 
-def record(loop: dict, number: int, head: str, body: str) -> None:
+def recorded_before(entry: dict, review) -> dict:
+    """The ids ``entry`` records, less those the GitHub review ``review`` (its id) raised (review
+    on #2573): the broker records a review before the gate reads it, so its new ``F1: fixed-size
+    buffer`` must still read as new, not as ``fixed``. Told by the id the record keeps, never by
+    text, which an earlier finding can share with this review's state line for it (F6). One
+    recorded with no id reads as recorded before."""
+    found = entry.get("findings") if isinstance(entry, dict) else None
+    found = found if isinstance(found, dict) else {}
+    return {fid: item for fid, item in found.items() if review is None
+            or not (isinstance(item, dict) and item.get("review") == review)}
+
+
+def record(loop: dict, number: int, head: str, body: str, review=None) -> None:
     from . import state as state_mod
     st = state_mod.state_for(loop)
     with st.locked():
-        st.findings_put(number, apply(st.findings_get(number), head, body))
+        st.findings_put(number, apply(st.findings_get(number), head, body, review=review))
 
 
 def lines(entry: dict) -> list[str]:
