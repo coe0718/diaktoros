@@ -81,12 +81,14 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     marks = ','.join('?' * len(run_supervisor.POLICY_CANCELLATIONS))
     held = [run_supervisor.FIXER_NOT_ADMITTED.split(":")[0] + "%", run_supervisor.FIXER_PUSH_REVOKED.split(":")[0] + "%",
             run_supervisor.ISSUE_FIX_OFF + ":%"]
-    # An operator's cancel (#1148) is listed as such, with the `retry` that re-arms it.
+    # An operator's cancel (#1148), and a stop for the shadow its turn owes (#2634), are listed
+    # with the `retry` that re-arms them.
     where, args = ("(r.state IN ('failed','uncertain','waiting') OR "
                    f"(r.state='cancelled' AND r.error IN ({marks})) OR "
-                   "(r.state='cancelled' AND r.error LIKE ?) OR "
+                   "(r.state='cancelled' AND (r.error LIKE ? OR r.error LIKE ?)) OR "
                    f"(r.state='failed' AND (r.error LIKE ? OR r.error LIKE ? OR r.error LIKE ?)))"), \
-        list(run_supervisor.POLICY_CANCELLATIONS) + [run_supervisor.OPERATOR_CANCEL + "%"] + held
+        list(run_supervisor.POLICY_CANCELLATIONS) + [run_supervisor.OPERATOR_CANCEL + "%",
+                                                     run_supervisor.intake.SHADOW_OWED + "%"] + held
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
     where += " AND r.seat != 'shadow'"

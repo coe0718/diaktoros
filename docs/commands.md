@@ -2113,8 +2113,10 @@ hermes dk retry --loop "<loop-id>" --pr 12 --seat fixer
 ```
 
 It selects the newest offerable ledger head (a GitHub PR read breaks a supersession tie).
-It can re-arm `failed`, `waiting`, push-policy-cancelled and [`cancel`](#cancel)led turns, not
-arbitrary cancellations.
+It can re-arm `failed`, `waiting`, push-policy-cancelled and [`cancel`](#cancel)led turns, and a
+reviewer turn stopped for the shadow review it owes and could not have (see
+[shadow](configuration.md)), not arbitrary cancellations. `status`, `explain` and the Desktop's
+Retry offer the same turns.
 `--seat triage` / `issue_fixer` use an issue number in `--pr`, despite that option's PR wording. A run that **may have written** (it posted a review,
 pushed, or ended `uncertain`) is never replayed: `retry` refuses it and prints how to inspect
 and reconcile it instead.
@@ -2163,7 +2165,8 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
   From the moment the stop is asked, a reviewer turn's review receipt is refused, so a review it
-  had not begun to post is never posted while the stop lands (#2634).
+  had not begun to post is never posted while the stop lands (#2634). Cancelling a turn already
+  being stopped for the shadow review it owes makes the stop yours: an event no longer re-arms it.
   If the turn had already started writing (any of the write-ahead records above), the run
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
   If the owning worker is already gone (its lease expired), nothing reads the request; the

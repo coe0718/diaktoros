@@ -10,10 +10,14 @@ Each test moves the row at that boundary through a separate SQLite connection, a
 did. A row with no write-ahead record gets its shadow on the gate's snapshot (its findings are
 recorded only after its receipt claim). Unkept: a claimed row is failed, and a running one is
 stopped and can post no review.
+
+Round 4 (F4): the same when the shadow row's INSERT or the COMMIT fails. An operator's stop and
+``hermes dk retry`` are in ``test_shadow_owed_stops``.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import pathlib
 import sqlite3
 import sys
@@ -25,19 +29,22 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import gate, review_receipt  # noqa: E402
 from diaktoros.run_supervisor import OPERATOR_STOPPED, Supervisor, intake  # noqa: E402
-from test_shadow_rearm import ESCALATE, HEAD, REVIEWER, _Ledger  # noqa: E402
+from test_shadow_rearm import ESCALATE, HEAD, REVIEWER, SHADOW, _Ledger  # noqa: E402
 
 OWED = getattr(intake, "SHADOW_OWED", "a shadow review is owed but could not be queued")
 
 
-class ClaimedBeforeTheRedelivery(_Ledger):
+class _Race(_Ledger):
+    """The race helpers; no tests of its own."""
+
     def rows(self):
         with closing(sqlite3.connect(self.sup().db)) as con:
             return con.execute("SELECT seat, state FROM runs ORDER BY seat").fetchall()
 
-    def race(self, state, *, receipt=False):
+    def race(self, state, *, receipt=False, cancel=False):
         """Patch ``submit`` so a worker moves the reviewer row to ``state`` first, through its
-        own connection, between the gate's snapshot and the redelivery's transaction."""
+        own connection, between the gate's snapshot and the redelivery's transaction (then, with
+        ``cancel``, an operator stops it)."""
         real = Supervisor.submit
 
         def submit(sup, delivery, *a, **k):
@@ -51,6 +58,8 @@ class ClaimedBeforeTheRedelivery(_Ledger):
                         con.execute("INSERT INTO review_receipts(run_id,state,generation,"
                                     "principal_id,created) SELECT id,'claimed','g1',5,? FROM "
                                     "runs WHERE delivery=?", (time.time(), REVIEWER))
+                if cancel:
+                    sup.cancel(sup.get(REVIEWER)["id"])
             return real(sup, delivery, *a, **k)
         return mock.patch.object(Supervisor, "submit", submit)
 
@@ -70,6 +79,17 @@ class ClaimedBeforeTheRedelivery(_Ledger):
         self.assertEqual(self.rows(), [("reviewer", state), ("shadow", "pending")])
         kind, hold, note = gate.shadows.shadow_state(loop, 8, HEAD, self.sup().db)
         self.assertEqual(kind, "pending", (hold, note))
+
+    def stopped(self):
+        """The worker ends the turn it was asked to stop."""
+        row = self.sup().get(REVIEWER)
+        self.assertIsNotNone(row["cancel_requested"])
+        self.assertEqual(self.sup().complete_uncertain(row["id"], "w", None, OPERATOR_STOPPED,
+                                                       cancel=True), "cancelled")
+        return self.sup().get(REVIEWER)["error"]
+
+
+class ClaimedBeforeTheRedelivery(_Race):
 
     def test_a_row_a_worker_has_running_first_still_gets_its_shadow(self):
         # Vex's probe: before, no shadow row and "nothing to wait for".
@@ -114,6 +134,65 @@ class ClaimedBeforeTheRedelivery(_Ledger):
         broken.rmdir()
         self.assertEqual(self.enqueue(loop), "rearmed")
         self.assertEqual(self.rows(), [("reviewer", "pending"), ("shadow", "pending")])
+
+
+class AShadowRowThatCannotBeWritten(_Race):
+    """Review F4 (round 4): the snapshot is kept, but the shadow row's INSERT or the COMMIT fails.
+    The transaction rolls back; a worker already running the turn does not."""
+
+    def refuse_shadow_rows(self):
+        with closing(sqlite3.connect(self.sup().db)) as con, con:
+            con.execute("CREATE TRIGGER no_shadow BEFORE INSERT ON runs WHEN NEW.seat='shadow' "
+                        "BEGIN SELECT RAISE(ABORT, 'disk failure'); END")
+
+    def test_a_running_turn_is_stopped_and_posts_nothing(self):
+        # Vex's probe: before, IntegrityError, the row still running with no stop, its receipt
+        # claimed, and shadow_state "nothing to wait for".
+        loop = self.queued_unsampled()
+        self.refuse_shadow_rows()
+        with self.race("running"), self.assertRaisesRegex(RuntimeError, OWED):
+            self.enqueue(loop)
+        self.assertEqual(self.rows(), [("reviewer", "running")])
+        row = self.sup().get(REVIEWER)
+        with self.assertRaisesRegex(review_receipt.ReceiptDenied, "asked to stop"):
+            review_receipt.ReceiptLedger(self.sup().db, row["id"], "g1").claim(5)
+        self.assertTrue(self.stopped().startswith(OWED))
+
+    def test_a_claimed_turn_is_failed_and_never_launched(self):
+        loop = self.queued_unsampled()
+        self.refuse_shadow_rows()
+        with self.race("claimed"), self.assertRaisesRegex(RuntimeError, OWED):
+            self.enqueue(loop)
+        row = self.sup().get(REVIEWER)
+        self.assertEqual((row["state"], row["owner"]), ("failed", None))
+
+    def test_a_commit_that_fails_still_stops_the_running_turn(self):
+        loop = self.queued_unsampled()
+        real, armed = Supervisor._connect, [True]
+
+        class Failing:
+            def __init__(self, con):
+                self.con, self.shadow = con, False
+
+            def __getattr__(self, name):
+                return getattr(self.con, name)
+
+            def execute(self, sql, *args):
+                self.shadow = self.shadow or bool(args and SHADOW in args[0])
+                if sql == "COMMIT" and self.shadow and armed[0]:
+                    armed[0] = False
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self.con.execute(sql, *args)
+
+        @contextlib.contextmanager
+        def connect(sup):
+            with real(sup) as con:
+                yield Failing(con)
+        with self.race("running"), mock.patch.object(Supervisor, "_connect", connect), \
+                self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            self.enqueue(loop)
+        self.assertEqual(self.rows(), [("reviewer", "running")])
+        self.assertTrue(self.stopped().startswith(OWED))
 
 
 if __name__ == "__main__":

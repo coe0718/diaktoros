@@ -110,7 +110,7 @@ class RunIntake:
         loop's budget *now*: a turn killed at its budget reruns on the raised one.
 
         ``shadow`` (a sampled reviewer turn's ``(delivery, budget)``, #1682): its shadow's row,
-        written with this one. ``settle`` seconds: a new row waits (``_insert_runs``, #2248).
+        written with this one (or ``shadow_owing``). ``settle``: a new row waits (#2248).
         """
         requested = budget
         if budget is None:
@@ -150,10 +150,11 @@ class RunIntake:
                                       (repo, pr, head, turn_key), now, settle)
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
-            if prior:
-                outcome = self._redeliver(con, prior, outcome, bool(admitted), requested, settle,
-                                          shadow, now)
-            con.execute("COMMIT")
+            with shadow_owing.fails_closed(self, con, prior, shadow):
+                if prior:
+                    outcome = self._redeliver(con, prior, outcome, bool(admitted), requested,
+                                              settle, shadow, now)
+                con.execute("COMMIT")
         # A redelivery of an unclaimed run must rearm the worker after a
         # transient generation/read outage; active or completed runs stay deduped.
         self._start_worker(repo, prior, outcome, settle)
@@ -346,8 +347,13 @@ class RunIntake:
                             (state, error, now, now, run_id, was))
             elif was in run_supervisor.CANCEL_BY_WORKER:
                 state = 'stopping'
+                # An operator's stop is never one an event re-arms, even one asked first for
+                # the shadow the turn owes (#2634 review F5): its cause becomes the operator's.
                 con.execute("UPDATE runs SET cancel_requested=COALESCE(cancel_requested, ?), "
-                            "updated=? WHERE id=? AND state=?", (now, now, run_id, was))
+                            "error=CASE WHEN substr(error, 1, ?)=? THEN ? ELSE error END, "
+                            "updated=? WHERE id=? AND state=?",
+                            (now, len(SHADOW_OWED), SHADOW_OWED, run_supervisor.OPERATOR_CANCEL,
+                             now, run_id, was))
             else:
                 con.execute('COMMIT')
                 raise ValueError(f"refused: run is {was} — it has already finished")

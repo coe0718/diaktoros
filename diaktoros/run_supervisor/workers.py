@@ -403,17 +403,15 @@ class WorkerLifecycle:
         now = time.time()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            # An operator's cancel (#1148) on a run whose worker is gone is never read by a
-            # heartbeat: end it here as the worker would have (#1461). Cancelled before any
-            # write-ahead record; uncertain, naming the cancel, after one. A push intent keeps
-            # the push quarantine below, which complete_uncertain and reconcile key on.
-            # An expired lease is not proof the turn stopped (a heartbeat can fail while the
-            # child runs): only a run whose recorded process is provably gone is ended here.
-            # A live or unprovable one stays quarantined below (uncertain, still holding its
-            # PR and seat, cancel_requested kept) until an operator reconciles it.
+            # A stop (#1148) on a run whose worker is gone is never read by a heartbeat: end it
+            # here as the worker would have (#1461), cancelled before any write-ahead record
+            # (keeping a stop's cause for the shadow its turn owes, #2634), uncertain after one.
+            # A push intent keeps the push quarantine below. An expired lease is not proof the
+            # turn stopped: only a run whose recorded process is provably gone is ended here;
+            # a live or unprovable one stays quarantined below until an operator reconciles it.
             ended = []      # cancelled with no write record: the worker's cleanup is owed
-            for lost in con.execute("SELECT id,pid,launch_intent,repo,pr,head,seat,turn_key "
-                                    "FROM runs WHERE state IN "
+            for lost in con.execute("SELECT id,pid,launch_intent,repo,pr,head,seat,turn_key,"
+                                    "error FROM runs WHERE state IN "
                                     "('launching','running') AND lease<? AND cancel_requested "
                                     "IS NOT NULL AND push_intent IS NULL", (now,)).fetchall():
                 # The recorded PID is the worker's, not the sandbox's (#1769). A gone worker
@@ -427,7 +425,8 @@ class WorkerLifecycle:
                     continue
                 wrote = run_supervisor.write_records(con, lost['id'])
                 if wrote is None:
-                    state, error = 'cancelled', run_supervisor.OPERATOR_CANCEL
+                    state, error = 'cancelled', (lost['error'] if run_supervisor.intake.shadow_owed_stop(
+                        lost['error']) else run_supervisor.OPERATOR_CANCEL)
                     ended.append(lost)
                 else:
                     state = 'uncertain'

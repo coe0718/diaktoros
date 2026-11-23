@@ -8,6 +8,9 @@ ended (``UNENDED``), not only one still pending.
 """
 from __future__ import annotations
 
+import contextlib
+import time
+
 from .. import run_supervisor
 
 # The reviewer row states a redelivery may still give the shadow its turn owes.
@@ -27,22 +30,82 @@ def beside(sup, con, prior, outcome: str, shadow, unkept: str, now: float) -> st
     began its review before this event could decide its shadow, as a turn queued unsampled does
     with no event at all: no snapshot of it could be the review's, so none is used.
 
-    Unkept, the turn is not left to approve without its shadow: a row still to start (pending,
-    waiting, claimed) is failed, and a claimed one loses its owner, so its worker never launches
-    it; a launching or running one is asked to stop, and its review receipt is refused from now
-    on (``ReceiptLedger.claim``). A later event, or ``retry``, re-arms it with its shadow."""
+    A row already asked to stop posts no review (``ReceiptLedger.claim``), and its stop keeps the
+    cause it has (#2634 review F5): an operator's is never turned into one an event re-arms.
+
+    Unkept, or a shadow row that could not be written (review F4), the turn is not left to
+    approve without its shadow: ``stop``."""
+    if prior['cancel_requested'] is not None:
+        held = run_supervisor.intake.shadow_owed_stop(prior['error'])
+        return f"{outcome}: {prior['error']}" if held else outcome
     if shadow is not None and run_supervisor.write_evidence(con, prior['id']) is not None:
         return outcome
-    if unkept and prior['state'] in ('launching', 'running'):
-        con.execute("UPDATE runs SET cancel_requested=COALESCE(cancel_requested, ?), error=?, "
-                    "updated=? WHERE id=?", (now, unkept, now, prior['id']))
-        return f"{outcome}: {unkept}"
+    if not unkept:
+        # A savepoint, so a shadow row that cannot be written stops the turn in this same
+        # transaction: no worker can claim the review's receipt in between.
+        con.execute("SAVEPOINT owed_shadow")
+        try:
+            sup._insert_runs(con, [], shadow, (prior['repo'], prior['pr'], prior['head'],
+                                               prior['turn_key']), now)
+        except Exception as exc:
+            con.execute("ROLLBACK TO owed_shadow")
+            unkept = unwritten(exc)
+        con.execute("RELEASE owed_shadow")
     if unkept:
-        con.execute("UPDATE runs SET state='failed', error=?, owner=NULL, lease=NULL, "
-                    "retry_at=NULL, updated=? WHERE id=?", (unkept, now, prior['id']))
-        return f"duplicate failed: {unkept}"
-    sup._insert_runs(con, [], shadow, (prior['repo'], prior['pr'], prior['head'],
-                                       prior['turn_key']), now)
+        return stop(con, prior, outcome, unkept, now)
     if prior['state'] == 'waiting' and prior['retry_at']:
         outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
     return outcome
+
+
+def unwritten(exc: BaseException) -> str:
+    return (f"{run_supervisor.intake.SHADOW_OWED}: its shadow row could not be written "
+            f"({type(exc).__name__}: {exc})")
+
+
+def stop(con, prior, outcome: str, unkept: str, now: float) -> str:
+    """Keep a reviewer turn that owes a shadow it cannot have from approving, in ``con``'s
+    transaction: a row still to start (pending, waiting, claimed) is failed, and a claimed one
+    loses its owner, so its worker never launches it; a launching or running one is asked to
+    stop, and its review receipt is refused from now on (``ReceiptLedger.claim``). It ends
+    ``cancelled`` with this reason, which a later event, or ``retry``, re-arms with its shadow.
+    The outcome names ``SHADOW_OWED``, so the gate holds the event."""
+    if prior['state'] in run_supervisor.CANCEL_BY_WORKER:
+        con.execute("UPDATE runs SET cancel_requested=?, error=?, updated=? WHERE id=? AND "
+                    "cancel_requested IS NULL", (now, unkept, now, prior['id']))
+        return f"{outcome}: {unkept}"
+    con.execute("UPDATE runs SET state='failed', error=?, owner=NULL, lease=NULL, "
+                "retry_at=NULL, updated=? WHERE id=?", (unkept, now, prior['id']))
+    return f"duplicate failed: {unkept}"
+
+
+@contextlib.contextmanager
+def fails_closed(sup, con, prior, shadow):
+    """Around ``submit``'s redelivery and its COMMIT: a failure that ends the transaction itself
+    (its COMMIT, or one SQLite rolls back whole) loses the shadow row with it, but not a worker
+    already running the turn. So it is stopped in a fresh transaction, then the error is raised
+    and the gate holds the event (#2634 review F4). Taken before anything is written: a row
+    not ended, not asked to stop, with no write-ahead record, owing a shadow."""
+    owed = (prior is not None and isinstance(shadow, tuple) and prior['state'] in UNENDED
+            and prior['cancel_requested'] is None
+            and run_supervisor.write_evidence(con, prior['id']) is None)
+    try:
+        yield
+    except Exception as exc:
+        if not owed:
+            raise
+        with contextlib.suppress(Exception):
+            con.execute("ROLLBACK")
+        # If the ledger takes no write at all, the receipt claim a review needs cannot commit
+        # either; a stop that lands after one did ends the turn ``uncertain`` (reconcile).
+        with contextlib.suppress(Exception), sup._connect() as fresh:
+            fresh.execute("BEGIN IMMEDIATE")
+            row = fresh.execute("SELECT * FROM runs WHERE id=?", (prior['id'],)).fetchone()
+            if (row is not None and row['state'] in UNENDED and row['cancel_requested'] is None
+                    and not fresh.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? "
+                                          "AND seat=? AND turn_key=?", (row['repo'], row['pr'],
+                                          row['head'], run_supervisor.SHADOW,
+                                          row['turn_key'])).fetchone()):
+                stop(fresh, row, '', unwritten(exc), time.time())
+            fresh.execute("COMMIT")
+        raise

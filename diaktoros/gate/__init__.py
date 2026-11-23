@@ -202,9 +202,11 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
             # written is pending, and stays as it is. A re-armed reviewer turn's missing shadow
             # row is written in the re-arm's own transaction (#2076).
             shadows.enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
-    if isinstance(shadow, str) and outcome not in SCHEDULED_OUTCOMES and shadow in outcome:
-        # Held, so a later event re-arms it with its shadow once a snapshot can be kept (a new
-        # row's ``submit`` raised the same before writing it).
+    from ..run_supervisor import intake
+    if outcome not in SCHEDULED_OUTCOMES and intake.SHADOW_OWED in outcome:
+        # Held, so a later event re-arms it with its shadow once one can be queued (a new row's
+        # ``submit`` raised the same before writing it; a row its shadow's could not join was
+        # stopped, #2634 review F4).
         raise RuntimeError(f"reviewer turn not armed: {outcome}")
     return outcome
 
