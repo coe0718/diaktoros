@@ -26,7 +26,10 @@ OLD_REVIEWER = "the previous reviewer prompt"
 OLD_ADJUDICATOR = "the previous adjudicator prompt"
 
 
-class RecordedRouteOwnership(Base):
+class RouteEdits:
+    """Registry, config and record edits for a ``test_gate_shims.Base`` test (shared with
+    ``test_route_ownership_fixes``)."""
+
     def edit_registry(self, mutate):
         path = pathlib.Path(self.env["DIAKTOROS_SUBS"])
         data = json.loads(path.read_text())
@@ -45,6 +48,8 @@ class RecordedRouteOwnership(Base):
         route_intent.record_live(config.load_id("widgets"), [name])
         return routes.route(name)["secret"]
 
+
+class RecordedRouteOwnership(RouteEdits, Base):
     def test_apply_rewrites_a_recorded_route_whose_prompt_predates_a_reword(self):
         self.full_install()
         secret = self.reworded("widgets-review", prompt=OLD_REVIEWER)
@@ -80,7 +85,9 @@ class RecordedRouteOwnership(Base):
     def test_doctor_does_not_name_apply_for_a_moved_route_apply_refuses(self):
         # The same profile move, but the live route carries another secret than the record: apply
         # refuses it, so doctor must not name apply first; it names the repair (which restores
-        # the recorded route), and after it apply works.
+        # the recorded route), and after it apply works. The repair here comes from the intent
+        # overlay (the live secret drifted from the record); doctor's own profile-mismatch
+        # choice is pinned where the overlay stays quiet, in test_route_ownership_fixes (#2071).
         self.full_install()
         secret = self.reworded("widgets-review", prompt=OLD_REVIEWER)
         self.edit_registry(lambda data: data["widgets-review"].update(secret="someone-elses"))
