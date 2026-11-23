@@ -42,6 +42,7 @@ import os
 import pathlib
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -675,9 +676,18 @@ def _claim(entry: dict) -> dict:
     """``entry`` as a ``pending`` claim of this writer: one whose sender marks ``posting_at``
     before its POST (see :data:`POSTING_MARKED`). Every claim is written through here. A claim is
     a new attempt whose POST has not begun, so an earlier attempt's ``posting_at`` is dropped
-    (#1968): kept, it would make a claim killed before its own mark look as if it had posted."""
-    fresh = {k: v for k, v in entry.items() if k != "posting_at"}
-    return {**fresh, "status": "pending", POSTING_MARKED: True}
+    (#1968): kept, it would make a claim killed before its own mark look as if it had posted.
+    So is ``manual_resend``: only :func:`resend` sets it, on its own claim (#2611). Each claim
+    gets its own ``claim`` id, which its sender's mark and receipt must match: a late sender
+    whose stale claim was taken over writes nothing on the new one (#2611 review, F1)."""
+    fresh = {k: v for k, v in entry.items() if k not in ("posting_at", "manual_resend")}
+    return {**fresh, "status": "pending", POSTING_MARKED: True, "claim": uuid.uuid4().hex}
+
+
+def _ours(entry, claim: str) -> bool:
+    """Is ``entry`` still the ``pending`` claim ``claim`` (its sender's), not one taken over?"""
+    return (isinstance(entry, dict) and entry.get("status") == "pending"
+            and str(entry.get("claim") or "") == claim)
 
 
 def _quarantine(entries: dict, entry: dict, error: str) -> None:
@@ -699,27 +709,30 @@ def _never_posted(entry: dict) -> bool:
     return entry.get(POSTING_MARKED) is True and not entry.get("posting_at")
 
 
-def _mark_posting(st, key: str) -> bool:
+def _mark_posting(st, key: str, claim: str) -> bool:
     """Record, just before the POST, that this claim's POST is starting (#1314). A stale claim
     without the mark provably never reached the gateway, so ``retry`` may send it; one with the
     mark may have, so it stays uncertain, as does a legacy claim written without
-    :data:`POSTING_MARKED` (#1319). False: the claim is gone or no longer pending."""
+    :data:`POSTING_MARKED` (#1319). False: the claim is gone, no longer pending, or no longer
+    ``claim``, this sender's (``_ours``)."""
     with _lock(st.observations):
         data = _read(st.observations)
         entry = data["entries"].get(key)
-        if not isinstance(entry, dict) or entry.get("status") != "pending":
+        if not _ours(entry, claim):
             return False
         entry["posting_at"] = time.time()
         _save(st.observations, data)
     return True
 
 
-def _receipt(st, key: str, delivered: bool, error: str = "", uncertain: bool = False) -> None:
-    """Record how a delivery ended, and free the members of a digest batch when it lands."""
+def _receipt(st, key: str, claim: str, delivered: bool, error: str = "",
+             uncertain: bool = False) -> None:
+    """Record how claim ``claim``'s delivery ended, and free the members of a digest batch when
+    it lands. Nothing when the entry is no longer that claim (``_ours``)."""
     with _lock(st.observations):
         data = _read(st.observations)
         entry = data["entries"].get(key)
-        if not isinstance(entry, dict) or entry.get("status") != "pending":
+        if not _ours(entry, claim):
             return
         entry["status"] = "delivered" if delivered else "uncertain" if uncertain else "failed"
         # Only a known pre-POST failure is safe to replay. Old writer versions
@@ -808,20 +821,24 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
             else:
                 data["entries"][key] = _claim(data["entries"][key])
                 data["entries"][key]["delivery"] = delivery
+                claim = data["entries"][key]["claim"]
             _save(path, data)
 
         if queued:
             log(f"observer: queued {event} #{number} for the next digest")
             return False
-        return _deliver(loop, st, key, text, tag, event, number, head, delivery, url, urgent)
+        return _deliver(loop, st, (key, claim), text, tag, event, number, head, delivery, url,
+                        urgent)
     except Exception as exc:
         log(f"observer: {event} notice for #{number} failed: {type(exc).__name__}: {exc}")
         return False
 
 
-def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, head: str,
+def _deliver(loop: dict, st, claimed: tuple, text: str, tag: str, event: str, number, head: str,
              delivery: str = "", url: str = "", urgent: bool = False) -> bool:
-    """POST one rendered notice and record the receipt. The claim already exists in the ledger."""
+    """POST one rendered notice and record the receipt. The claim already exists in the ledger:
+    ``claimed`` is its ``(key, claim id)``."""
+    key, claim = claimed
     if event == "approved" and " · next: you merge" in text:
         # An approval can be dismissed between the gate's check and this POST. A merge
         # instruction is justified only by the same review id at the live open head.
@@ -851,12 +868,12 @@ def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, 
                 and latest and gh.review_state(latest) == "APPROVED"
                 and str(latest.get("id")) == entry.get("identity")):
             text = _without_next_turn(text)
-    if not _mark_posting(st, key):
+    if not _mark_posting(st, key, claim):
         log(f"observer: {event} #{number} claim is no longer pending — not sent")
         return False
     delivered, error, uncertain = _post(loop, block_for(loop, event, number, head, text, url),
                                         tag, delivery, urgent)
-    _receipt(st, key, delivered, error, uncertain)
+    _receipt(st, key, claim, delivered, error, uncertain)
     if delivered:
         log(f"observer: notified {event} #{number} at {(head or '')[:7]}")
     else:
@@ -923,13 +940,14 @@ def send_report(loop: dict, st, identity: str, text: str) -> bool:
                                     "urgent": False, "message": text, "url": url,
                                     "delivery": delivery, "attempts": 0, "error": "",
                                     "at": time.time()})
+            claim = data["entries"][key]["claim"]
             _save(st.observations, data)
         block = {"event": "report", "loop": loop.get("id"), "pr": "", "head": "", "url": url,
                  "at": now_iso(), "message": text}
-        if not _mark_posting(st, key):
+        if not _mark_posting(st, key, claim):
             return False
         delivered, error, uncertain = _post(loop, block, tag, delivery)
-        _receipt(st, key, delivered, error, uncertain)
+        _receipt(st, key, claim, delivered, error, uncertain)
         log(f"observer: weekly report {identity} " + ("delivered" if delivered else
                                                       f"not verified ({error})"))
         return delivered
@@ -983,7 +1001,10 @@ def retry(loop: dict, st) -> int:
                     entry.update(status="failed", retryable=True,
                                  error="the sender stopped before the POST; resending")
                     # A digest's members stay `digesting`: the resent batch carries them.
-                    if int(entry.get("attempts") or 0) < MAX_ATTEMPTS:
+                    # #2611: a manual resend's claim may be past the cap; it never reached its
+                    # POST, so it is resent once (the sweep's own claim drops the flag).
+                    if (int(entry.get("attempts") or 0) < MAX_ATTEMPTS
+                            or entry.get("manual_resend")):
                         pending.append((key, dict(entry)))
                 elif status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S:
                     # #1320: this also takes a digest's pre-POST claim already at the cap. It is
@@ -993,8 +1014,8 @@ def retry(loop: dict, st) -> int:
                                        "sender died before receipt; POST outcome unknown; reconcile manually"
                                        if not _never_posted(entry) else
                                        "sender stopped before the POST on its last attempt; settle it")
-            for key, entry in pending:
-                data["entries"][key] = {**_claim(entry), "at": now}
+            pending = [(key, {**_claim(entry), "at": now}) for key, entry in pending]
+            data["entries"].update(pending)
             _save(st.observations, data)
     except Exception as exc:
         log(f"observer retry scan failed: {type(exc).__name__}: {exc}")
@@ -1006,7 +1027,9 @@ def resend(loop: dict, st, key: str) -> bool:
     """Send one notice whose POST definitely failed again, now, at a person's request (#2501
     review, F7): only a ``failed`` entry marked ``retryable`` (it never reached the gateway, so
     no copy can land twice), not a digest's, and whatever its attempts, so a route fixed after
-    ``retry`` gave up still gets it. An ``uncertain`` one is never replayed. True if delivered."""
+    ``retry`` gave up still gets it. An ``uncertain`` one is never replayed. True if delivered.
+    Its claim is marked ``manual_resend`` so that, killed before its POST past the cap, the next
+    sweep still resends it once (#2611)."""
     now = time.time()
     with _lock(st.observations):
         data = _read(st.observations)
@@ -1014,7 +1037,7 @@ def resend(loop: dict, st, key: str) -> bool:
         if (not isinstance(entry, dict) or entry.get("status") != "failed"
                 or entry.get("retryable") is not True or entry.get("batch")):
             return False
-        data["entries"][key] = claim = {**_claim(entry), "at": now}
+        data["entries"][key] = claim = {**_claim(entry), "at": now, "manual_resend": True}
         _save(st.observations, data)
     return _resend(loop, st, [(key, claim)], now) == 1
 
@@ -1041,11 +1064,11 @@ def _resend(loop: dict, st, pending: list, now: float) -> int:
                  "url": entry.get("url") or "", "at": now_iso(), "message": text}
         if entry.get("batch"):
             block["count"] = len(entry["batch"])
-        if not _mark_posting(st, key):
+        if not _mark_posting(st, key, entry["claim"]):
             continue
         delivered, error, uncertain = _post(loop, block, tag, delivery,
                                             bool(entry.get("urgent")))
-        _receipt(st, key, delivered, error, uncertain)
+        _receipt(st, key, entry["claim"], delivered, error, uncertain)
         if delivered:
             sent += 1
             log(f"observer: retried {entry.get('event')} #{entry.get('number')} — delivered")
@@ -1097,14 +1120,15 @@ def flush(loop: dict, st, wait_s: int = 0) -> bool:
                                     "error": "", "at": now, "queued_at": oldest})
             for member in queued:
                 data["entries"][member]["status"] = "digesting"
+            claim = data["entries"][key]["claim"]
             _save(path, data)
 
-        if not _mark_posting(st, key):
+        if not _mark_posting(st, key, claim):
             return False
         delivered, error, uncertain = _post(loop, {"event": DIGEST_EVENT, "loop": loop.get("id"),
                                         "count": len(members), "at": now_iso(), "message": text},
                                  tag, delivery)
-        _receipt(st, key, delivered, error, uncertain)
+        _receipt(st, key, claim, delivered, error, uncertain)
         if delivered:
             log(f"observer: digest of {len(members)} transition(s) delivered")
         else:

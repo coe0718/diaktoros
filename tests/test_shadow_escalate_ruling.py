@@ -227,6 +227,20 @@ class Between(Base):
                                                      db=self.db)
         self.assertEqual((outcome, [c.args[3] for c in wake.call_args_list]), ("new", [2]))
 
+    def test_an_unreadable_shadow_review_at_launch_waits_instead_of_ruling_on_none(self):
+        """#1145: launched with the ledger unreadable, the ruling would answer no review, its
+        ACCEPT would record '' and the sweep would send the same review again as round 2. The
+        launch is retried instead, so no ruling is made on nothing."""
+        self.shadow("REQUEST_CHANGES", body="F1: the first review", at=time.time() - 100)
+        with mock.patch.object(turn_prompts, "newest_shadow_review", return_value=None):
+            with self.assertRaises(run_supervisor.RetryableError) as caught:
+                self.claim()
+        self.assertTrue(run_supervisor.retryable(caught.exception))
+        # Once the ledger reads again, the launch shows the review and records its run id.
+        launch, _row = self.claim()
+        self.assertIn("F1: the first review", launch.prompt)
+        self.assertEqual(getattr(launch.scope, "shadow_run", None), "s1")
+
     def test_explain_and_ready_keep_a_second_review_parked_after_the_first_ones_accept(self):
         # #1144: explain's ruled/parked read (and ready's escalation line) count the ACCEPT
         # against the shown review only, as the shadow hold does: s2 still awaits its ruling.
@@ -362,6 +376,8 @@ class LaunchStamp(Base):
     def test_the_real_launch_stamps_its_marker_and_a_lost_cancel_hands_it_back(self):
         import subprocess
         from diaktoros.run_supervisor import claims
+        # A shadow escalation's ruling launches only with the review it answers (#1145).
+        self.shadow("REQUEST_CHANGES", at=time.time() - 100)
         launch, row = self.claim()
         self.assertIsNotNone(launch)
         marker = self.st.breach_get(7)

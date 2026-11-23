@@ -43,13 +43,23 @@ def asked_requests(con, run_id: str, repo: str, number: int, head: str) -> list:
                        (MAYBE, run_id, repo, number, head)).fetchall()
 
 
+def ruled_requests(con, shadow_run: str, repo: str, number: int, head: str) -> list:
+    """``(title, body, state)`` of each issue a ruling over this shadow run (``rulings.
+    shadow_run``) asked to file at this PR and head that was or may be filed: sent (``posted``,
+    ``unlabelled``), maybe (``uncertain``) or its POST under way (``posting``) (#2603)."""
+    return con.execute("SELECT i.title, i.body, i.state FROM shadow_issues i JOIN rulings g ON "
+                       "g.run_id=i.run_id WHERE g.shadow_run=? AND i.repo=? AND i.pr=? AND "
+                       "i.head=? AND i.state IN ('posting','posted','unlabelled','uncertain') "
+                       "ORDER BY i.created, i.seq", (shadow_run, repo, number, head)).fetchall()
+
+
 class ShadowFilingRecords:
     """The filing methods of :class:`~diaktoros.run_supervisor.Supervisor`; ``_connect()`` is the
     one ``Supervisor`` provides."""
 
     def record_shadow_filing(self, run_id: str, repo: str, number: int, head: str, title: str,
                              depth: int, claim: tuple[int, int] | None = None,
-                             same=None) -> int | None:
+                             same=None, copy=None) -> int | None:
         """The ``filed_issues`` row of an issue the host files for a shadow review (#914), before
         the POST, so the origin-PR hold (#324) and the lineage bound (#487) see it as they see the
         reviewer's. Its sequence in that run; ``ValueError`` when this PR already filed the title
@@ -60,7 +70,10 @@ class ShadowFilingRecords:
         (review of #2585, F7): None, nothing written, unless that row is still ``posting`` under
         that claim, so a sweep resumed after ``settle_stale`` ended its claim never POSTs. A title
         found taken settles that claim here too (F8): back to ``recorded`` behind a POST under way,
-        else a ``duplicate`` (``MAYBE`` behind an unknown), so a late refusal falls before or after."""
+        else a ``duplicate`` (``MAYBE`` behind an unknown), so a late refusal falls before or after.
+        ``copy(con)``, read in this transaction too, is how another seat's copy of the same finding
+        stands (``filed``, ``maybe``, ``flying`` or None): the shadow's and its ruling's, matched by
+        place as well as title, so neither POSTs once the other has claimed (#2603, review F1)."""
         key = " ".join(title.casefold().split())
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -70,6 +83,7 @@ class ShadowFilingRecords:
                 con.execute('ROLLBACK')
                 return None
             kinds = _kinds(con, repo, number, same or (lambda other: other == key))
+            kinds |= ({copy(con)} - {None}) if copy else set()
             if kinds:
                 taken = (ValueError if 'filed' in kinds else MaybeFiled if 'maybe' in kinds
                          else InFlight)('an issue with this title was already filed from this PR')
