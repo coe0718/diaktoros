@@ -92,10 +92,12 @@ def _own(scope):
 
 def _never_module(target, up, modules) -> bool:
     """Whether ``target`` is a name bound, in the scope it resolves in, only to what is never a
-    scanned module (ninth review on #2587): an ``except … as`` exception, or an absolute import
-    from a package outside ``modules``. Any other binding (an assignment, a parameter, an alias
-    of ``sys.modules[…]``) might be one; a parameter shadowing a safe import may be passed a
-    module (tenth). A class body binding is read with the scope outside it, failing closed."""
+    scanned module (ninth review on #2587): an ``except … as`` exception, or ``import pkg`` (as
+    any name) of a package outside ``modules``. Any other binding (an assignment, a parameter, an
+    alias of ``sys.modules[…]``) might be one; a parameter shadowing a safe import may be passed a
+    module (tenth). ``from pkg import name`` or ``import pkg.sub as name`` binds an attribute of
+    that package, which it may have set to a scanned module (eleventh), so it is not shown safe.
+    A class body binding is read with the scope outside it, failing closed."""
     if not isinstance(target, ast.Name):
         return False
     seen, scope = set(), up.get(target)
@@ -104,9 +106,9 @@ def _never_module(target, up, modules) -> bool:
             for node in _own(scope):
                 imported = up.get(node)
                 safe = isinstance(node, ast.ExceptHandler) or (
-                    isinstance(node, ast.alias) and not getattr(imported, 'level', 0)
-                    and (getattr(imported, 'module', None) or node.name).partition('.')[0]
-                    not in modules)
+                    isinstance(node, ast.alias) and isinstance(imported, ast.Import)
+                    and not (node.asname and '.' in node.name)
+                    and node.name.partition('.')[0] not in modules)
                 named = _bound(node) + ([node.arg] if isinstance(node, ast.arg) else [])
                 seen |= {safe} if target.id in named else set()
             if seen and not isinstance(scope, ast.ClassDef):

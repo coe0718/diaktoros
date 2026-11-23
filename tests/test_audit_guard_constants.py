@@ -5,6 +5,8 @@ namespace dict (``globals()['ALLOWED'] = …``), nor by a name the guard cannot 
 every constant closed. Ninth: a ``setattr`` of a computed name on anything not shown never to be
 a scanned module (an ``except`` capture, an import from another package) fails them closed too.
 Tenth: a parameter that shadows such an import is not shown so, since a caller may pass a module.
+Eleventh: nor is a name imported from another package (``from sys import x``, ``import a.b as x``),
+which is that package's attribute and may be a scanned module it exported.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -48,6 +50,12 @@ REBOUND = {
         "    setattr(os, name, ('reviewer', 'intruder'))\n",
     'by setattr on a lambda parameter shadowing an import': "import os\n"
         "widen = lambda os, name: setattr(os, name, ('reviewer', 'intruder'))\n",
+    # Eleventh: on an attribute imported from another package, which may be a scanned module.
+    'by setattr on a name imported from another package': "import sys, synthetic\n"
+        "sys.target_2587 = synthetic\nfrom sys import target_2587 as external_2587\n"
+        "name = 'ALLOWED_2587'\nsetattr(external_2587, name, ('reviewer', 'intruder'))\n",
+    'by setattr on a submodule imported under a name': "import os.path as sub\n"
+        "name = 'ALLOWED_2587'\nsetattr(sub, name, ('reviewer', 'intruder'))\n",
 }
 # Reads of a namespace dict, and a computed setattr on another package's module or on a caught
 # exception, in the scope that name resolves in, rebind nothing here.
