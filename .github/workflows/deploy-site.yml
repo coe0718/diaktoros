@@ -7,10 +7,20 @@ name: Deploy site to Pages
 # One artifact holds both halves: the docs rendered by the same Jekyll build Pages used
 # (README and docs/*.md → /docs/*.html, so existing links keep working), then the launch
 # page from docs/site/ laid over the root.
+#
+# The launch page's fallback figures (docs/site/data.json: release, stars, PR counts) are
+# refreshed by docs/site/build-data.py at build time, into the artifact only: nothing is
+# committed back. The page still prefers live GitHub figures in the browser; data.json is what it
+# shows when that fetch fails. The "New in v0.x" section is hand-written prose and stays manual.
 
 on:
   push:
     branches: [main]
+  # A new release must reach data.json without a push. The github-pages environment only
+  # accepts deployments from main, so a release does not build here (its ref is the tag): the
+  # `redeploy` job asks for a fresh run of this workflow on main instead.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -26,11 +36,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # workflow_dispatch is the one event GITHUB_TOKEN may start a run with, so this needs no
+  # other credential. The new run queues behind this one in the `pages` group.
+  redeploy:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Deploy main again for the new release
+        run: gh workflow run deploy-site.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
   build:
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
+      - id: pages
+        uses: actions/configure-pages@v5
+      # The refresh lands in the artifact only, so the checked-in data.json can be older than
+      # what the site last published. build-data.py starts from whichever is freshest of it, the
+      # published file and the build cache's copy of the last snapshot (so a fetch that fails
+      # with the API still keeps it), and writes that first: an API failure, a timeout or a
+      # crash keeps the newest figures. Never fatal: a failed refresh must not hold the docs back.
+      - uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/site-data
+          key: site-data-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: site-data-
+      - name: Refresh the launch page's release and statistics snapshot
+        run: |
+          curl -fsS --max-time 30 "$PAGES_URL/data.json" -o "$RUNNER_TEMP/deployed-data.json" \
+            || echo "::warning::no published data.json to start from"
+          python3 docs/site/build-data.py --previous "$RUNNER_TEMP/deployed-data.json" \
+            --previous "$RUNNER_TEMP/site-data/data.json"
+        timeout-minutes: 5
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
+      # Whatever this deploy publishes is the next one's fallback, refreshed or not.
+      - name: Keep this snapshot for the next deploy
+        run: mkdir -p "$RUNNER_TEMP/site-data" && cp docs/site/data.json "$RUNNER_TEMP/site-data/"
+      - uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/site-data
+          key: site-data-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/jekyll-build-pages@v1
         with:
           source: ./

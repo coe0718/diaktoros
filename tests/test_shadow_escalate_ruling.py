@@ -365,6 +365,38 @@ class Between(Base):
         self.assertTrue(gate.shadows.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
 
 
+class LaunchStamp(Base):
+    """#1767, review F4 on #2600: the real adjudicator launch (``_prepare_launch`` through
+    ``_prepare_verdict_launch``) stamps the marker it starts with its own attempt, so the end
+    of that attempt can hand it back. Without the stamp, ``recover``'s handback of a lost,
+    cancelled attempt refuses the marker and the retried ruling cannot start."""
+
+    claim = Between.claim       # the adjudicator's real launch, as the worker does it
+
+    def test_the_real_launch_stamps_its_marker_and_a_lost_cancel_hands_it_back(self):
+        import subprocess
+        from diaktoros.run_supervisor import claims
+        launch, row = self.claim()
+        self.assertIsNotNone(launch)
+        marker = self.st.breach_get(7)
+        self.assertEqual(marker["status"], "adjudicating")
+        self.assertEqual(marker.get(state_mod.BREACH_ATTEMPT),
+                         claims.attempt_of(row["id"], row["launch_intent"]))
+        # The worker dies after launch; an operator cancels; the sweep ends the run.
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET pid=?, lease=? WHERE id=?",
+                        (child.pid, time.time() - 60, row["id"]))
+        sup = run_supervisor.Supervisor(self.db)
+        sup._spawn = lambda: None
+        self.assertEqual(sup.cancel(row["id"])["state"], "stopping")
+        sup.recover()
+        self.assertEqual(sup.get(row["delivery"])["state"], "cancelled")
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
+        self.assertIsNotNone(self.st.breach_start(7, fg.HEAD, 1), "the retry's ruling can start")
+
+
 class Eligibility(Base):
     """The adjudicator's own claim check (``pr_facts.adjudication_state``), not a mock: the
     shadow review of #1103 found every shadow escalation was superseded there before it could
