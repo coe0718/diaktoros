@@ -56,6 +56,13 @@ class RawHtml(Mocked):
                 self.assertIn(RAW, check(body))
         self.assertEqual(check("<!-- a --> <!-- b -->\n<!--\nc -->  \n"), "")
 
+    def test_inline_instructions_declarations_and_cdata_are_raw(self):
+        # #2642 F4: CommonMark's other inline raw HTML holds no status either, even across lines.
+        for html in ("<?php met ?>", "<!X met>", "<![CDATA[met]]>", "<?x\nmet ?>"):
+            with self.subTest(html):
+                self.assertIn(RAW, check(f"- second: {html}\n"))
+                self.assertIn(RAW, check(f"- second: export flag {html}\n"))
+
     def test_an_unmarked_markdown_item_beside_a_comment_is_still_refused(self):
         self.assertIn('"- second: export flag" has no status',
                       check("<!-- note -->\n- second: export flag\n"))

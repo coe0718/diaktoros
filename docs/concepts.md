@@ -181,8 +181,10 @@ not one. Each requirement is marked:
 - `deferred to #N`, where `#N` is an existing issue other than the ones this PR closes.
 
 Write each requirement as a Markdown list item. Evidence can go in nested items, fenced or
-indented code, or code spans. Raw HTML (a tag or an HTML block outside code) is not read, so an
-APPROVE that contains any is refused (#2636); an HTML comment is hidden text and is fine.
+indented code, or code spans. Raw HTML (a tag, a CDATA section, a declaration, a processing
+instruction or an HTML block outside code) is not read, so an APPROVE that contains any is refused
+(#2636). In other verdicts a line holding raw HTML, or following a tag in its paragraph, is skipped
+and none of its statuses count. An HTML comment is hidden text and is fine.
 
 The broker refuses a review with no Requirements section, one with no status at all, a deferral
 to a missing issue or to one of the issues the PR closes, an APPROVE containing `not met`, an

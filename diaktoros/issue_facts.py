@@ -318,11 +318,12 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
         return ("the Requirements section holds raw HTML (a tag or an HTML block outside code): "
                 "write each requirement as a Markdown list item, with any HTML evidence in a "
                 "fenced code block; nothing was written, resubmit")
-    items = [line.replace(md_fences.RAW, "") for line in items]
+    # Outside an APPROVE, a line that holds raw HTML is not read: none of its statuses count.
+    items = [line for line in items if md_fences.RAW not in line]
     # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
     marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
     statuses = [found for _, found in marked if found]
-    tops = {line.replace(md_fences.RAW, "") for line in _top_items(_section(body) or [])}
+    tops = set(_top_items(_section(body) or []))
     top = [line for line, found in marked if not found and line in tops]
     if not statuses:
         named = f" ({json.dumps(_clip(top[0].strip(), 120))} has none)" if top else ""

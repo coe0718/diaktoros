@@ -43,8 +43,10 @@ _BLOCK_TAGS = ("address|article|aside|base|basefont|blockquote|body|caption|cent
                "frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|"
                "nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|"
                "tfoot|th|thead|title|tr|track|ul")
-# An inline token: a backslash escape (ASCII punctuation), a backtick run, a comment or a tag.
-INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|" + TAG.pattern.replace("-->|", "", 1))
+# An inline token: a backslash escape (ASCII punctuation), a backtick run, a comment, a tag, or
+# CommonMark's other inline raw HTML: CDATA, a declaration or a processing instruction (#2642 F4).
+INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|<!\[CDATA\[[\s\S]*?\]\]>|<![A-Za-z][^>]*>|<\?[\s\S]*?\?>|"
+                    + TAG.pattern.replace("-->|", "", 1))
 # CommonMark's HTML block kinds: what opens one, and what ends it (None: the next blank line).
 HTML = [(re.compile(start, re.I), end and re.compile(end, re.I)) for start, end in (
     (r"<(?:script|pre|style|textarea)(?:\s|>|$)", r"</(?:script|pre|style|textarea)>"),
@@ -115,7 +117,8 @@ def visible(text: str) -> str:
     A code span is text, so a ``<!--`` inside one opens nothing (thirteenth review), and it may
     run across lines (fourteenth); an unmatched backtick run is text. A backslash escapes the
     character after it: an escaped backtick opens no span, an escaped ``<`` no comment (fifteenth).
-    A comment that never closes hides the rest of the paragraph."""
+    A comment that never closes hides the rest of the paragraph. Text after a tag may be inside
+    it, so each later line of the paragraph is ``RAW`` too: none of it is read (#2642 F5)."""
     out, at = [], 0
     while (token := INLINE.search(text, at)) is not None:
         start, stop = token.span()
@@ -134,7 +137,10 @@ def visible(text: str) -> str:
             stop = close.end() if close else stop
         out.append(text[at:stop])
         at = stop
-    return "".join(out) + text[at:]
+    lines = ("".join(out) + text[at:]).split("\n")
+    first = next((i for i, line in enumerate(lines) if RAW in line), len(lines))
+    return "\n".join(line if i <= first or RAW in line else line + RAW
+                     for i, line in enumerate(lines))
 
 
 def unfenced(lines: list[str]) -> list[str]:
