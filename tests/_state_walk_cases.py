@@ -59,10 +59,17 @@ KEEPS = {
 # there by design; the walk compares the rest. Each, and why.
 FRESH = {"claim": "fix_ask_claim's reservation id, a random one per reservation (review on #2579)"}
 # Files where one writer's successive counts (beside the same other files) fold into one sample,
-# since a tally that grows each call never ends discovery; each, and why no state method branches
-# on its value. A count folded in any other file fails the walk (#2589 review F8, round 13).
-COUNTERS = {"fix-asks.json": "a per-PR ask tally: state only returns it (fix_ask_count) and adds "
-                             "or takes one; callers outside LoopState compare it"}
+# since a tally that grows each call never ends discovery: the writers and count paths that may
+# fold, every method that touches the file, and why none branches on the count. Any other fold,
+# or any other method touching the file, fails the walk (#2589 review F8, rounds 13 and 14).
+COUNTERS = {"fix-asks.json": {
+    "writers": {"fix_ask_set", "fix_ask_claim"}, "paths": {("count", "*")},
+    "readers": {"fix_ask_claim", "fix_ask_confirm", "fix_ask_count", "fix_ask_drop",
+                "fix_ask_open", "fix_ask_resolve", "fix_ask_set", "fix_handoff",
+                "fix_plan_approved"},
+    "why": "a per-PR ask tally: state only returns it (fix_ask_count), adds one (fix_ask_set, "
+           "fix_ask_claim) or takes one; the caller's check and callers outside LoopState compare it",
+}}
 # Methods with no return annotation, and the return type the walk holds them to.
 HINTS = {"review_only_conflict": tuple[dict, str, bool] | None}
 LOCK = object()                                  # what ``call`` returns for a lock it took

@@ -23,18 +23,19 @@ def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
     other files (``seed`` but ``file`` itself), fold into its first one (``firsts``), since a
     writer that adds one to its own file each call would never end discovery. A count it writes
     only beside another companion is kept (round 12), and a count fed back through another file
-    keeps discovery going until it fails closed. Each ``(file, writer)`` whose count was folded so
-    goes in ``folded``, for the walk to fail on outside its registered counters (round 13).
+    keeps discovery going until it fails closed. Each ``(file, writer, path)`` whose count was
+    folded so goes in ``folded``, for the walk to fail on outside its registered tally (round 13;
+    round 14: by writer and count path, not file alone, see ``tallies``).
     Whether either gained something, so discovery
     calls again each method that touches the file (round 10: a new whole value that leaves the
     folded sample as it was counts too)."""
     have, kept, firsts = samples.get(file, _NONE), alts.setdefault(file, {}), \
         {} if firsts is None else firsts
     beside = repr(skeleton({f: v for f, v in (seed or {}).items() if f != file}, True))
-    key = firsts.setdefault((file, writer, beside, repr(skeleton(value))),
-                            repr(skeleton(value, True)))
+    first = firsts.setdefault((file, writer, beside, repr(skeleton(value))), value)
+    key = repr(skeleton(first, True))
     if folded is not None and key != repr(skeleton(value, True)):
-        folded.add((file, writer))
+        folded |= {(file, writer, path) for path in differ(first, value)}
     added = key not in kept
     if added:
         kept[key] = value
@@ -98,3 +99,36 @@ def seeds(seed: dict, alts: dict, uncovered: set, label: str) -> list[dict]:
     uncovered.add(f"{label}: more than {COMBINATIONS} combinations of its companions' valid "
                   "values, so not every one was laid beside it (fails closed)")
     return [seed]
+
+
+def differ(first, value, at: tuple = ()):
+    """Each path (a numeric key read as ``*``) where ``first`` and ``value`` hold different counts."""
+    if isinstance(first, dict) and isinstance(value, dict):
+        for k in first.keys() & value.keys():
+            yield from differ(first[k], value[k], at + ("*" if str(k).isdigit() else k,))
+    elif isinstance(first, list) and isinstance(value, list) and len(first) == len(value):
+        for a, b in zip(first, value):
+            yield from differ(a, b, at + ("[]",))
+    elif type(first) is int and type(value) is int and first != value:
+        yield at
+
+
+def tallies(folded: set, touched: dict, counters: dict) -> set[str]:
+    """Why the walk fails on counts it folded (#2589 F8, rounds 13 and 14): a fold is passed only
+    for a writer and count path its file's ``COUNTERS`` entry names, and then every method that
+    touches that file must be a reader the entry names, since a new one may branch on a count the
+    walk never laid beside it. Anything else fails closed."""
+    out, how = set(), ("(fails closed: a tally no state method branches on goes in COUNTERS, with "
+                       "its writers, count paths, readers and why)")
+    for file, writer, path in folded:
+        entry = counters.get(file, {})
+        if writer not in entry.get("writers", ()) or path not in entry.get("paths", ()):
+            out.add(f"{writer} (discovery): its later counts in {file} were folded into its "
+                    f"first, so a reader keyed on one would not be reached (at "
+                    f"{'/'.join(path)}) {how}")
+    for file in sorted({file for file, _, _ in folded} & set(counters)):
+        out |= {f"{name} (discovery): it touches {file}, whose counts are folded, and is not a "
+                f"reader its tally names, so a branch on one would not be reached {how}"
+                for name, seen in touched.items()
+                if file in seen and name not in counters[file]["readers"]}
+    return out

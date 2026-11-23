@@ -17,6 +17,11 @@ Round 12: one writer's count that changes only with another file (``ie_gated``: 
 Round 13: a count one writer grows on its own file (``ja_bump``, read as 3 by ``jb_read``) is
 folded, so the walk fails rather than passing a reader it never reached; a tally registered in
 ``COUNTERS`` with its reason (``id_bump``'s, in the test that registers it) settles.
+
+Round 14: the exemption names a tally's writers, count paths and readers, not its file alone. A
+new method that grows a count of its own in the registered ``fix-asks.json`` (``ka_bump``) and one
+that branches on it (``kb_read``, which opens a file only at 3) each fail the walk, as does a
+registered writer whose fold is at a path its entry does not name.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -98,6 +103,19 @@ class LateMixin:
         path = self.dir / ("late-" + "third" + ".json")       # spelled nowhere whole
         return {**json.loads(path.read_text())} if path.exists() else {}
 
+    def ka_bump(self) -> None:                                # grows a count of its own
+        data = self._load(self.dir / "fix-asks.json", {})
+        data = data if isinstance(data, dict) else {}
+        seen = data.get("probe")
+        self._save(self.dir / "fix-asks.json", {**data, "probe": (seen if type(seen) is int else 0) + 1})
+
+    def kb_read(self) -> dict:
+        data = self._load(self.dir / "fix-asks.json", {})
+        if not (isinstance(data, dict) and data.get("probe") == 3):
+            return {}
+        path = self.dir / ("late-" + "fourth" + ".json")      # spelled nowhere whole
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
     def hh_grow(self) -> None:                                # never the same twice
         data = self._load(self.dir / "late-grow.json", [])
         self._save(self.dir / "late-grow.json", [*(data if isinstance(data, list) else []), "x"])
@@ -146,12 +164,31 @@ class TheWalkCatchesLateValues(unittest.TestCase):
         self.assertIn("ja_bump (discovery): its later counts in late-bump.json were folded into "
                       "its first, so a reader keyed on one would not be reached", " ".join(failures))
 
-    def test_a_registered_tally_still_settles(self):
-        with mock.patch.dict(cases.COUNTERS, {"late-tally.json": "this test's tally"}):
-            found = walk.Walk(self.cls, self.root / "registered")
+    def tally(self, paths, where):
+        entry = {"writers": {"id_bump"}, "paths": paths, "readers": {"id_bump"}, "why": "a test"}
+        with mock.patch.dict(cases.COUNTERS, {"late-tally.json": entry}):
+            found = walk.Walk(self.cls, self.root / where)
             found.discover()
-        self.assertNotIn("id_bump (discovery)", " ".join(found.uncovered))
-        self.assertIn("ja_bump (discovery)", " ".join(found.uncovered))
+        return " ".join(found.uncovered)
+
+    def test_a_registered_tally_still_settles(self):
+        uncovered = self.tally({("count",)}, "registered")
+        self.assertNotIn("id_bump (discovery)", uncovered)
+        self.assertIn("ja_bump (discovery)", uncovered)
+
+    def test_a_registered_writer_folding_another_path_fails_the_walk(self):
+        self.assertIn("id_bump (discovery): its later counts in late-tally.json were folded into "
+                      "its first, so a reader keyed on one would not be reached (at count)",
+                      self.tally({("other",)}, "other-path"))
+
+    def test_a_new_method_on_a_registered_tally_file_fails_the_walk(self):
+        self.assertNotIn("late-fourth.json", self.walk.discover())
+        uncovered = " ".join(self.walk.uncovered)
+        self.assertIn("ka_bump (discovery): its later counts in fix-asks.json were folded into its "
+                      "first, so a reader keyed on one would not be reached (at probe)", uncovered)
+        self.assertIn("kb_read (discovery): it touches fix-asks.json, whose counts are folded, and "
+                      "is not a reader its tally names", uncovered)
+        self.assertNotIn("fix_ask_set (discovery)", uncovered)    # the registered tally passes
 
     def test_state_that_never_settles_fails_closed(self):
         failures = self.walk.run(["hh_grow"])
