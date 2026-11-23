@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_shadow_escalate_ruling as ruling  # noqa: E402
 import test_shadow_upheld_fix as upheld  # noqa: E402
-from diaktoros import run_supervisor  # noqa: E402
+from diaktoros import gate, gh, run_supervisor  # noqa: E402
 
 
 class Ended(ruling.Base):
@@ -136,6 +136,25 @@ class Ended(ruling.Base):
                 self.assertEqual("so the fixer answers its findings" in text, not ended, text)
                 self.assertEqual("the decision is yours" in text, ended, text)
                 self.clear()
+
+    def test_ruling_notice_promises_no_fixer_when_its_turn_cannot_be_read(self):
+        # #2599: a runs table that cannot be read is not "no turn yet": the late notice after an
+        # operator-cancelled turn must not promise the fixer's answer on a guess.
+        text = self.ruling_notice(fix_turn=("cancelled", run_supervisor.OPERATOR_CANCEL))
+        self.assertIn("the decision is yours", text)
+        with closing(sqlite3.connect(self.db)) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute("SELECT * FROM rulings ORDER BY created DESC LIMIT 1").fetchone()
+        sender = run_supervisor.Supervisor(self.db)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("ALTER TABLE runs RENAME TO runs_unreadable")
+        with mock.patch.object(gh, "pr", return_value={**fg.LIVE, "user": {"login": "fixer"}}), \
+                mock.patch("diaktoros.config.by_repo", return_value=self.loop):
+            self.assertIsNotNone(gate.shadows.upheld_shadow_ruling(self.loop, 7, fg.HEAD,
+                                                                   db=self.db))
+            text = sender._ruling_message(row)
+        self.assertNotIn("so the fixer answers its findings", text)
+        self.assertIn("the decision is yours", text)
 
     def test_ready_still_promises_the_fixer_before_its_turn_is_in_the_ledger(self):
         why = self.ready()

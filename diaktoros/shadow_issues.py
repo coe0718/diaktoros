@@ -3,8 +3,9 @@
 The shadow seat's broker is no-write: a ``file_issue`` it asks for is recorded in the run ledger
 (``shadow_issues``), never posted by the seat. The watchdog sweep calls :func:`file_pending`, which
 files each recorded one once the real review exists at that head, unless the reviewer already filed
-the same finding there (the same normalized title, or one close to it). It is filed by the reader,
-not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
+the same finding there (the same normalized title, or one close to it), or a ruling over this
+shadow review did (a close title or the same place: ``ruling_issues.ruled_copy``, #2603). Filed by
+the reader, not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
 ``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
 review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
@@ -61,20 +62,21 @@ def _drop(sup, row, number: int, asked=None) -> None:
     sup.drop_copy(row["run_id"], row["seq"], decide)
 
 
-def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int | None:
+def _claim(sup, row, number: int, head: str, depth: int, log, what: str,
+           copy=None) -> int | None:
     """Claim one recorded issue (``posting``) and commit its ``filed_issues`` row before the
     POST, so a second sweep never files it twice and the origin-PR hold (#324) and lineage bound
     (#487) see it. Both fenced by the attempts the row was read with (review of #2585, F7): a
     sweep whose claim ``settle_stale`` ended meanwhile (it counts an attempt) writes no row, so it
-    never POSTs. Whether the title is taken is decided in the transaction that writes the row
-    (F1): taken only by a POST under way, the claim goes back to ``recorded`` and waits for it.
-    The row's sequence, or None: not claimed, the claim lost, waiting, or a ``duplicate``."""
+    never POSTs. Whether the title, or the other seat's ``copy`` (#2603 review F1), is taken is
+    decided in the transaction that writes the row (F1): taken only by a POST under way, the claim
+    goes back to ``recorded``. The row's sequence, or None: not claimed, lost, waiting, a copy."""
     run_id, seq, attempts = row["run_id"], row["seq"], int(row["attempts"])
     if not sup.shadow_issue_status(run_id, seq, "posting", expect="recorded", attempts=attempts):
         return None
     try:
         filing = sup.record_shadow_filing(run_id, row["repo"], number, head, row["title"],
-                                          depth, claim=(seq, attempts),
+                                          depth, claim=(seq, attempts), copy=copy,
                                           same=lambda key: _same(row["title"], [key]))
     except ValueError:            # InFlight, MaybeFiled or filed: settled with the claim (F8)
         return None
@@ -88,7 +90,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
     """File what is due; the numbers of the issues filed this call. An issue GitHub filed
     whose labels are not confirmed (#1589: not applied, or the label write got no answer) is
     ``unlabelled``, with the gap recorded and logged."""
-    from . import run_supervisor
+    from . import ruling_issues, run_supervisor
     if not config.shadow_file_issues(loop):
         return []
     now = time.time() if now is None else now
@@ -115,10 +117,11 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                       expect="recorded")
             continue                                  # the real review has not landed yet
         filed_as = _filed(sup, loop["repo"], number, row["title"])
-        if filed_as in ("filed", "maybe"):
-            _drop(sup, row, number)
+        known = {filed_as, ruling_issues.ruled_copy(sup, row)}   # a ruling's fallback too (#2603)
+        if known & {"filed", "maybe"}:
+            _drop(sup, row, number, lambda con: ruling_issues.ruled_copy(sup, row, con=con))
             continue
-        if filed_as == "flying":
+        if "flying" in known:
             continue                                  # dropped only once that one is filed
         if room <= 0 and not uncapped:
             continue                                  # no room: later rows may still be lost
@@ -126,7 +129,8 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
         # A crash after the claim leaves it `posting`, never replayed, only ended by `settle_stale`.
-        filing = _claim(sup, row, number, head, depth, log, "shadow-found")
+        filing = _claim(sup, row, number, head, depth, log, "shadow-found",
+                        copy=lambda con: ruling_issues.ruled_copy(sup, row, con=con))
         if filing is None:
             continue
         issue, sent = _post(loop, sup, row, filing, depth, log)
