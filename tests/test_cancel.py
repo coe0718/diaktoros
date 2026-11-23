@@ -349,10 +349,13 @@ class LostWorker(Base):
         child.wait()
         return child.pid
 
-    def lost(self, pid=None, **extra):
+    def lost(self, pid=None, seat='reviewer', turn_key='', **extra):
         sup = self.sup()
-        sup.submit('d', REPO, 1, HEAD, 'reviewer')
-        pid = self.dead_pid() if pid is None else pid
+        sup.submit('d', REPO, 1, HEAD, seat, turn_key=turn_key)
+        if pid is None:
+            # A launch stamp, as _run_one writes it: the attempt a claim or marker names.
+            pid = self.dead_pid()
+            extra.setdefault('launch_intent', time.time() - 120)
         self.set_state('d', 'running', owner='gone', pid=pid, lease=time.time() - 60, **extra)
         run_id = sup.get('d')['id']
         self.assertEqual(sup.cancel(run_id), {'was': 'running', 'state': 'stopping'})
@@ -420,6 +423,196 @@ class LostWorker(Base):
         self.set_state('d', 'running', lease=time.time() + 60)
         sup.recover()
         self.assertEqual(sup.get('d')['state'], 'running')
+
+    def loop_state(self, **extra):
+        """A configured loop for REPO, with its state files under the test's directory."""
+        from diaktoros import config, state as state_mod
+        loop = dict(LOOP, state_dir=str(self.root / 'state'), **extra)
+        by_repo = patch.object(config, 'by_repo', return_value=loop)
+        by_repo.start()
+        self.addCleanup(by_repo.stop)
+        return state_mod.state_for(loop)
+
+    def test_recover_frees_the_seat_claim_of_a_lost_run_it_cancels(self):
+        # #1767: the worker frees its claim at the end of its turn; a lost one never gets there.
+        from diaktoros.run_supervisor import claims
+        st = self.loop_state()
+        sup, run_id = self.lost()
+        claim = claims.claim_seat(st.loop, sup.get('d'), 600.0)
+        self.assertIsNotNone(claim)
+        self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
+        self.assertTrue(st.inflight(f'review:1:{HEAD}'))
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertNotIn(f'{REPO}#1', st.live_locks('reviewer'))
+        self.assertFalse(st.inflight(f'review:1:{HEAD}'))
+
+    def test_recover_keeps_the_claim_of_a_lost_run_it_quarantines(self):
+        # A write record makes it uncertain: the claim stays until an operator reconciles it.
+        from diaktoros.run_supervisor import claims
+        st = self.loop_state()
+        sup, run_id = self.lost()
+        claims.claim_seat(st.loop, sup.get('d'), 600.0)
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                        "VALUES(?,?,?,?,?)", (run_id, 'confirmed', 'g', 1, 0))
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'uncertain')
+        self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
+
+    def breach_marker(self, st):
+        """An ``awaiting-adjudication`` marker for PR 1 at HEAD, round 3."""
+        import json
+        st.dir.mkdir(parents=True, exist_ok=True)
+        st.breach.write_text(json.dumps({f'{REPO}#1': {
+            'pr': 1, 'head': HEAD, 'rounds': 3, 'status': 'awaiting-adjudication'}}))
+
+    @staticmethod
+    def launch(st, row, start=True):
+        """What a worker's launch of ``row`` holds, as ``_production_turn`` and
+        ``_prepare_verdict_launch`` take them: its seat claim, then (unless it dies before,
+        ``start=False``) the marker, both stamped with this launch's attempt."""
+        from diaktoros.run_supervisor import claims
+        claim = claims.claim_seat(st.loop, row, 600.0)
+        started = (st.breach_start(row['pr'], row['head'], 3,
+                                   attempt=claims.attempt_of(row['id'], row['launch_intent']))
+                   if start else None)
+        return claim, started
+
+    def test_recover_hands_back_the_breach_marker_of_a_lost_adjudicator_it_cancels(self):
+        # #1767: the ruling was marked 'adjudicating' before launch; a cancelled lost turn made
+        # none, so its retry must be able to start the marker again.
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        claim, started = self.launch(st, sup.get('d'))
+        self.assertIsNotNone(started)
+        sup.recover()
+        self.assertEqual((sup.get('d')['state'], sup.get('d')['error']),
+                         ('cancelled', OPERATOR_CANCEL))
+        self.assertEqual(st.breach_get(1)['status'], 'awaiting-adjudication')
+        self.assertNotIn(f'{REPO}#1', st.live_locks('adjudicator'))
+        self.assertEqual(sup.retry(run_id), 'pending')
+        self.assertIsNotNone(st.breach_start(1, HEAD, 3))     # the retried turn's launch step
+
+    def test_recover_late_cleanup_keeps_a_retried_attempts_claim_and_marker(self):
+        # Review F1 on #2600: recover() cleans up after its COMMIT, so the operator's retry can
+        # relaunch the same run id first. The late cleanup must leave the retry's claim and its
+        # 'adjudicating' marker alone. Deterministic: recover's cleanup is paused at its
+        # call, the retry is relaunched, then the real cleanup runs. The lost attempt took its
+        # seat (turns.py, _production_turn) and died before breach_start, as in the review.
+        from diaktoros.run_supervisor import workers
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        self.assertIsNotNone(self.launch(st, sup.get('d'), start=False)[0])
+        real = workers._end_lost_cancel
+        retried = {}
+
+        def retry_first(row):
+            self.assertEqual(sup.retry(run_id), 'pending')
+            self.set_state('d', 'running', owner='w2', pid=os.getpid(),
+                           launch_intent=time.time(), lease=time.time() + 600)
+            retried['claim'], retried['started'] = self.launch(st, sup.get('d'))
+            real(row)
+
+        with patch.object(workers, '_end_lost_cancel', retry_first):
+            sup.recover()
+        self.assertIsNotNone(retried['claim'])
+        self.assertIsNotNone(retried['started'])
+        self.assertEqual(sup.get('d')['state'], 'running')
+        self.assertEqual(st.breach_get(1)['status'], 'adjudicating',
+                         "the retry's ruling is out: its marker is not handed back")
+        self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
+        self.assertEqual(st.live_locks('adjudicator').get(f'{REPO}#1', {}).get('run'), run_id,
+                         "the retry's seat claim is kept")
+        # And the retry's own end still frees what it holds.
+        from diaktoros.run_supervisor import claims
+        claims.release_seat(retried['claim'], 'failed')
+        self.assertNotIn(f'{REPO}#1', st.live_locks('adjudicator'))
+
+    def test_recover_leaves_a_marker_the_lost_attempt_never_started(self):
+        # Review F2 on #2600: the lost worker died before its breach_start, and another actor
+        # (a legacy gateway route, or another launch) started the marker. Recovery must not
+        # hand that actor's ruling back.
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        self.assertIsNotNone(st.breach_claim(1, HEAD))        # the gateway's claim
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertEqual(st.breach_get(1)['status'], 'adjudicating')
+        self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
+
+    def test_recover_leaves_a_marker_another_launch_started(self):
+        # F2, the isolated-run side: another launch stamped the marker as its own.
+        st = self.loop_state()
+        self.breach_marker(st)
+        sup, run_id = self.lost(seat='adjudicator', turn_key='breach:3')
+        self.assertIsNotNone(st.breach_start(1, HEAD, 3, attempt='other@1.0'))
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertEqual(st.breach_get(1)['status'], 'adjudicating')
+        self.assertIsNone(st.breach_start(1, HEAD, 3), 'no second adjudication can start')
+
+    def retry_after_release(self, st, sup, run_id, retried, via_retry=True):
+        """Patch ``LoopState.release_if`` so that, the first time a release returns, the run is
+        relaunched (its new claim and in-flight mark taken, after an operator's ``retry`` when
+        ``via_retry``) before the caller goes on: the review's interleaving (F3 on #2600),
+        between the release and the mark's clear."""
+        from diaktoros import state as state_mod
+        real = state_mod.LoopState.release_if
+
+        def release_then_retry(this, *a, **kw):
+            released = real(this, *a, **kw)
+            if not retried:
+                retried['released'] = released
+                if via_retry:
+                    self.assertEqual(sup.retry(run_id), 'pending')
+                self.set_state('d', 'running', owner='w2', pid=os.getpid(),
+                               launch_intent=time.time() + 1, lease=time.time() + 600)
+                retried['claim'] = self.launch(st, sup.get('d'), start=False)[0]
+                retried['marked'] = st.inflight(retried['claim'][4])
+            return released
+        return patch.object(state_mod.LoopState, 'release_if', release_then_retry)
+
+    def check_late_cleanup_keeps_the_retrys_mark(self, seat):
+        """Review F3 on #2600: the old attempt's release and its mark's clear were two lock
+        holds, so a retry that claimed and marked the head between them lost its new mark, the
+        one the gates read to refuse a duplicate launch. Driven through ``recover()``."""
+        st = self.loop_state(unattended_fixer_push=True)     # a fixer's retry needs the opt-in
+        sup, run_id = self.lost(seat=seat)
+        self.assertIsNotNone(self.launch(st, sup.get('d'), start=False)[0])
+        retried = {}
+        with self.retry_after_release(st, sup, run_id, retried):
+            sup.recover()
+        mark = retried['claim'][4]
+        self.assertEqual(mark, f"{'review' if seat == 'reviewer' else 'fix'}:1:{HEAD}")
+        self.assertTrue(retried['released'], "the lost attempt's claim was released")
+        self.assertTrue(retried['marked'])
+        self.assertEqual(st.live_locks(seat).get(f'{REPO}#1', {}).get('attempt'),
+                         retried['claim'][6], "the retry's claim is kept")
+        self.assertTrue(st.inflight(mark), "the retry's in-flight mark is kept")
+
+    def test_recover_late_cleanup_keeps_a_retried_reviewers_in_flight_mark(self):
+        self.check_late_cleanup_keeps_the_retrys_mark('reviewer')
+
+    def test_recover_late_cleanup_keeps_a_retried_fixers_in_flight_mark(self):
+        self.check_late_cleanup_keeps_the_retrys_mark('fixer')
+
+    def test_a_workers_late_release_keeps_its_retrys_in_flight_mark(self):
+        # F3, the worker's own end (claims.release_seat, turns.py _production_finish): the
+        # same split release had the same window.
+        from diaktoros.run_supervisor import claims
+        st = self.loop_state()
+        sup, run_id = self.lost()
+        old = self.launch(st, sup.get('d'), start=False)[0]
+        retried = {}
+        with self.retry_after_release(st, sup, run_id, retried, via_retry=False):
+            claims.release_seat(old, 'failed')
+        self.assertTrue(retried['released'])
+        self.assertTrue(st.inflight(f'review:1:{HEAD}'), "the retry's in-flight mark is kept")
+        self.assertIn(f'{REPO}#1', st.live_locks('reviewer'))
 
 
 class Selection(Base):
@@ -602,14 +795,15 @@ class ProductionTurn(Base):
         sup.production_config = self.root / 'unused'
         sup.submit('d', REPO, 1, HEAD, 'adjudicator')
         breach = SimpleNamespace(resumed=[])
-        breach.breach_resume = lambda pr, head, rounds: breach.resumed.append((pr, head, rounds))
+        breach.breach_resume = lambda pr, head, rounds, attempt=None: breach.resumed.append(
+            (pr, head, rounds))
 
         def turn(t):
             with sup._connect() as con:
                 t.row = con.execute("SELECT * FROM runs WHERE id=?", (t.run_id,)).fetchone()
                 con.execute("UPDATE runs SET state='running' WHERE id=?", (t.run_id,))
                 con.execute("UPDATE runs SET cancel_requested=1 WHERE id=?", (t.run_id,))
-            t.loop, t.breach = LOOP, (breach, 2)
+            t.loop, t.breach = LOOP, (breach, 2, 'attempt')
             raise contained.Stopped()
 
         with patch.object(sup, '_claim_read_live', lambda row, read: None), \

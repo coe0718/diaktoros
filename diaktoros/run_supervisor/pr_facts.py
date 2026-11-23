@@ -25,6 +25,16 @@ def effective_reviews(loop: dict, row, reviews, ledger=None):
                                         reviews, ledger=ledger)
 
 
+def breach_rounds(turn_key) -> int:
+    """The round count an adjudicator turn's key ``breach:<rounds>`` names; 0 for any other or
+    malformed key. The one parse the claim's live check and ``recover``'s handback share."""
+    turn = str(turn_key or '')
+    try:
+        return int(turn.split(':', 1)[1]) if turn.startswith('breach:') else 0
+    except ValueError:
+        return 0
+
+
 def _approval_supersedes(loop: dict, reviews: list, head: str, shadow: bool) -> bool:
     """Whether the head's approval state supersedes a queued ruling (``adjudication_state``):
     approved at the head ends any ruling but a shadow one, which exists *because* it is
@@ -49,11 +59,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     from .. import gate, gh, state as state_mod
     if loop is None:
         return 'retry', {}
-    turn = str(row['turn_key'] or '')
-    try:
-        rounds = int(turn.split(':', 1)[1]) if turn.startswith('breach:') else 0
-    except ValueError:
-        rounds = 0
+    rounds = breach_rounds(row['turn_key'])
     if rounds < 1:
         return 'superseded', {}
     pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}", login=loop['read_token'])
