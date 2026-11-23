@@ -76,9 +76,9 @@ class Handler(unittest.TestCase):
             self.reads.append(f"pr {number}")
             return self.prs.get(number)
 
-        def rows(_repo, _number, _db=None):   # the ledger: what this test queued so far
+        def rows(_repo, number, _db=None):    # the ledger: what this test queued for the PR
             return self.fixes + [{"head": a[3], "state": "pending", "push_confirmed": None}
-                                 for a, _kw in self.queued]
+                                 for a, _kw in self.queued if a[2] == number]
 
         with mock.patch.object(ci_event, "silence", side_effect=silenced), \
              mock.patch.object(gh, "api", side_effect=api), \
@@ -98,6 +98,8 @@ class Handler(unittest.TestCase):
                                self.kicks.append((p["number"], h, sender, tag)) or True):
             if payload is None:                       # the watchdog's sweep, as its last step
                 return ci_event.drain(loop or LOOP, self.st)
+            if payload == "handoff":                  # ... and once it let the lock go
+                return ci_event.handoff(loop or LOOP, self.st)
             with self.assertRaises(Silenced) as ended:
                 ci_event.gate(loop or LOOP, self.st, payload)
         return ended.exception.reason, ended.exception.decision
@@ -265,6 +267,16 @@ class Handler(unittest.TestCase):
         self.assertEqual(sorted(a[2] for a, _ in self.queued), [7, 9])
         self.assertEqual(acted, ["CI read for #7", "CI read for #9"])
         self.assertEqual(self.st.kv_get(self.st.dir / ci_event.NUDGES, None), [])
+
+    def test_a_matching_head_with_no_ledger_yet_is_acted_on_not_declined(self):
+        """#1997: before a loop's first turn there is no ledger, so no review is held for CI:
+        nothing to wake, and the suite on the PR's head is recorded as acted on."""
+        self.state = ci.CIState(passed=["tests (3.11)"])
+        self.sup.db = Path(self.st.dir) / "no-ledger-yet.sqlite"
+        reason, decision = self.deliver(suite())
+        self.assertEqual((reason, decision), ("check_suite @ aaaaaaa: CI read for #7", "accepted"))
+        self.assertEqual(self.woken, [])
+        self.assertFalse(self.sup.db.exists())
 
     def requested(self):
         """A green suite on #7's head, after a confirmed CI fix pushed from ``OLD``, with the

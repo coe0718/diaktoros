@@ -80,6 +80,33 @@ class Reading(Fixture):
         onboarding.path(self.loop).write_text("{not json")
         self.assertEqual(set(self.read().values()), {"not_attempted"})
 
+    def inspect(self):
+        return onboarding.inspect(self.loop, runtime_file=self.runtime, resolver=self.resolver,
+                                  pr_head=lambda loop, number: self.head,
+                                  hook_state=lambda loop: self.hooks)
+
+    def assert_unrecorded_rows(self, stages=STAGES):
+        rows = self.inspect()
+        for stage in stages:
+            self.assertEqual((rows[stage]["own"], rows[stage]["cause"]), ("not_attempted", ""),
+                             stage)
+
+    def test_unrecorded_rows_carry_the_documented_own_and_cause_defaults(self):
+        """``inspect`` promises ``own`` and ``cause`` on every row (#1713), also on a missing
+        record, a malformed file and a malformed entry."""
+        self.assert_unrecorded_rows()                            # no record at all
+        onboarding.path(self.loop).parent.mkdir(parents=True)
+        onboarding.path(self.loop).write_text("{not json")
+        self.assert_unrecorded_rows()                            # a malformed file
+        self.record("identities")
+        stored = json.loads(onboarding.path(self.loop).read_text())
+        stored["stages"]["loop"] = {"status": "passed"}           # no fingerprint
+        stored["stages"]["model"] = "passed"                     # not an object
+        stored["stages"]["live_turn"] = {"status": "bogus", "fingerprint": ""}
+        onboarding.path(self.loop).write_text(json.dumps(stored))
+        self.assert_unrecorded_rows(("loop", "model", "live_turn", "armed"))
+        self.assertEqual(self.inspect()["identities"]["own"], "passed")
+
     def test_recorded_stages_read_back_as_recorded(self):
         self.record("identities", "passed")
         self.record("loop", "failed")
