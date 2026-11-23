@@ -589,8 +589,8 @@ def escalations(db: Path, repo: str, since: float, until: float,
     markers = {}
     for key, marker in (breaches or {}).items():
         prefix, _, number = str(key).rpartition("#")
-        if prefix == repo and plain_number(number) is not None and isinstance(marker, dict):
-            markers[int(number)] = marker
+        if prefix == repo and isinstance(marker, dict) and (pr := plain_number(number)):
+            markers[pr] = marker
 
     def by(pr: int, head: str) -> str:
         marker = markers.get(pr) or {}
@@ -671,9 +671,8 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
     models = {(row["pr"], row["head"]): row["model"] for row in reviews}   # the latest wins
     counts, by_model, undated = Counter(), {}, 0
     for number, entry in (tracked or {}).items():
-        if plain_number(str(number)) is None or not isinstance(entry, dict):
+        if (pr := plain_number(str(number))) is None or not isinstance(entry, dict):
             continue
-        pr = int(number)
         for item in (entry.get("findings") or {}).values():
             if not isinstance(item, dict):
                 continue
@@ -946,9 +945,8 @@ def _breaches(loop: dict) -> dict:
         return {}
 
 
-# A finding's citation, ``path/to/file.ext:12`` (the line optional): what two reviews of the same
-# head are matched on (#218). Two citations of one file match when either names no line or the
-# lines are within this many of each other.
+# A finding's citation, ``path/to/file.ext:12`` (line optional), which two reviews of one head
+# match on (#218): in one file, when either has no line or the lines are at most this far apart.
 _CITE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]+)(?::(\d+))?")
 CITE_NEAR = 10
 _VERDICT = {"APPROVE": "approved", "APPROVED": "approved", "REQUEST_CHANGES": "changes",

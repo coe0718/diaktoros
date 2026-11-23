@@ -9,7 +9,7 @@ import re
 import types
 import typing
 
-from _state_walk_cases import HINTS
+from _state_walk_cases import FRESH, HINTS
 
 
 def conforms(value, hint) -> bool:
@@ -57,7 +57,7 @@ def plain(value):
     if isinstance(value, str):
         return _STAMP.sub("#", value)
     if isinstance(value, dict):
-        return {str(k): plain(v) for k, v in value.items()}
+        return {str(k): "#" if k in FRESH else plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         items = [plain(v) for v in value]
         return sorted(items, key=repr) if isinstance(value, (set, frozenset)) else items

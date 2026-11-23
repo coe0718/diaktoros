@@ -55,6 +55,9 @@ KEEPS = {
     "dep_waits": ([LIST], "1 in ['a', 1] is a valid issue number: the junk 'a' is dropped, the "
                           "wait on issue 1 kept"),
 }
+# Result keys whose value is new on every call, so a call on junk and one on a missing file differ
+# there by design; the walk compares the rest. Each, and why.
+FRESH = {"claim": "fix_ask_claim's reservation id, a random one per reservation (review on #2579)"}
 # Methods with no return annotation, and the return type the walk holds them to.
 HINTS = {"review_only_conflict": tuple[dict, str, bool] | None}
 LOCK = object()                                  # what ``call`` returns for a lock it took
