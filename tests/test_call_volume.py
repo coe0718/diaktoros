@@ -21,14 +21,17 @@ HELD = run_supervisor.CI_HOLD + ' on ' + HEAD[:7] + ' — checks still running'
 
 
 class Volume(retryable.Base):
+    FAKE_CLOCK = True           # a clock that moves only when a worker sleeps
+
     def setUp(self):
         super().setUp()
         self.loop = {**LOOP, 'state_dir': str(self.root / 'state')}
         self.s = self.sup(production_claim=True)
         self.now = [time.time()]
-        clock = patch('time.time', lambda: self.now[0])
-        clock.start()
-        self.addCleanup(clock.stop)
+        if self.FAKE_CLOCK:
+            clock = patch('time.time', lambda: self.now[0])
+            clock.start()
+            self.addCleanup(clock.stop)
 
     def hold(self, delivery, pr, due_in=run_supervisor.CI_POLL_S, sup=None):
         """A reviewer row held for CI, due ``due_in`` from now."""
@@ -199,21 +202,32 @@ class NoReadForARowThatCannotStart(Volume):
         api.assert_called()
 
 
+class AWorkerNamesItself(unittest.TestCase):
+    def test_a_worker_counts_its_calls_as_the_worker(self):
+        # Its entry script is run_supervisor/__main__.py, which names nothing (#2609): the real
+        # worker entry names itself before anything else it does.
+        from types import SimpleNamespace
+        from diaktoros import gh_calls
+        args = SimpleNamespace(db='/nonexistent/ledger.sqlite', operation='_fixture-worker')
+        # The worker env flag it sets is undone with the patched environment.
+        with patch.object(gh_calls, '_caller', ''), \
+                patch.dict('os.environ', {'DIAKTOROS_TEST_FIXTURE': '0'}), \
+                patch.object(run_supervisor.waits, 'cap_stderr'):
+            with self.assertRaisesRegex(SystemExit, 'fixture worker disabled'):
+                run_supervisor._worker(args)
+            self.assertEqual(gh_calls.caller(), 'worker')
+
+
 class _Done(Exception):
     """The simulated span is over."""
 
 
-class ThirtyHeldPRs(Volume):
+class _Workload(Volume):
     """The 2026-11-22 workload, reproduced: 30 reviewer turns held for CI (due 3 s apart) while
-    the reviewer seat is busy with another turn (capacity 1) for 10 minutes and CI keeps running.
-    Every worker a poll starts runs at once, while the worker that started it still lingers,
-    which is how they overlapped. GitHub reads are counted by path shape, as ``gh_calls`` counts
-    them: each held row's poll is the PR plus its check runs and statuses.
-
-    Then the busy turn ends, through the supervisor's own completion (``complete_uncertain``,
-    then ``recover``, as a finished turn's worker does), with CI green: nothing else is driven,
-    and the 30 are reviewed by the workers that wake starts, each finished turn starting the
-    next. The same test on ``origin/main``'s supervisor gives the counts before #2609 (in the PR)."""
+    CI keeps running. Every worker a poll starts runs at once, while the worker that started it
+    still lingers, which is how they overlapped. GitHub reads are counted by path shape, as
+    ``gh_calls`` counts them: each held row's poll is the PR plus its check runs and statuses.
+    No test of its own: ``ThirtyHeldPRs`` (the seat busy) and ``ThirtyHeldPRsSeatFree``."""
     SPAN = 600.0
     MAX_WORKERS = 400           # the old code passes this long before the span ends
 
@@ -224,10 +238,6 @@ class ThirtyHeldPRs(Volume):
         self.ci_running = True
         for n in range(1, 31):
             self.hold(f'pr{n}', n, due_in=3 * n)
-        self.s.submit('busy', 'o/r', 99, HEAD, 'reviewer')
-        with ledger.connect(self.db) as con:
-            con.execute("UPDATE runs SET state='running', owner='busy-owner', lease=? "
-                        "WHERE delivery='busy'", (self.now[0] + 10 ** 6,))
 
     def api(self, loop, path, *args, **kwargs):
         shape = '/'.join('N' if part.isdigit() else part for part in path.split('?')[0].split('/'))
@@ -280,6 +290,21 @@ class ThirtyHeldPRs(Volume):
             return collections.Counter(row[0] for row in con.execute(
                 "SELECT state FROM runs WHERE delivery LIKE 'pr%'"))
 
+
+class ThirtyHeldPRs(_Workload):
+    """The seat is busy with another turn (capacity 1) for the 10 minutes. Then that turn ends,
+    through the supervisor's own completion (``complete_uncertain``, then ``recover``, as a
+    finished turn's worker does), with CI green: nothing else is driven, and the 30 are reviewed
+    by the workers that wake starts, each finished turn starting the next. The same test on
+    ``origin/main``'s supervisor gives the counts before #2609 (in the PR)."""
+
+    def setUp(self):
+        super().setUp()
+        self.s.submit('busy', 'o/r', 99, HEAD, 'reviewer')
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='running', owner='busy-owner', lease=? "
+                        "WHERE delivery='busy'", (self.now[0] + 10 ** 6,))
+
     def release(self):
         """The busy turn ends as a finished turn's worker ends it: completion, then recover()."""
         sup = self.sup(production_claim=True)
@@ -308,6 +333,141 @@ class ThirtyHeldPRs(Volume):
         self.until = self.now[0] + self.SPAN
         self.drive(self.release)
         self.assertEqual(self.states(), {'succeeded': 30})
+
+
+class _Turns:
+    """Workers that really overlap, deterministically: each worker is a thread, but only one runs
+    at a time. A sleep hands the turn back; the earliest sleeper (or a just-spawned worker, due
+    now) runs next, with the fake clock moved to its wake. So lingerers truly interleave on the
+    ledger and the poller lock, and every run is the same run."""
+
+    def __init__(self, now):
+        import heapq
+        import itertools
+        import threading
+        self.now, self.heap, self.order = now, [], itertools.count()
+        self.turn = threading.Event()
+        self.push = lambda at, event: heapq.heappush(self.heap, (at, next(self.order), event))
+        self.pop = lambda: heapq.heappop(self.heap)
+        self.threads, self.errors = [], []
+        self.lingering, self.peak = 0, 0      # workers asleep in their linger at once
+
+    def spawn(self, fn):
+        import threading
+        ready = threading.Event()
+        self.push(self.now[0], ready)
+        thread = threading.Thread(target=self._run, args=(fn, ready), daemon=True)
+        self.threads.append(thread)
+        thread.start()
+
+    def _run(self, fn, ready):
+        ready.wait()
+        try:
+            fn()
+        except _Done:
+            pass
+        except BaseException as error:      # noqa: BLE001 - reported by the test
+            self.errors.append(error)
+        finally:
+            self.turn.set()
+
+    def sleep(self, seconds):
+        import threading
+        woken = threading.Event()
+        self.push(self.now[0] + seconds, woken)
+        self.lingering += 1
+        self.peak = max(self.peak, self.lingering)
+        self.turn.set()
+        woken.wait()
+        self.lingering -= 1
+
+    def run(self):
+        while self.heap:
+            at, _, event = self.pop()
+            self.now[0] = max(self.now[0], at)
+            self.turn.clear()
+            event.set()
+            self.turn.wait()
+        for thread in self.threads:
+            thread.join(timeout=10)
+
+
+class ThirtyHeldPRsSeatFree(_Workload):
+    """The lock's own cut (review of #2612): the seat is free, so every held row is polled, and
+    the workers overlap as processes do (``_Turns``): a poll's spawn starts a worker at once,
+    beside the poller. The same 5 minutes with the poller lock and without it (``poller.lock``
+    answering None: every holder lingered and polled, as before #2609), then CI goes green and
+    all 30 are reviewed either way.
+
+    What the lock cuts is how many workers linger at once: one poller, not every holder. The
+    GitHub reads and the workers started are the same either way here (a poll's worker reads the
+    due row once, whoever woke it); the reads the 2026-11-22 runaway made, with the seat busy,
+    are the pre-read skip's cut (``ThirtyHeldPRs``)."""
+    SPAN = 300.0
+    MAX_WORKERS = 2000
+
+    def setUp(self):
+        import contextlib
+        super().setUp()
+        from diaktoros.run_supervisor import workers
+        # The linger marks are per process; the threads here share one.
+        quiet = patch.object(workers, 'lingering', lambda db: contextlib.nullcontext())
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+    def worker(self, held=False):
+        """A spawn: the worker is started beside its spawner, as ``_spawn`` starts a process."""
+        self.workers += 1
+        if self.workers <= self.MAX_WORKERS and self.now[0] <= self.until:
+            self.turns.spawn(lambda: self.work(held))
+
+    def work(self, held):
+        sup = self.sup(production_claim=True)
+        sup._spawn = self.worker
+        sup._run_one()
+        sup.held_for_ci = sup.held_for_ci or held
+        sup.linger_for_ci(sleep=self.sleep)
+
+    def sleep(self, seconds):
+        if self.now[0] + seconds > self.until:
+            raise _Done
+        self.turns.sleep(seconds)
+
+    def phase(self, seconds):
+        self.until = self.now[0] + seconds
+        self.turns = _Turns(self.now)
+        self.drive(lambda: (self.worker(held=True), self.turns.run()))
+        self.assertEqual(self.turns.errors, [])
+
+    def span(self, locked):
+        from contextlib import nullcontext
+        from diaktoros.run_supervisor import poller
+        with ledger.connect(self.db) as con:
+            con.execute("DELETE FROM runs")
+        for n in range(1, 31):
+            self.hold(f'pr{n}', n, due_in=3 * n)
+        self.calls.clear()
+        self.workers, self.ci_running = 0, True
+        with nullcontext() if locked else patch.object(poller, 'lock', return_value=None):
+            self.phase(self.SPAN)
+        counted = self.workers, sum(self.calls.values()), self.turns.peak
+        states = self.states()
+        self.assertEqual(set(states) - {'pending', 'waiting'}, set())   # none started or failed
+        self.assertEqual(sum(states.values()), 30)
+        self.ci_running, self.workers = False, 0      # CI green: all 30 reviewed, one at a time
+        self.phase(self.SPAN)
+        self.assertEqual(self.states(), {'succeeded': 30})
+        return counted
+
+    def test_the_poller_lock_cuts_workers_and_reads_with_the_same_decisions(self):
+        unlocked = self.span(locked=False)
+        locked = self.span(locked=True)
+        print(f"\n#2609 seat free, CI running {int(self.SPAN)} s: without the lock "
+              f"{unlocked[2]} worker(s) lingering at once at most, {unlocked[0]} started, "
+              f"{unlocked[1]} reads; with it {locked[2]}, {locked[0]}, {locked[1]}")
+        self.assertEqual(locked[2], 1)                      # one poller
+        self.assertGreater(unlocked[2], 10)                 # every holder lingering
+        self.assertLessEqual(locked[:2], unlocked[:2])      # no more started, no more reads
 
 
 if __name__ == '__main__':
