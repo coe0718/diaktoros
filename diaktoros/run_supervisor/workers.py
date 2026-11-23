@@ -726,7 +726,7 @@ class WorkerLifecycle:
             if held is False:
                 return                  # another worker polls
             try:
-                stuck = self._linger_until_due(marked_sleep, end)
+                stuck = poller.wait(self, marked_sleep, end)
             finally:
                 if held is not None:
                     held.close()        # the kernel drops the lock with the descriptor
@@ -741,42 +741,13 @@ class WorkerLifecycle:
                 return
 
     def _polled_due(self) -> float | None:
-        """The earliest due time of a waiting row a lingerer polls, or None."""
-        with self._connect() as con:
-            return con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
-                               + " OR ".join("error LIKE ?" for _ in poller.polled()) + ")",
-                               tuple(hold + '%' for hold in poller.polled())).fetchone()[0]
+        """The earliest due time of a waiting row a lingerer polls, or None (``poller.due``)."""
+        return poller.due(self)
 
     def _due_soon(self) -> bool:
         """Whether a polled row falls due within a linger's window from now."""
         due = self._polled_due()
         return due is not None and due <= time.time() + poller.window()
-
-    def _linger_until_due(self, sleep, end: float) -> float | None:
-        """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row
-        and ``recover()`` it, until the window closes or nothing falls due in it. The window
-        restarts at each recovery, since this one poller polls every worker's rows, up to
-        ``end``. It sleeps at most ``POLL_SLICE_S`` at a time, so a row another worker holds
-        meanwhile, due sooner than the one it waits for, is not left late (#2609). Returns the
-        due time of a row ``recover()`` did not release, or None."""
-        window = poller.window()
-        deadline = min(time.time() + window, end)
-        recovered = None
-        while time.time() < deadline:
-            due = self._polled_due()
-            if due is None or due > deadline:
-                return None     # nothing due in this window: the watchdog sweep is the backstop
-            if due <= time.time():
-                if due == recovered:
-                    return due  # recover() did not release it: do not spin on it
-                # Not a return: the earliest due row may be another worker's, and the row this
-                # worker backed off may fall due later in the window (#1302): keep waiting.
-                self.recover()
-                recovered = due
-                deadline = min(time.time() + window, end)
-                continue
-            sleep(min(due - time.time(), deadline - time.time(), run_supervisor.POLL_SLICE_S) + 1)
-        return None
 
 
 def _worker_gone(row) -> bool:

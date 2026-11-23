@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import time
 from pathlib import Path
 
 from .. import run_supervisor
@@ -48,3 +49,38 @@ def polled() -> tuple[str, ...]:
 def window() -> float:
     """How far ahead a lingerer waits for a polled row, from its start or its last recovery."""
     return max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
+
+
+def due(sup) -> float | None:
+    """The earliest due time of a waiting row of ``sup``'s ledger that a lingerer polls, or None."""
+    with sup._connect() as con:
+        return con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
+                           + " OR ".join("error LIKE ?" for _ in polled()) + ")",
+                           tuple(hold + '%' for hold in polled())).fetchone()[0]
+
+
+def wait(sup, sleep, end: float) -> float | None:
+    """The wait of ``workers.linger_for_ci`` for the worker ``sup``: poll the polled holds,
+    sleep to the earliest due row and ``recover()`` it, until the window closes or nothing falls
+    due in it. The window restarts at each recovery, since this one poller polls every worker's
+    rows, up to ``end``. It sleeps at most ``POLL_SLICE_S`` at a time, so a row another worker
+    holds meanwhile, due sooner than the one it waits for, is not left late (#2609). Returns the
+    due time of a row ``recover()`` did not release, or None."""
+    span = window()
+    deadline = min(time.time() + span, end)
+    recovered = None
+    while time.time() < deadline:
+        at = sup._polled_due()
+        if at is None or at > deadline:
+            return None     # nothing due in this window: the watchdog sweep is the backstop
+        if at <= time.time():
+            if at == recovered:
+                return at   # recover() did not release it: do not spin on it
+            # Not a return: the earliest due row may be another worker's, and the row this
+            # worker backed off may fall due later in the window (#1302): keep waiting.
+            sup.recover()
+            recovered = at
+            deadline = min(time.time() + span, end)
+            continue
+        sleep(min(at - time.time(), deadline - time.time(), run_supervisor.POLL_SLICE_S) + 1)
+    return None
