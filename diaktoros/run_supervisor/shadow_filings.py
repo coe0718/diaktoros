@@ -43,6 +43,16 @@ def asked_requests(con, run_id: str, repo: str, number: int, head: str) -> list:
                        (MAYBE, run_id, repo, number, head)).fetchall()
 
 
+def ruled_requests(con, shadow_run: str, repo: str, number: int, head: str) -> list:
+    """``(title, body, state)`` of each issue a ruling over this shadow run (``rulings.
+    shadow_run``) asked to file at this PR and head that was or may be filed: sent (``posted``,
+    ``unlabelled``), maybe (``uncertain``) or its POST under way (``posting``) (#2603)."""
+    return con.execute("SELECT i.title, i.body, i.state FROM shadow_issues i JOIN rulings g ON "
+                       "g.run_id=i.run_id WHERE g.shadow_run=? AND i.repo=? AND i.pr=? AND "
+                       "i.head=? AND i.state IN ('posting','posted','unlabelled','uncertain') "
+                       "ORDER BY i.created, i.seq", (shadow_run, repo, number, head)).fetchall()
+
+
 class ShadowFilingRecords:
     """The filing methods of :class:`~diaktoros.run_supervisor.Supervisor`; ``_connect()`` is the
     one ``Supervisor`` provides."""

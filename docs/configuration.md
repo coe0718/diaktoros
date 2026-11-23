@@ -558,7 +558,11 @@ each one once the real review exists at that head:
   `uncertain` and named in the watchdog log, as above. A sweep that was only delayed, not
   stopped, finds its claim ended when it resumes and sends nothing.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
-  close to it, is marked `duplicate` and never filed.
+  close to it, is marked `duplicate` and never filed. So is one an adjudicator ruling over this
+  shadow review already filed at that PR and head (`adjudicator_file_issues`), with a close title
+  or the same file and overlapping lines cited first in both bodies (#2603): for instance its
+  fallback, filed while `file_issues` was off, is not filed again once it is turned back on. While
+  that ruling's copy is being sent the shadow's waits for its outcome.
 - **Limits:** at most `shadow.issues_daily` a day per loop, counted over a rolling 24 hours (#1515;
   whole number 0-1000, default 25, `0` = no cap). Issues over the cap stay `recorded` and wait for a
   later sweep. A full cap stops only the POSTs: the sweep still goes through every waiting issue,

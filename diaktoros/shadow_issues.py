@@ -3,8 +3,9 @@
 The shadow seat's broker is no-write: a ``file_issue`` it asks for is recorded in the run ledger
 (``shadow_issues``), never posted by the seat. The watchdog sweep calls :func:`file_pending`, which
 files each recorded one once the real review exists at that head, unless the reviewer already filed
-the same finding there (the same normalized title, or one close to it). It is filed by the reader,
-not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
+the same finding there (the same normalized title, or one close to it), or a ruling over this
+shadow review did (a close title or the same place: ``ruling_issues.ruled_copy``, #2603). Filed by
+the reader, not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
 ``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
 review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
@@ -88,7 +89,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
     """File what is due; the numbers of the issues filed this call. An issue GitHub filed
     whose labels are not confirmed (#1589: not applied, or the label write got no answer) is
     ``unlabelled``, with the gap recorded and logged."""
-    from . import run_supervisor
+    from . import ruling_issues, run_supervisor
     if not config.shadow_file_issues(loop):
         return []
     now = time.time() if now is None else now
@@ -115,10 +116,11 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                       expect="recorded")
             continue                                  # the real review has not landed yet
         filed_as = _filed(sup, loop["repo"], number, row["title"])
-        if filed_as in ("filed", "maybe"):
-            _drop(sup, row, number)
+        known = {filed_as, ruling_issues.ruled_copy(sup, row)}   # a ruling's fallback too (#2603)
+        if known & {"filed", "maybe"}:
+            _drop(sup, row, number, lambda con: ruling_issues.ruled_copy(sup, row, con=con))
             continue
-        if filed_as == "flying":
+        if "flying" in known:
             continue                                  # dropped only once that one is filed
         if room <= 0 and not uncapped:
             continue                                  # no room: later rows may still be lost

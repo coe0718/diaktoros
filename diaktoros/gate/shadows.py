@@ -331,14 +331,15 @@ def fixer_takes_upheld(loop: dict, marker, head: str, db=None) -> bool:
             and fixer_answers_upheld(loop, number))
 
 
-def shadow_fix_turn(loop: dict, number: int, head: str, db=None) -> tuple[str, str, str]:
+def shadow_fix_turn(loop: dict, number: int, head: str, db=None,
+                    strict: bool = False) -> tuple[str, str, str]:
     """The fixer turn answering this head's upheld shadow review (#2262): ``(state, how, key)``,
-    its ledger state ("" with none, or an unreadable ledger), ``how`` it still answers the
-    findings: ``live`` (queued or running), ``rearmed`` (the sweep's ``queue_shadow_fix``
-    resubmits its turn key and ``submit`` re-arms it, by ``intake.redelivery_refusal``), or ""
-    when it ended and nothing restarts it, and its turn ``key`` (``shadow:<current ruling>``; an
-    older ruling's turn at the same head is not it). Read only when the fix is owed
-    (``shadow_fix_owed``): the upheld hold's text (#2263 review F1), ``explain`` and ``ready``."""
+    its ledger state ("" with none, or an unreadable ledger, which ``strict`` raises instead:
+    #2599), ``how`` it still answers the findings: ``live`` (queued or running), ``rearmed``
+    (the sweep's ``queue_shadow_fix`` resubmits its turn key and ``submit`` re-arms it, by
+    ``intake.redelivery_refusal``), or "" when it ended and nothing restarts it, and its turn
+    ``key`` (``shadow:<current ruling>``). Read only when the fix is owed (``shadow_fix_owed``):
+    the upheld hold's text (#2263 review F1), ``explain``, ``ready`` and the ruling notice."""
     import sqlite3
     from ..run_supervisor import (NOT_ENDED, REARMABLE, SHADOW_FIX_KEY, intake,
                                   production_ledger, views)
@@ -346,7 +347,7 @@ def shadow_fix_turn(loop: dict, number: int, head: str, db=None) -> tuple[str, s
     try:
         con = views.read_only_connect(db or production_ledger()) if ruled is not None else None
         if con is None:
-            return "", "", ""
+            raise sqlite3.OperationalError("no upheld ruling, or no ledger, to read the turn from")
         con.row_factory = sqlite3.Row
         try:
             key = f"{SHADOW_FIX_KEY}{int(ruled)}"
@@ -361,6 +362,8 @@ def shadow_fix_turn(loop: dict, number: int, head: str, db=None) -> tuple[str, s
         finally:
             con.close()
     except (sqlite3.Error, OSError):
+        if strict:
+            raise
         return "", "", ""
 
 
