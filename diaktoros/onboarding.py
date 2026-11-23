@@ -63,8 +63,13 @@ FAILURE_SCOPE = {
     # The loop stage fingerprints the loop's settings (``host`` included, #1714), so a failed
     # check of what those settings point at keeps it from ``passed`` too: the gateway, each
     # repo hook's signature (``hooks:signature``, ``hook:<id>``) and the App's webhook.
+    # #1718: so do the host-side checks of selftest's step 6 (the state directory, the
+    # watchdog's cron shim and job, the observer route): ``setup`` skips ``selftest --no-model``
+    # while identities, loop and model are current, so every check that run can FAIL must keep
+    # one of those three from ``passed``. (``build:*`` runs only with ``--pr``, which setup never
+    # passes.)
     "loop": ("runtime:", "bwrap:", "sandbox:", "ledger", "gateway", "hooks:", "hook:",
-             "app-webhook"),
+             "app-webhook", "state_dir", "cron:", "observer"),
     "model": ("seat:", "model:"),
     "live_turn": ("broker:", "turn:"),
     "armed": ("arm:",),
@@ -145,19 +150,32 @@ def stage_status(stage: str, requested: str, checks, *, loop: dict | None = None
     other check of the stage's ``FAILURE_SCOPE``, is ``failed``; so is a WARN in a required one.
     A SKIP, or a required check that never ran, is ``skipped``. Neither is ever ``passed``.
     ``completions`` is the number of distinct seat models the loop resolves: fewer
-    ``model:completion`` results than that is ``skipped``. A ``failed`` or ``skipped`` request
-    stays as asked.
+    ``model:completion`` results than that is ``skipped``. A ``failed`` request stays as asked;
+    a ``skipped`` one stays as asked unless one of its deciding checks FAILED, which makes it
+    ``failed`` (#2588 F2: ``selftest --no-model`` asks for ``model`` skipped, yet its
+    ``seat:*`` checks still run and can fail, and ``setup`` accepts a skipped ``model``).
     """
-    if requested != PASSED or checks is None:
+    if requested == FAILED or checks is None:
         return requested
     seen = normalize_checks(checks)
     outcomes = [seen[name][0] if name in seen else "skip"
                 for name in deciding_checks(stage, seen, loop)]
+    if requested == SKIPPED:
+        return FAILED if "fail" in outcomes else SKIPPED
     if stage == "model" and completions and seen.get("model:completion", (0, 0))[1] < completions:
         outcomes.append("skip")
     if "fail" in outcomes or "warn" in outcomes:
         return FAILED
     return SKIPPED if "skip" in outcomes else PASSED
+
+
+def rules(stage: str) -> str:
+    """A hash of the rules that judge ``stage`` (its ``REQUIRED_CHECKS``, ``FAILURE_SCOPE`` and
+    ``TROUBLE_CHECKS``), stored with each entry. An entry judged under other rules, or written
+    before entries carried this, is never current: a check those rules ignored may have failed,
+    and the entry does not list it (#2588 F1: a ``cron:job`` FAIL recorded ``loop`` as passed
+    before #1718 put ``cron:`` in its scope)."""
+    return _digest([REQUIRED_CHECKS[stage], FAILURE_SCOPE[stage], TROUBLE_CHECKS.get(stage, ())])
 
 
 # -- fingerprints --------------------------------------------------------------------------
@@ -437,7 +455,7 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
              "command": _one_line(command, redact, withheld),
              "summary": _one_line(summary, redact, withheld),
              "checks": {name: outcome for name, (outcome, _) in seen.items() if name in kept},
-             "fingerprint": prints}
+             "fingerprint": prints, "rules": rules(stage)}
     if pr:
         entry["pr"] = int(pr[0])
     _store(loop, stage, entry)
@@ -538,6 +556,9 @@ def _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state) -> 
     Anything that cannot be compared counts as changed."""
     if not entry["fingerprint"]:
         return f"{stage} was recorded with inputs that could not be verified, so it is never current"
+    if entry.get("rules") != rules(stage):
+        return (f"{stage} was recorded under other rules for which checks count (an older "
+                "diaktoros), so it is checked again")
     pr = None
     if stage == "live_turn":
         number = entry.get("pr")

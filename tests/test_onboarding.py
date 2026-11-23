@@ -413,6 +413,68 @@ class Review1(Fixture):
                 if name != "arm:hooks" and not name.startswith(("github:r", "github:f", "seat:")):
                     self.assertIn(name, emitted, f"{stage}: selftest never emits {name}")
 
+    def test_every_check_selftest_can_fail_belongs_to_a_stage(self):                      # 1718
+        # setup skips `selftest --no-model` while identities, loop and model are current, so a
+        # FAIL of any check that run makes must keep one of those stages from `passed`.
+        # `inputs:changed` is handled by record_selftest itself (it stores the stage failed).
+        import re
+        from diaktoros import selftest, selftest_inference
+        source = Path(selftest.__file__).read_text() + Path(selftest_inference.__file__).read_text()
+        emitted = set(re.findall(r'report\.add\([^,]+,\s*f?"([a-z_:-]+)', source))
+        emitted |= {"seat:"}          # check_seats' f"seat:{seat}", added through `name`
+        emitted |= {"state_dir", "cron:shim", "cron:job", "gateway"}    # doctor's, via _from_doctor
+        scopes = tuple(p for stage in ("identities", "loop", "model", "live_turn")
+                       for p in onboarding.FAILURE_SCOPE[stage])
+        exempt = {"inputs:changed"}
+        orphans = sorted(name for name in emitted - exempt if not name.startswith(scopes)
+                         and not name.startswith("build:"))   # only with --pr, never setup's run
+        self.assertEqual(orphans, [])
+        ok = LOOP_OK + [("hooks:signature", "fail")]
+        self.assertEqual(onboarding.stage_status("loop", "passed", ok, loop=self.loop), "failed")
+
+    def test_a_skipped_request_with_a_failed_check_is_failed(self):                       # 2588 F2
+        # `selftest --no-model` asks for model `skipped`, yet runs the seat checks; setup
+        # accepts a skipped model, so a failed seat check must not be stored as skipped.
+        failed = [("seat:fixer", "fail")]
+        self.assertEqual(onboarding.stage_status("model", "skipped", failed, loop=self.loop),
+                         "failed")
+        self.assertEqual(onboarding.stage_status("model", "skipped", [("seat:fixer", "pass")],
+                                                 loop=self.loop), "skipped")
+        self.assertEqual(onboarding.stage_status("model", "skipped", None), "skipped")
+
+    def test_an_entry_recorded_under_other_rules_is_stale(self):                         # 2588 F1
+        # An entry written before #1718 widened the loop scope dropped a cron:job FAIL and read
+        # passed; an entry without this version's rules hash must never read current.
+        self.record_all()
+        self.assertEqual(self.read()["loop"], "passed")
+        data = json.loads(onboarding.path(self.loop).read_text())
+        data["stages"]["loop"].pop("rules", None)
+        onboarding.path(self.loop).write_text(json.dumps(data))
+        rows = onboarding.inspect(self.loop, runtime_file=self.runtime, resolver=self.resolver,
+                                  pr_head=lambda loop, number: self.head,
+                                  hook_state=lambda loop: self.hooks)
+        self.assertEqual(rows["identities"]["status"], "passed")
+        self.assertEqual(rows["loop"]["status"], "stale")
+        self.assertIn("other rules", rows["loop"]["reason"])
+
+    def test_an_entry_whose_stored_rules_hash_differs_is_stale(self):                    # 2588 F3
+        # A future release that widens a stage's rules must invalidate entries judged under the
+        # old ones: the entry keeps its (now different) hash, and only that stage goes stale.
+        from unittest import mock
+        self.record_all()
+        old = onboarding.path(self.loop).read_text()
+        self.assertEqual(self.read()["loop"], "passed")
+        wider = dict(onboarding.FAILURE_SCOPE, loop=onboarding.FAILURE_SCOPE["loop"] + ("new:",))
+        with mock.patch.object(onboarding, "FAILURE_SCOPE", wider):
+            rows = onboarding.inspect(self.loop, runtime_file=self.runtime,
+                                      resolver=self.resolver,
+                                      pr_head=lambda loop, number: self.head,
+                                      hook_state=lambda loop: self.hooks)
+        self.assertEqual(onboarding.path(self.loop).read_text(), old)   # old hash still stored
+        self.assertEqual(rows["identities"]["status"], "passed")
+        self.assertEqual(rows["loop"]["status"], "stale")
+        self.assertIn("other rules", rows["loop"]["reason"])
+
     def test_a_healthy_loop_report_passes_and_containment_trouble_does_not(self):          # F4
         self.assertEqual(onboarding.stage_status("loop", "passed", LOOP_OK, loop=self.loop),
                          "passed")

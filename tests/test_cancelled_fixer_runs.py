@@ -213,7 +213,8 @@ class CancelledFixer(unittest.TestCase):
         self.assertEqual(code, 2, out)
         self.assertIn("fixer #7 @ aaaaaaa failed: refused: the loop configuration for "
                       "acme/widgets is unusable (duplicate loop configs", out)
-        self.assertIn("reviewer #7 @ aaaaaaa re-armed", out)      # the other candidate still ran
+        # The other candidate ran too, to its own refusal: whether it owes a shadow is unknown (#2634 F1).
+        self.assertIn("reviewer #7 @ aaaaaaa failed: refused: the loop configuration for", out)
 
     def test_one_predicate_for_the_view_the_step_and_retry(self):
         # Arbiter on #97: runs_view kept its own SQL copy (LIKE, case-insensitive) of the Python
