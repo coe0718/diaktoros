@@ -479,7 +479,13 @@ using the same code as the command named in it:
    gets one line instead: `5. The merge check — not posted by this loop, nothing to require`.
 6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
    Skipped, with a line saying so, when the record has `armed` `passed` and the hooks are still
-   as recorded (`--arm` included); a stale `armed` stage asks again.
+   as recorded (`--arm` included); a stale `armed` stage asks again. One exception (#1713): an
+   `armed` stage that is stale only because `live_turn` is (the PR's head or the reviewer prompt
+   moved since the live turn) while the hooks still match what `arm` recorded counts as armed,
+   since `setup` never re-runs the live turn and a new PR head says nothing about the hooks.
+   `onboard` still shows that `armed` as `stale` (`live_turn is stale, and this was shown
+   against it`). A stale `identities`, `loop` or `model` stage, or `armed` invalidated by an
+   earlier stage re-recorded against other inputs, still asks again.
 
 At the end (also when step 4 stops it) `setup` prints the [`onboard`](#onboard) summary: each
 stage's status and the next command, read-only. `--dry-run` stops before steps 4 to 6 and
