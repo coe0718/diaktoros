@@ -119,12 +119,18 @@ class ReceiptLedger:
     def claim(self, principal_id, verdict=None):
         if type(principal_id) is not int or principal_id <= 0:
             raise ReceiptDenied('invalid reviewer principal')
-        with self._connect() as con:
+        with ledger.claim_lock(self.db) as held, self._connect() as con:   # #2634 F4: claim_lock
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute('SELECT generation,seat,state FROM runs WHERE id=?',
+            row = con.execute('SELECT generation,seat,state,cancel_requested FROM runs WHERE id=?',
                               (self.run_id,)).fetchone()
-            if row != (self.generation, 'reviewer', 'running'):
+            if row is None or tuple(row[:3]) != (self.generation, 'reviewer', 'running'):
                 raise ReceiptDenied('generation not owned by running reviewer')
+            if row[3] is not None:
+                # Asked to stop (an operator's cancel, #1148, or for the shadow its turn owes and
+                # could not have, #2634): its review is never posted, even before the stop lands.
+                raise ReceiptDenied('this reviewer turn was asked to stop: no review is posted')
+            if ledger.owes(held, con, self.run_id):      # its stop could not be written either
+                raise ReceiptDenied('this reviewer turn owes a shadow it does not have: no review')
             # The durable half of the partial-view rule (#93, #110): whatever scope the caller
             # holds, an approval from a run the host recorded as not seeing the whole change is
             # refused here, inside the claim's transaction and before any POST.
