@@ -13,7 +13,9 @@ requirement after it). The block runs to a closing fence of its character at lea
 most three columns past that same column; or to a line that dedents out of its list item, which
 ends the item and the block with it; or to the end. An HTML comment (``<!--`` opening a line, at
 most three columns past that same column) is blanked the same way, through the line holding
-``-->`` (tenth review: a commented-out draft item read as an unmarked requirement).
+``-->``, or to a line that dedents out of its list item, as a fence does (tenth and eleventh
+reviews: a commented-out draft item read as an unmarked requirement; a comment left open in an
+item blanked the top-level items after it).
 """
 from __future__ import annotations
 
@@ -52,11 +54,13 @@ def unfenced(lines: list[str]) -> list[str]:
     """``lines`` with each fenced code block (its fences too) and HTML comment blanked: code or
     hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
     evidence read as unmarked items)."""
-    out, fence, cols, blank, comment = [], None, [], False, False
+    out, fence, cols, blank, comment = [], None, [], False, None
     for line in lines:
         at, ended = indent(line), False
-        if comment:                                # inside an HTML comment, through its "-->"
-            comment = "-->" not in line
+        if comment is not None and line.strip() and at < comment:
+            comment, ended = None, True            # its list item ended, and the comment with it
+        elif comment is not None:                  # inside an HTML comment, through its "-->"
+            comment = None if "-->" in line else comment
             out.append("")
             continue
         if fence is not None:
@@ -81,7 +85,7 @@ def unfenced(lines: list[str]) -> list[str]:
                 cols.pop()
         blank, col = False, cols[-1] if cols else 0
         if opener and at - col <= 3:
-            comment = "-->" not in opener.group(1)
+            comment = None if "-->" in opener.group(1) else col
             out.append("")
             continue
         if found and at - col <= 3 and not (found.group(1)[0] == "`" and "`" in found.group(2)):

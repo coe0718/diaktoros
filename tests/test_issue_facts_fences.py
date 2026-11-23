@@ -93,13 +93,17 @@ class HtmlComments(Mocked):
         for body in ("<!--\n- draft requirement removed\n-->\n",           # Vex's case
                      "<!-- - draft one: x -->\n",
                      "- two: met\n\n  <!--\n  - nested draft\n  -->\n",
-                     "<!-- a note\n\n- draft after a blank line\n\n-->\n- three: met\n"):
+                     "<!-- a note\n\n- draft after a blank line\n\n-->\n- three: met\n",
+                     "- four: met\n  <!-- draft\n  - nested draft\n\n  -->\n"):
             with self.subTest(body):
                 self.assertEqual(check(body), "")
 
     def test_a_real_unmarked_item_outside_the_comment_is_still_refused(self):
         for body in ("<!--\n- draft requirement removed\n-->\n- second: export flag\n",
-                     "- second: export flag <!-- inline, not a block -->\n"):
+                     "- second: export flag <!-- inline, not a block -->\n",
+                     # Eleventh review (F11): a comment left open in an item ends with it.
+                     "- first: met\n  <!-- draft\n- second: export flag\n",
+                     "- first: met\n\n  <!-- draft\n\n- second: export flag\n"):
             with self.subTest(body):
                 self.assertIn('"- second: export flag', check(body))
 
