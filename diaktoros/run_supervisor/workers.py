@@ -493,23 +493,19 @@ class WorkerLifecycle:
                            retry: bool = False, detail: str | None = None,
                            paced_until: float | None = None,
                            cancel: bool = False, recorded: bool = False) -> str | None:
-        """Record direct worker completion, including after lease expiry.
+        """Record direct worker completion, including after lease expiry. Only the owner, once
+        its child has stopped, calls it (never operator guesswork); a lost worker stays
+        uncertain until manual reconciliation, never retried.
 
-        Never use this for operator guesswork: only the owner after its child
-        has stopped may call it. A lost worker remains uncertain until manual
-        reconciliation, and is never automatically retried.
-
-        A stopped run with no write-ahead record (``write_records``) failed *before any
-        write*: with ``retry`` (a transient cause, or a non-zero sandbox exit) it waits for a
-        backed-off relaunch, up to MAX_RETRIES, then fails. A fixer turn the policy held
-        before launch (#81) is ``cancelled`` with that reason, like a claim-time policy
-        cancellation: no relaunch, listed and recovered by an operator ``retry``. A run
-        ``paced_until`` a time (#219: the seat's usage window is closed, or its daily cap is
-        reached) waits until then *without* spending a retry — it was never the turn's fault —
-        under the same rule: only when nothing was written. A run an operator asked to stop
-        (#1148, ``cancel_requested``) that would wait or fail is ``cancelled`` instead, never
-        retried — or ``uncertain`` when it holds a write-ahead record. Returns the state written,
-        or None when this owner no longer holds the run.
+        A stopped run with no write-ahead record (``write_records``) failed before any write:
+        with ``retry`` it waits for a backed-off relaunch, up to MAX_RETRIES, then fails. A fixer
+        turn the policy held before launch (#81) is ``cancelled`` with that reason (an operator
+        ``retry`` recovers it). A run ``paced_until`` a time (#219: a closed usage window or a
+        daily cap) waits until then without spending a retry, again only when nothing was
+        written. A run asked to stop (#1148, ``cancel_requested``) that would wait or fail is
+        ``cancelled``, never retried, or ``uncertain`` with a write-ahead record; one stopped for
+        the shadow its turn owes keeps that reason (#2634). Returns the state written, or None
+        when this owner no longer holds the run.
         """
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -565,6 +561,9 @@ class WorkerLifecycle:
                     state = 'uncertain'
                     error = (f"{run_supervisor.OPERATOR_CANCEL} after it may have written ({wrote}) — never "
                              "replayed; inspect and reconcile")
+            if state == 'cancelled' and run_supervisor.intake.shadow_owed_stop(
+                    current['error'] if current is not None else None):
+                error = current['error']
             changed = con.execute(
                 "UPDATE runs SET state=?, outcome=?, error=?, detail=?, "
                 "retries=?, retry_at=?, lease=NULL, updated=?, finished=? WHERE id=? AND owner=? "

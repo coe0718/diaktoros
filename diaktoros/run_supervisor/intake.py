@@ -14,7 +14,7 @@ import uuid
 from contextlib import nullcontext
 
 from .. import run_supervisor
-from . import retry_terms
+from . import retry_terms, shadow_owing
 
 
 def redelivery_refusal(con, prior, *, admitted: bool, production: bool, seat: str) -> str | None:
@@ -60,6 +60,12 @@ SHADOW_SNAPSHOT_GONE = (
 
 # Why a reviewer turn that owes a shadow was not re-armed or left to run (#2634 review F1).
 SHADOW_OWED = "a shadow review is owed but could not be queued"
+
+
+def shadow_owed_stop(error: object) -> bool:
+    """Whether a run was stopped, or failed before it started, for the shadow its turn owes and
+    could not have (#2634): not an operator's cancel, so an event or ``retry`` re-arms it."""
+    return isinstance(error, str) and error.startswith(SHADOW_OWED)
 
 
 def shadow_snapshot_refusal(st, run) -> str:
@@ -159,24 +165,16 @@ class RunIntake:
         for a head whose run never wrote is a reason to try again (#53), one attempt per event,
         up to MAX_REARMS failures. A re-armed reviewer turn owes its shadow too (#2072, #2076):
         one from before #1682, or first queued unsampled, may have no shadow row, so it is
-        written in this transaction. So does one the event finds still to start (``pending``, or
-        ``waiting`` on a backoff or a settle, #2627): it is left as it is, with its shadow.
+        written in this transaction. So does one the event finds not ended, whatever a worker did
+        with it meanwhile (#2627, #2634 review F4): ``shadow_owing.beside``.
 
         ``shadow`` as a ``str`` (#2634 review F1): owed, but its findings snapshot could not be
-        kept. Unknown is never "none owed": a failed row is not re-armed, and a row still to
-        start is failed (it never ran, so a later event or ``retry`` re-arms it with its
-        shadow); the gate holds the delivery on the outcome naming ``SHADOW_OWED``."""
-        identity = (prior['repo'], prior['pr'], prior['head'], prior['turn_key'])
+        kept. Unknown is never "none owed": a failed row is not re-armed, and one not ended is
+        failed or stopped (``beside``); the gate holds the delivery on the outcome naming
+        ``SHADOW_OWED``, and a later event or ``retry`` re-arms it with its shadow."""
         unkept = f"{SHADOW_OWED}: {shadow}" if isinstance(shadow, str) else ''
-        if prior['state'] in ('pending', 'waiting') and unkept:
-            con.execute("UPDATE runs SET state='failed', error=?, retry_at=NULL, updated=? "
-                        "WHERE id=?", (unkept, now, prior['id']))
-            return f"duplicate failed: {unkept}"
-        if prior['state'] in ('pending', 'waiting'):
-            self._insert_runs(con, [], shadow, identity, now)
-            if prior['state'] == 'waiting' and prior['retry_at']:
-                outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
-            return outcome
+        if prior['state'] in shadow_owing.UNENDED:
+            return shadow_owing.beside(self, con, prior, outcome, shadow, unkept, now)
         if prior['state'] not in run_supervisor.REARMABLE or not (self.fixture_mode
                                                                   or self.production_config):
             return outcome
@@ -185,7 +183,8 @@ class RunIntake:
         if refused is not None or unkept:
             return f"{outcome}: {refused or unkept}"
         self._rearm(con, prior['id'], reset=False, budget=budget, settle=settle)
-        self._insert_runs(con, [], shadow, identity, now)
+        self._insert_runs(con, [], shadow, (prior['repo'], prior['pr'], prior['head'],
+                                            prior['turn_key']), now)
         return 'rearmed'
 
     def _start_worker(self, repo: str, prior, outcome: str, settle: float) -> None:

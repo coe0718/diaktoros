@@ -56,7 +56,7 @@
     "diaktoros/run_supervisor/notices.py::OperatorNotices.notify": 126,
     "diaktoros/run_supervisor/pr_facts.py::pr_change": 193,
     "diaktoros/run_supervisor/turns.py::ClaimAndLaunch._production_turn": 127,
-    "diaktoros/run_supervisor/workers.py::WorkerLifecycle.complete_uncertain": 100,
+    "diaktoros/run_supervisor/workers.py::WorkerLifecycle.complete_uncertain": 99,
     "diaktoros/safe_push.py::_git_cas": 135,
     "diaktoros/safe_push.py::push": 82,
     "diaktoros/safe_push.py::update_branch": 85,

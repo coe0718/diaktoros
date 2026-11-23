@@ -34,7 +34,7 @@ from submodule_shadows import shadowed_submodules as _shadowed_submodules  # noq
 
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs", "ledger_schema", "waits", "merge_hold", "shadow_turns",
-              "shadow_records", "shadow_filings", "retry_terms")
+              "shadow_records", "shadow_filings", "retry_terms", "shadow_owing")
 # ALL_SUBMODULES is every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES:
 # the package deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the
 # one-home rules check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a

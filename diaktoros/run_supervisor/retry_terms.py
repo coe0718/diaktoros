@@ -45,9 +45,9 @@ def refusal(con, run_id: str, policy_off: str, budget) -> str:
 
     Anything that may have written — uncertain, quarantined, reconciled, or with any write-ahead
     record — is refused with the reconcile instructions; so is a state that is not failed,
-    waiting or cancelled, and a cancellation that was neither an operator's nor the push
-    policy's (superseded: a new head gets its own turn). ``policy_off`` comes after those, which
-    say more about the run."""
+    waiting or cancelled, and a cancellation that was neither an operator's, the push policy's
+    nor one for the shadow its turn owes (superseded: a new head gets its own turn).
+    ``policy_off`` comes after those, which say more about the run."""
     row = con.execute('SELECT state,error FROM runs WHERE id=?', (run_id,)).fetchone()
     if row is None:
         return f'no run {run_id}'
@@ -60,7 +60,8 @@ def refusal(con, run_id: str, policy_off: str, budget) -> str:
     if row['state'] not in run_supervisor.REARMABLE + ('waiting',):
         return f"refused: run is {row['state']}, not failed, waiting or cancelled"
     if row['state'] == 'cancelled' and not (run_supervisor.policy_cancelled(row['error'])
-                                            or run_supervisor.operator_cancelled(row['error'])):
+                                            or run_supervisor.operator_cancelled(row['error'])
+                                            or run_supervisor.intake.shadow_owed_stop(row['error'])):
         # Re-arming it would only be cancelled again by the claim (the line runs_view draws).
         return (f"refused: cancelled because {row['error'] or 'superseded'} — a new head gets "
                 "its own turn; nothing to retry")

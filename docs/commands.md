@@ -2162,6 +2162,8 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
+  From the moment the stop is asked, a reviewer turn's review receipt is refused, so a review it
+  had not begun to post is never posted while the stop lands (#2634).
   If the turn had already started writing (any of the write-ahead records above), the run
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
   If the owning worker is already gone (its lease expired), nothing reads the request; the
