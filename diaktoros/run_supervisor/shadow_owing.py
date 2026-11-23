@@ -16,6 +16,8 @@ from ..state import ledger
 
 # The reviewer row states a redelivery may still give the shadow its turn owes.
 UNENDED = ('pending', 'waiting', 'claimed', 'launching', 'running')
+# The waits between tries of the barrier lift that ends a redelivery (``lift``; #2644 review F2).
+LIFT_WAITS = (0.05, 0.2, 0.75)
 
 
 def beside(sup, con, prior, outcome: str, shadow, unkept: str, now: float) -> str:
@@ -142,11 +144,10 @@ def fails_closed(sup, con, prior, shadow, held=None):
                 stop(fresh, row, '', shadow if isinstance(shadow, str) else unwritten(exc),
                      time.time())
             fresh.execute("COMMIT")
-            lift(held, prior['id'], mine)           # the stop stands now and refuses the receipt
+            lift(sup, held, prior['id'], mine)      # the stop stands now and refuses the receipt
         raise
     if owed:
-        with contextlib.suppress(Exception):    # its shadow row, or its stop, is in now
-            lift(held, prior['id'], mine)
+        lift(sup, held, prior['id'], mine)      # its shadow row, or its stop, is in now
 
 
 def cuts(exc: BaseException) -> list[int]:
@@ -154,7 +155,25 @@ def cuts(exc: BaseException) -> list[int]:
     return [exc.at] if isinstance(exc, ledger.BarrierCut) else []
 
 
-def lift(held, run_id: str, mine) -> None:
+def lift(sup, held, run_id: str, mine) -> None:
     """Clear ``run_id`` from the barrier once its shadow row or its stop is in, lifting the cut
-    adds this writer made (``mine``, their offsets) first (#2643, #2645)."""
-    ledger.owe(held, run_id, False, mine=mine)
+    adds this writer made (``mine``, their offsets) first (#2643, #2645). Only this writer can
+    lift them, so a write that fails is tried again (``LIFT_WAITS``) while it still holds the
+    lock and ``mine`` (#2644 review F2). If it never lands, they hold every reviewer turn whose
+    id they begin and that has no shadow row, failing closed, so they are named to the operator
+    (``ledger_events``) for a person to remove."""
+    for wait in (*LIFT_WAITS, None):
+        try:
+            return ledger.owe(held, run_id, False, mine=mine)
+        except OSError as exc:
+            if wait is None:
+                failed = exc
+            else:
+                time.sleep(wait)
+    if mine:
+        with contextlib.suppress(Exception), sup._connect() as con:
+            con.execute("INSERT INTO ledger_events(message,created) VALUES(?,?)", (
+                f"⚠️ Diaktoros claim barrier: run {run_id} could not lift the add it cut at byte "
+                f"{', '.join(map(str, mine))} of {sup.db}.claims.lock ({failed!r}). Until a "
+                f"\"*@<byte>\" line lifts it, every reviewer turn whose id it begins and that has "
+                f"no shadow row is refused its receipt.", time.time()))

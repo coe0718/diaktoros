@@ -3,10 +3,13 @@
 The redelivery's barrier add writes ``+`` and a few bytes of the reviewer's id, then makes no
 progress; the COMMIT fails, and so does the stop. The cut add holds every id it begins, so the
 running reviewer's receipt is still refused. A cut that the same redelivery can end whole is
-lifted once its shadow row is in, so it holds nothing after.
+lifted once its shadow row is in, so it holds nothing after: also when the write fails, rather
+than making no progress, and when the lift that ends it fails before it lands (#2644 review F2,
+F3). A lift that never lands is named to the operator.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
+import errno
 import pathlib
 import sqlite3
 import sys
@@ -17,6 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_shadow_owed_race as race  # noqa: E402
 import test_shadow_owed_stops as stops  # noqa: E402
 from diaktoros import review_receipt  # noqa: E402
+from diaktoros.run_supervisor import shadow_owing  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 from test_shadow_rearm import REVIEWER  # noqa: E402
 
@@ -26,17 +30,28 @@ class ABarrierCutInsideTheId(race._Race):
     refuse_stops = stops.AStopThatCannotBeWritten.refuse_stops
     claim = stops.AStopThatCannotBeWritten.claim
 
-    def cut_after(self, size, times=None):
-        """``pwrite`` writes the first ``size`` bytes, then nothing: for every write after, or
-        up to write ``times``, so the add raises and a later write goes through."""
+    def cut_after(self, size, times=None, error=None):
+        """``pwrite`` writes the first ``size`` bytes, then nothing (or raises ``error``): for
+        every write after, or up to write ``times``, so the add raises and a later write goes
+        through."""
         real, cuts = ledger.os.pwrite, [0]
 
         def pwrite(fd, data, at):
             cuts[0] += 1
             if cuts[0] == 1:
                 return real(fd, data[:size], at)
-            return real(fd, data, at) if times is not None and cuts[0] > times else 0
+            if times is not None and cuts[0] > times:
+                return real(fd, data, at)
+            if error is not None:
+                raise error
+            return 0
         return mock.patch.object(ledger.os, "pwrite", pwrite)
+
+    def holds_another(self):
+        """Whether the barrier refuses a turn with no shadow row, and what it holds."""
+        with ledger.claim_lock(self.sup().db) as held, \
+                contextlib.closing(sqlite3.connect(self.sup().db)) as con:
+            return ledger.owes(held, con, "a-turn-with-no-shadow-row"), ledger._owing(held)
 
     def lock_path(self):
         db = pathlib.Path(self.sup().db)
@@ -76,10 +91,39 @@ class ABarrierCutInsideTheId(race._Race):
         self.lock_path().write_bytes(b"+")
         with self.race("running"), self.cut_after(0, times=1):
             self.assertEqual(self.enqueue(loop), "duplicate running")
-        with ledger.claim_lock(self.sup().db) as held, \
-                contextlib.closing(sqlite3.connect(self.sup().db)) as con:
-            self.assertEqual(ledger._owing(held), (set(), [""]))
-            self.assertTrue(ledger.owes(held, con, "a-turn-with-no-shadow-row"))
+        self.assertEqual(self.holds_another(), (True, (set(), [""])))
+        self.claim()                            # this turn's own shadow row is in
+
+    def test_a_cut_whose_write_failed_is_lifted_by_its_writer(self):
+        # #2644 review F3: "+" lands, then the write raises ENOSPC rather than writing nothing.
+        loop = self.queued_unsampled()
+        with self.race("running"), self.cut_after(1, times=2, error=OSError(errno.ENOSPC, "full")):
+            self.assertEqual(self.enqueue(loop), "duplicate running")
+        self.assertEqual(self.lock_bytes(), b"")
+        self.assertEqual(self.holds_another(), (False, (set(), [])))
+        self.claim()
+
+    def test_a_lift_that_fails_is_tried_again_and_lifts_the_cut(self):
+        # #2644 review F2: "+", no progress, the shadow row commits, then the lift that ends the
+        # redelivery makes no progress once. It is tried again, with the cut it owns.
+        loop = self.queued_unsampled()
+        with self.race("running"), self.cut_after(1, times=3):
+            self.assertEqual(self.enqueue(loop), "duplicate running")
+        self.assertEqual(self.lock_bytes(), b"")
+        self.assertEqual(self.holds_another(), (False, (set(), [])))
+        self.claim()
+
+    def test_a_lift_that_never_lands_fails_closed_and_is_named_to_the_operator(self):
+        loop = self.queued_unsampled()
+        with self.race("running"), self.cut_after(1), \
+                mock.patch.object(shadow_owing, "LIFT_WAITS", (0, 0)):
+            self.assertEqual(self.enqueue(loop), "duplicate running")
+        run_id = self.sup().get(REVIEWER)["id"]
+        self.assertEqual(self.lock_bytes(), b"+")
+        self.assertEqual(self.holds_another(), (True, (set(), [""])))
+        with contextlib.closing(sqlite3.connect(self.sup().db)) as con:
+            (message,), = con.execute("SELECT message FROM ledger_events").fetchall()
+        self.assertIn(f"run {run_id} could not lift the add it cut at byte 0", message)
         self.claim()                            # this turn's own shadow row is in
 
 

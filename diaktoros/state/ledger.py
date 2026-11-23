@@ -203,10 +203,11 @@ def owe(lock: int, run_id: str, owed: bool = True, mine=()) -> None:
     ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
     stop. Each change is a line appended to a log, written whole (a short write is finished, not
     taken as done) and synced, so an update cut short never loses an id already marked; a cut
-    line is ended with ``~`` first, and stays a cut add (``_owing``). An add this call cuts raises
-    ``BarrierCut`` with its offset. ``mine`` are such offsets of the caller's own earlier adds of
-    ``run_id`` under this same lock: each is lifted (after the add, before the clear; #2643,
-    #2645). The log is emptied only once it holds no id and no cut add."""
+    line is ended with ``~`` first, and stays a cut add (``_owing``). An add this call cuts (a
+    write in it fails or makes no progress) raises ``BarrierCut`` with its offset. ``mine`` are
+    such offsets of the caller's own earlier adds of ``run_id`` under this same lock: each is
+    lifted (after the add, before the clear; #2643, #2645). The log is emptied only once it holds
+    no id and no cut add."""
     if not run_id or "\n" in run_id or "~" in run_id:
         raise ValueError("invalid run id for the claim barrier")
     end = os.lseek(lock, 0, os.SEEK_END)
@@ -217,7 +218,12 @@ def owe(lock: int, run_id: str, owed: bool = True, mine=()) -> None:
     cut = (end + len(term), end + len(term) + len(record)) if owed else (0, 0)
     done = 0
     while done < len(data):
-        wrote = os.pwrite(lock, data[done:], end + done)
+        try:
+            wrote = os.pwrite(lock, data[done:], end + done)
+        except OSError as exc:          # inside the add, a cut, as no progress is (#2644 F3)
+            if cut[0] < end + done < cut[1]:
+                raise BarrierCut(cut[0]) from exc
+            raise
         if wrote <= 0:
             raise BarrierCut(cut[0]) if cut[0] < end + done < cut[1] else OSError(
                 errno.EIO, "the claim barrier could not be written")
