@@ -103,6 +103,29 @@ def _shadow_asked(loop: dict, sup, row, con=None) -> str | None:
     return next((kind for kind in ("filed", "maybe", "waiting") if kind in kinds), None)
 
 
+_RULED = {"posted": "filed", "unlabelled": "filed", "uncertain": "maybe", "posting": "flying"}
+_AS_CLAIM = {"filed": "filed", "maybe": "maybe", "waiting": "flying"}  # _shadow_asked, at a claim
+
+
+def ruled_copy(sup, row, con=None) -> str | None:
+    """The other way round (#2603): whether a ruling over this shadow request's run asked, at its
+    PR and head, for the same finding (a close title, or the same place cited first in both
+    bodies) and filed it, as its fallback while the loop did not file a shadow's requests:
+    ``"filed"``, ``"maybe"`` (its POST's outcome unknown), ``"flying"`` (its POST under way) or
+    None. A ruling's copy still to be filed waits on the shadow's, so it never holds it. Read in
+    ``con``'s transaction when given."""
+    if con is None:
+        with sup._connect() as con:
+            return ruled_copy(sup, row, con)
+    place = _cited(row["body"])
+    asked = shadow_filings.ruled_requests(con, row["run_id"], row["repo"], int(row["pr"]),
+                                          str(row["head"]))
+    kinds = {_RULED[state] for title, body, state in asked
+             if shadow_issues._same(row["title"], [" ".join(str(title).casefold().split())])
+             or _same_place(place, _cited(body))}
+    return next((kind for kind in ("filed", "maybe", "flying") if kind in kinds), None)
+
+
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
     return broker_filing.file_ruling_issue(
         loop, repo=loop["repo"], number=int(row["pr"]), head=str(row["head"]),
@@ -150,7 +173,10 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         depth = shadow_issues._lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
-        filing = shadow_issues._claim(sup, row, number, head, depth, log, "adjudicator-found")
+        # Rechecked as the claim is written (#2603 review F1): a shadow copy claimed since holds it.
+        filing = shadow_issues._claim(sup, row, number, head, depth, log, "adjudicator-found",
+                                      copy=lambda con: _AS_CLAIM.get(_shadow_asked(loop, sup, row,
+                                                                                   con=con)))
         if filing is None:
             continue
         issue, sent = shadow_issues._post(loop, sup, row, filing, depth, log, send=_send,
