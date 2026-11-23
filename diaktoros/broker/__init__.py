@@ -267,15 +267,26 @@ AUDIT_ROLES = ("reviewer", "fixer", "triage", "adjudicator", "issue_fixer", "rea
                "review_only_update", "update_behind")
 # Every operation those writers record, read and pinned the same way (#2404).
 AUDIT_OPERATIONS = ("review", "push", "answers", "labels", "comment", "open_pr", "request_review",
-                    "issue_comment", "file_issue", "ruling_comment", "issue_branch",
-                    "update_branch", "labels_failed", "ruled_approval", "ruled_dismissal",
-                    "file_shadow_issue", "file_ruling_issue", "shadow_issue_labels",
-                    "shadow_issue_labels_missing", "ruling_issue_labels",
+                    "remove_review_request", "issue_comment", "file_issue", "ruling_comment",
+                    "issue_branch", "update_branch", "labels_failed", "ruled_approval",
+                    "ruled_dismissal", "file_shadow_issue", "file_ruling_issue",
+                    "shadow_issue_labels", "shadow_issue_labels_missing", "ruling_issue_labels",
                     "ruling_issue_labels_missing")
+
+
+def audit_vocabulary(role, operation) -> None:
+    """Refuse an audit line whose role or operation is not in ``AUDIT_ROLES`` or
+    ``AUDIT_OPERATIONS``, before it is written (#2637). The static drift guard
+    (``tests/_audit_writers.py``) catches drift in ordinary code; this backstop catches what no
+    static scan can, so a line is never written with a value the Desktop would read as ``unknown``."""
+    if role not in AUDIT_ROLES or operation not in AUDIT_OPERATIONS:
+        raise BrokerDenied(f"audit line refused: role {role!r} or operation {operation!r} is not "
+                           "in the audit vocabulary")
 
 
 def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
            role: str, operation: str, login: str) -> None:
+    audit_vocabulary(role, operation)
     # The GitHub write already happened; a worker never recreates the loop's state dir to
     # record it (hostdirs, #108). One line, and the operation still reports its real outcome.
     # Checks only: on the host, the mkdir below creates it as before.

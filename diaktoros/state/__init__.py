@@ -44,6 +44,7 @@ STATE_LOCK = register_lock("state.lock")
 LOG_LOCK = register_lock("watchdog.log.lock")
 BREACH_LOCK = register_lock("breach.lock")
 TRANSITIONS_LOCK = register_lock("stack-transitions.lock")
+REVIEW_REQUEST_LOCK = register_lock("review-requests.lock")
 OBSERVATIONS_FILE = "observations.json"
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
@@ -1379,10 +1380,22 @@ class LoopState(FixAsks):
             self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
+    @contextlib.contextmanager
+    def review_request_lock(self):
+        """A grant and the removal of a pending review request, one at a time (``review_asks.
+        clear_pending_request``, #2622). Taken before the state lock, never inside it."""
+        hostdirs.ensure(self.dir)
+        fd = os.open(self.dir / REVIEW_REQUEST_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing releases the flock
+
     def review_cap_grant(self, number: int, head: str, rounds: int, replacing=None) -> bool:
         """Allow one more verdict at ``head`` once ``rounds`` are spent. False when the head holds
         that grant already, or ``replacing`` (#2401) is no longer the grant."""
-        with self.locked():
+        with self.review_request_lock(), self.locked():
             data = self._review_caps()
             entry = data.get(str(number)) if isinstance(data.get(str(number)), dict) else {}
             if (entry.get("grant") == {"head": head, "rounds": rounds}
@@ -1488,10 +1501,11 @@ class LoopState(FixAsks):
 
     def shadow_findings_put(self, number: int, head: str, entry: dict,
                             keep: "set[tuple[int, str]] | None" = None,
-                            turn_key: str = "") -> None:
+                            turn_key: str = "", replace: bool = False) -> None:
         """Keep the snapshot for this PR, head and reviewer turn (``turn_key``, #1139): a new turn
         at a head that already has one takes its own, and never shares or replaces another's.
-        The first snapshot of a turn wins. Past ``SHADOW_FINDINGS_KEPT`` the oldest are
+        The first snapshot of a turn wins, unless ``replace`` (its shadow row was never written,
+        #2634 review F2). Past ``SHADOW_FINDINGS_KEPT`` the oldest are
         dropped, but never one of a (number, head) in ``keep`` (this loop's repo's shadow run
         that has not ended: its broker would fall back to the live ledger, #1013; another
         repo's run is not in it, #1133). ``keep=None`` means the
@@ -1501,7 +1515,7 @@ class LoopState(FixAsks):
             data = self._load(path, {})
             data = data if isinstance(data, dict) else {}
             key = self._shadow_findings_key(number, head, turn_key)
-            if key in data:
+            if key in data and not replace:
                 return
             data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
             if keep is not None and len(data) > self.SHADOW_FINDINGS_KEPT:

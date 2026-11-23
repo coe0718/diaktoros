@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import math
 import re
+import time
 import types
 import typing
 
@@ -46,14 +47,21 @@ def returns(cls, name: str):
 _STAMP = re.compile(r"\d{4}-\d\d-\d\d[T ][\d:.]+(?:Z|[+-]\d\d:?\d\d)?")
 
 
+CLOCK_S = 366 * 86400        # how near now a float must be to read as a clock (``plain``)
+
+
 def plain(value):
-    """``value`` with what differs between two calls a moment apart masked: a timestamp (a
-    number past 1e8, or a fractional one, or an ISO time in a string). Counts and other small
-    whole numbers stay, so a count of junk entries is not read as the count on a missing file."""
+    """``value`` with what differs between two calls a moment apart masked: a clock (a float
+    within a year of now, as ``time.time()`` gives, or an ISO time in a string). Every integer
+    stays, however large, and so does any other float, so a result that differs from the
+    missing file's in an ordinary number is never read as equal to it (#2638). An integer
+    clock, if one turns up, is registered by its key in ``FRESH``."""
     if isinstance(value, bool) or value is None:
         return value
+    if isinstance(value, float) and abs(value - time.time()) < CLOCK_S:
+        return "#"
     if isinstance(value, (int, float)):
-        return "#" if abs(value) >= 1e8 or value != int(value) else value
+        return value
     if isinstance(value, str):
         return _STAMP.sub("#", value)
     if isinstance(value, dict):

@@ -58,6 +58,10 @@ class Snapshot(unittest.TestCase):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         st = state_mod.state_for(loop)
         supervisor = mock.Mock()
+        # The mock's submit stands for the shadow row; a snapshot counts once it exists (#2634).
+        mock.patch.object(gate.shadows, "shadow_row_exists",
+                          side_effect=lambda *a, **k: supervisor.submit.called).start()
+        self.addCleanup(mock.patch.stopall)
         gate.shadows.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
         supervisor.submit.assert_called_once()
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})

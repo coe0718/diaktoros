@@ -34,9 +34,9 @@ class Ledger:
         self.sup._spawn = lambda: None
 
     def add(self, seat, state="pending", error=None, retries=0, retry_at=None, pr=7, head=HEAD,
-            created=None):
-        delivery = f"acme/widgets:{pr}:{head}:{seat}:{state}:{created}"
-        self.sup.enqueue(delivery, "acme/widgets", pr, head, seat)
+            created=None, turn_key=""):
+        delivery = f"acme/widgets:{pr}:{head}:{seat}:{state}:{created}:{turn_key}"
+        self.sup.enqueue(delivery, "acme/widgets", pr, head, seat, turn_key=turn_key)
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET state=?, error=?, retries=?, retry_at=?, created=? "
                         "WHERE delivery=?", (state, error, retries, retry_at,
@@ -128,6 +128,52 @@ class Ready(Ledger, tmc.KindsBase):
         self.assertEqual(state, merge_check.PENDING)
         self.assertIn("resumes 11:31", summary)
 
+    def test_a_turn_a_failed_claim_read_ended_says_how_to_re_arm_it(self):
+        # Review of #2613, F6: the reviews a spent rate limit failed on 2026-11-22 waited for no
+        # one; ready names the re-arm. Not for another failure, a turn that may have written, or
+        # an older failure under a newer turn.
+        read_failed = (f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}: "
+                       "PR unreadable (GitHub read failed)")
+        rearm = "re-arm: hermes dk retry --loop w --pr 7 --seat reviewer"
+        row = self.add("reviewer", "failed", read_failed)
+        self.assertIn(rearm, self.kinds(reviews=[])[-1][1])
+        with closing(sqlite3.connect(self.db)) as con, con:   # it may have written
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created)"
+                        " VALUES(?, 'confirmed', 'g', 1, 0)", (row["id"],))
+        said = " ".join(text for _, text in self.kinds(reviews=[]))
+        self.assertTrue(said.endswith("PR unreadable (GitHub read failed)"), said)  # nothing added
+        now = time.time()
+        for case, rows in (("another failure", [("failed", "turn exited with status 3", None)]),
+                           ("re-armed since", [("failed", read_failed, now - 100),
+                                               ("pending", None, now - 50)]),
+                           ("a newer turn", [("failed", read_failed, now - 100)])):
+            with self.subTest(case=case):
+                self.make_ledger()
+                for state, error, created in rows:
+                    self.add("reviewer", state, error, created=created)
+                if case == "a newer turn":     # another turn key at this head, queued since
+                    self.sup.submit("again", "acme/widgets", 7, HEAD, "reviewer",
+                                    turn_key="reconsider:1")
+                with mock.patch.object(run_supervisor, "production_ledger", return_value=self.db):
+                    said = " ".join(text for _, text in self.kinds(reviews=[]))
+                self.assertIn("reviewer turn", said)
+                self.assertNotIn("re-arm", said)
+                self.assertNotIn("; ", said.split("reviewer turn", 1)[1])
+
+    def test_the_re_arm_is_named_whatever_the_prs_history(self):
+        # Review of #2613, F10: the run listing holds 100 actionable runs; the current failed
+        # claim read, newer than 100 failed turns at other heads, still gets its re-arm.
+        now = time.time()
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
+                     created=now - 1000 + n)
+        self.add("reviewer", "failed", f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}"
+                 ": PR unreadable (GitHub read failed)", created=now)
+        listed = views.read_only_view(self.db, "acme/widgets", 7)
+        self.assertEqual((len(listed), listed[-1]["seat"]), (100, "reviewer"))
+        self.assertIn("re-arm: hermes dk retry --loop w --pr 7 --seat reviewer",
+                      " ".join(text for _, text in self.kinds(reviews=[])))
+
     def test_a_change_request_names_the_fixers_turn(self):
         self.add("fixer", "running")
         self.assertEqual(self.kind_of("changes requested at head aaaaaaa (1 of 3 verdicts) — "
@@ -164,6 +210,94 @@ class Ready(Ledger, tmc.KindsBase):
         self.add("reviewer", "failed", "a stale failure")
         self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
 
+
+class Explain(Ledger, unittest.TestCase):
+    """``explain``'s ledger lines: the current head's failed claim read is its blocker, with the
+    re-arm as its next step, whatever the PR's history (review of #2613, F10)."""
+
+    READ_FAILED = (f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}: "
+                   "PR unreadable (GitHub read failed)")
+
+    def setUp(self):
+        import json
+        import os
+        self.make_ledger()
+        home = self.db.parent
+        loops = home / "review-loops.d"
+        loops.mkdir()
+        (loops / "w.json").write_text(json.dumps({
+            "id": "w", "repo": "acme/widgets", "base": "main", "cap": 3, "fixers": ["dev"],
+            "reviewers": ["reviewer"], "reviewer_seat": "reviewer",
+            "seats": {"reviewer": {"profile": "r", "route": "review"},
+                      "fixer": {"profile": "f", "route": "fix"}},
+            "state_dir": str(home / "state"), "tokens": {}, "read_token": "reader",
+            "host": "http://127.0.0.1:9"}))
+        env = mock.patch.dict(os.environ, {"HERMES_HOME": str(home),
+                                           "DIAKTOROS_CONFIG_DIR": str(loops)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def explain(self):
+        import argparse
+        import contextlib
+        import io
+        from diaktoros import explain
+        from diaktoros.cli import operations
+        report = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
+                  "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
+                  "hooks": "h", "sweep": "w", "github": "g", "blockers": [],
+                  "next": {"action": "the report's own step"}, "head": HEAD}
+        out = io.StringIO()
+        with mock.patch.object(explain, "explain_facts", return_value={}), \
+             mock.patch.object(explain, "explain", return_value=report), \
+             mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(operations.cmd_explain(argparse.Namespace(loop="w", pr=7)), 0)
+        return out.getvalue()
+
+    def test_the_current_failed_claim_read_is_the_blocker_whatever_the_prs_history(self):
+        now = time.time()
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
+                     created=now - 1000 + n)
+        row = self.add("reviewer", "failed", self.READ_FAILED, created=now)
+        said = self.explain()
+        self.assertIn("blocked:    isolated reviewer turn failed at this head — retry limit", said)
+        self.assertIn("next:       no external write — re-arm: hermes dk retry --loop w --pr 7 "
+                      "--seat reviewer", said)
+        # A turn that may have written is final: it holds nothing and names no re-arm.
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created)"
+                        " VALUES(?, 'confirmed', 'g', 1, 0)", (row["id"],))
+        said = self.explain()
+        self.assertNotIn("isolated reviewer turn failed at this head", said)
+        self.assertIn("blocked:    nothing — no guard is holding this PR back", said)
+        self.assertIn("next:       the report's own step", said)
+        self.assertNotIn("--seat reviewer", said)
+
+    def test_the_current_failed_claim_read_is_the_blocker_whatever_comes_before_or_after(self):
+        # Review of #2613 rounds 2 and 3, F10 and F11: the current head's failed read is kept
+        # whatever the PR's history: 100 older and 100 newer turns at other heads, and 100 newer
+        # fixer turns at this same head. The base kept the oldest 100, the first fix the newest
+        # 100, and a capped read of this head its newest 100: each loses the reviewer's turn.
+        now = time.time()
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
+                     created=now - 1000 + n)
+        self.add("reviewer", "failed", self.READ_FAILED, created=now)
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n + 100:040x}",
+                     created=now + 1 + n)
+            self.add("fixer", "failed", "turn exited with status 3", created=now + 200 + n,
+                     turn_key=f"conflict:{n}")      # distinct turns at this head
+        with closing(sqlite3.connect(self.db)) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM runs WHERE head=?",
+                                         (HEAD,)).fetchone()[0], 101)
+        said = self.explain()
+        self.assertIn("blocked:    isolated reviewer turn failed at this head — retry limit", said)
+        self.assertIn("next:       no external write — re-arm: hermes dk retry --loop w --pr 7 "
+                      "--seat reviewer", said)
+        self.assertIn("--seat fixer", said)             # the fixer's own step, alongside
 
 class Refresh(Ledger, unittest.TestCase):
     """The worker refreshes the check when a PR turn launches and when it ends with news."""

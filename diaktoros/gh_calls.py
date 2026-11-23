@@ -42,6 +42,9 @@ OUTCOMES = ("spent", "free", "limited", "unsent", "error")
 
 _counts: Counter = Counter()   # (hour, login, method, shape, outcome) -> calls
 _limits: dict = {}             # login -> the newest rate-limit headers seen, with when
+_limited: list = []            # (when, login, reset) of each limited answer (#2608), this process
+_seen: dict = {}               # login -> its newest remaining and reset, this process (#2608)
+LIMITED_KEPT = 200             # the limited answers kept: a claim needs only its own few
 _pending = 0
 _name = ""
 _caller = ""                   # which program this process is (#2609); see ``caller``
@@ -114,19 +117,85 @@ def record(login: str, method: str, path: str, result: str, headers: dict | None
     """Count one call; never raises, and does nothing in a process that keeps no count."""
     global _pending
     try:
+        seen = {k: (headers or {}).get(f"x-ratelimit-{k}") for k in LIMIT_HEADERS}
+        _note_spent(login, seen, result)
         if not _writable():
             return
-        hour = int(time.time() // 3600 * 3600)
-        _counts[(hour, login, method, shape(path), result)] += 1
-        seen = {k: (headers or {}).get(f"x-ratelimit-{k}") for k in LIMIT_HEADERS}
         if seen["used"] is not None:
             _limits[login] = {**seen, "at": time.time()}
+        hour = int(time.time() // 3600 * 3600)
+        _counts[(hour, login, method, shape(path), result)] += 1
         _register()
         _pending += 1
         if _pending >= FLUSH_EVERY:
             flush()
     except Exception:  # noqa: BLE001 - a count must never fail a call
         return
+
+
+def _note_spent(login: str, seen: dict, result: str) -> None:
+    """Keep what ``limited_until`` reads, even where nothing is counted (a worker): each limited
+    answer, never erased by a later one, and the newest rate-limit headers, per login."""
+    now = time.time()
+    reset = _reset(seen.get("reset"))
+    if result == "limited" and reset is not None:
+        _limited.append((now, login, reset))
+        del _limited[:-LIMITED_KEPT]
+    if seen.get("remaining") is not None:
+        _seen[login] = {"remaining": str(seen["remaining"]), "reset": reset, "at": now}
+
+
+def limited_until(login: str, since: float, now: float | None = None) -> float | None:
+    """When ``login``'s spent rate limit resets (epoch seconds), or None when it isn't spent
+    (#2608). It is spent when either holds:
+
+    * this process counted a limited answer for ``login`` at or after ``since`` (a claim's start),
+      whatever later answers said: one read of a claim may be refused and the next answered;
+    * the newest rate-limit headers recorded for ``login`` say no calls are left and the reset is
+      still ahead: this process's own, or another process's count file written within the hour
+      (a new worker whose failed read carried no headers still sees the limit a sibling hit).
+
+    Another login's limit never counts: its quota is not the one this read spends."""
+    now = time.time() if now is None else now
+    resets = [reset for at, who, reset in _limited if who == login and at >= since and reset > now]
+    newest = _newest_seen(login, now)
+    if newest and newest["remaining"] == "0" and (newest["reset"] or 0) > now:
+        resets.append(newest["reset"])
+    return max(resets) if resets else None
+
+
+RESET_HORIZON_S = 86400         # GitHub's reset is within the hour: one past a day isn't real
+
+
+def _reset(value) -> float | None:
+    """A recorded reset as epoch seconds, or None when it is not one GitHub could send: missing,
+    not a number, or more than ``RESET_HORIZON_S`` ahead (which includes the infinite and the
+    unrepresentable; one in the past is never waited for). Headers are recorded raw, and a malformed one is no
+    evidence of a limit, nor a time to format (#2613 review, F12)."""
+    try:
+        reset = float(value)
+    except (TypeError, ValueError):
+        return None
+    return reset if reset <= time.time() + RESET_HORIZON_S else None
+
+
+def _newest_seen(login: str, now: float) -> dict | None:
+    """The newest headers recorded for ``login``: this process's, or any count file's that was
+    written within the hour. Unreadable files are skipped."""
+    found = [dict(_seen[login])] if login in _seen else []
+    try:
+        files = [f for f in directory().glob("*.json") if f.stat().st_mtime >= now - 3600]
+    except OSError:
+        files = []
+    for file in files:
+        try:
+            seen = (json.loads(file.read_text()).get("limits") or {}).get(login)
+            if isinstance(seen, dict) and seen.get("remaining") is not None:
+                found.append({"remaining": str(seen["remaining"]), "reset": _reset(seen.get("reset")),
+                              "at": float(seen.get("at") or 0)})
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return max(found, key=lambda seen: seen["at"]) if found else None
 
 
 def set_caller(name: str) -> None:

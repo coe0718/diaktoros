@@ -1185,6 +1185,37 @@ class OnboardingRecordTests(SelftestBase):
         self.assertEqual(stop, 1, out.getvalue())
         self.assertIn("setup stopped before arming", out.getvalue())
 
+    def test_a_failed_host_check_of_step_6_keeps_the_loop_stage_from_passed(self):
+        # #1718: setup skips `selftest --no-model` while identities, loop and model are
+        # current, so a FAIL in the watchdog's cron job, its shim, the state directory or the
+        # observer route must keep the loop stage from `passed`, or the next setup exits 0.
+        for name in ("cron:job", "cron:shim", "state_dir", "observer"):
+            with self.subTest(name=name):
+                def broken(report, loop, *args, failing=name, **kwargs):
+                    report.add("ledger", "ledger", selftest.PASS, "ok", "")
+                    report.add("ledger", failing, selftest.FAIL, "broken", "")
+                with mock.patch.object(selftest, "check_ledger", side_effect=broken):
+                    rc, text = self.run_selftest(model=False)
+                self.assertEqual(rc, 1, text)
+                entry = self.stored()["loop"]
+                self.assertEqual(entry["status"], "failed", entry)
+                self.assertEqual(entry["checks"][name], "fail")
+
+    def test_a_failed_seat_check_under_no_model_keeps_the_model_stage_from_skipped(self):
+        # #2588 F2: --no-model asks for model `skipped`, but check_seats still runs; a seat that
+        # failed to resolve only during that check (a transient error) must store model failed.
+        from diaktoros import selftest_inference
+
+        def broken(report, loop, settings, resolver=None):
+            report.add("runtime", "seat:fixer", selftest.FAIL, "transient", "")
+            return {}
+        with mock.patch.object(selftest_inference, "check_seats", side_effect=broken):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        entry = self.stored()["model"]
+        self.assertEqual(entry["status"], "failed", entry)
+        self.assertEqual(entry["checks"]["seat:fixer"], "fail")
+
     def test_a_failed_hook_signature_keeps_the_loop_stage_from_passed(self):
         # #1714 review F2: the recheck a changed host triggers fails on the hook signature; the
         # next setup must not read the loop stage as covered.

@@ -10,7 +10,9 @@ value, in a function that never rebinds the name. A guard handed on (``callee(na
 counts only as such a statement of its own, and only when every function of that name bounds it
 before any ``return``. Anything else (a guard under a condition, a loop or a swallowing ``try``,
 after the write, or past an early return) bounds nothing, so the value is followed to its callers
-instead, and fails if it cannot be.
+instead, and fails if it cannot be. It catches drift in ordinary code, not code written to evade
+it; ``broker.audit_vocabulary`` refuses a foreign value at run time (threat model in
+``_audit_args``, #2637).
 """
 from __future__ import annotations
 

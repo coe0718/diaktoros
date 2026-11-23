@@ -613,6 +613,63 @@ class Setup(unittest.TestCase):
         self.assertIn("starting at the loop stage (failed)", out)
         self.assertNotIn("skipped doctor", out)
 
+    def test_a_failed_watchdog_check_is_rerun_by_the_next_setup(self):
+        # #1718: a selftest --no-model that failed only on a step-6 host check (here the
+        # watchdog's cron job) records the loop stage failed, so setup runs step 4 again.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        checks = [(name, "pass") for name in onboarding.required_checks("loop", loop)]
+        onboarding.record(loop, "loop", "passed", "hermes dk selftest", "loop",
+                          checks=checks + [("cron:job", "fail")],
+                          runtime_file=self.runtime_file)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (failed)", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_loop_entry_from_before_the_wider_scope_is_rerun_by_the_next_setup(self):
+        # #2588 F1: a loop entry an older diaktoros wrote (no rules hash; a cron:job FAIL then
+        # was dropped and the stage read passed) must not let setup skip step 4 after upgrade.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        data = json.loads(onboarding.path(loop).read_text())
+        data["stages"]["loop"].pop("rules", None)
+        onboarding.path(loop).write_text(json.dumps(data))
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (stale: loop was recorded under other rules", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_loop_entry_judged_under_a_different_rules_hash_is_rerun_by_setup(self):
+        # #2588 F3: an entry that carries a rules hash, but not this version's (its stage's
+        # rules changed since it was written), must not let setup skip step 4 either.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        data = json.loads(onboarding.path(loop).read_text())
+        self.assertEqual(data["stages"]["loop"]["rules"], onboarding.rules("loop"))
+        data["stages"]["loop"]["rules"] = onboarding._digest(["older", "rules"])
+        onboarding.path(loop).write_text(json.dumps(data))
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (stale: loop was recorded under other rules", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_failed_seat_check_of_no_model_is_rerun_by_the_next_setup(self):
+        # #2588 F2: selftest --no-model asks for model skipped; a seat:* FAIL in that run must
+        # not leave a skipped model that setup reads as covering step 4.
+        from diaktoros import onboarding
+        loop = self.installed()
+        self.record_checks(loop)
+        onboarding.record(loop, "model", "skipped", "hermes dk selftest --no-model", "model",
+                          checks=[("seat:fixer", "fail")], runtime_file=self.runtime_file)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the model stage (failed)", out)
+        self.assertNotIn("skipped doctor", out)
+
     def test_an_armed_record_skips_arm_even_with_arm_and_a_changed_hook_state_runs_it(self):
         loop = self.installed()
         self.record_checks(loop)
@@ -700,8 +757,35 @@ class Setup(unittest.TestCase):
         self.assertEqual((self.ran, self.hermes.jobs), ([], jobs))
         # It stops before steps 4 to 6: no summary is printed and the record is not even read.
         self.assertNotIn("onboarding for", out)
-        with patch("diaktoros.onboarding.inspect", side_effect=AssertionError("record read")):
+        self.assert_a_dry_run_reads_no_record()
+
+    def assert_a_dry_run_reads_no_record(self):
+        """Run ``setup --dry-run --arm`` and fail if it read the onboarding record. Every read
+        goes through handlers that catch Exception (``_resume_rows``, ``_print_onboarding``),
+        so a raising stub would be swallowed (#1719): count the calls instead."""
+        from diaktoros import onboarding
+        with patch.object(onboarding, "inspect", wraps=onboarding.inspect) as inspect:
             self.assertEqual(self.setup_cli(*self.flags("--dry-run", "--arm"))[0], 0)
+        self.assertEqual(inspect.call_args_list, [], "a --dry-run read the onboarding record")
+
+    def test_the_dry_run_record_guard_catches_a_read_before_the_dry_run_exit(self):
+        # #2590 review F1: inject the read #1719 describes (``_resume_rows`` ahead of the
+        # dry-run return in ``_setup_watchdog``) and prove the guard fails on it. The old
+        # guard (``inspect`` raising AssertionError) passed here: the handler swallowed it.
+        from diaktoros.cli import setup_command
+        loop = self.installed()
+        self.record_checks(loop)
+        self.record(loop, "armed")
+        original = setup_command._setup_watchdog
+
+        def read_first(args, loop_id, interactive):
+            setup_command._resume_rows(config.load_id(loop_id))
+            return original(args, loop_id, interactive)
+
+        with patch.object(setup_command, "_setup_watchdog", read_first):
+            with self.assertRaisesRegex(self.failureException, "read the onboarding record"):
+                self.assert_a_dry_run_reads_no_record()
+        self.assert_a_dry_run_reads_no_record()     # without the injected read it passes
 
     def test_resuming_leaves_unattended_fixer_push_as_it_was(self):
         loop = self.installed()

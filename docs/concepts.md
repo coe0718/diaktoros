@@ -180,9 +180,16 @@ not one. Each requirement is marked:
 - `not met` — a blocking finding (number it `F<n>`) and therefore REQUEST_CHANGES;
 - `deferred to #N`, where `#N` is an existing issue other than the ones this PR closes.
 
+Write each requirement as a Markdown list item. Evidence can go in nested items, fenced or
+indented code, or code spans. Raw HTML (a tag, a CDATA section, a declaration, a processing
+instruction or an HTML block outside code) is not read, so an APPROVE that contains any is refused
+(#2636). In other verdicts nothing from the first raw HTML on is read, since an element left open
+runs on into later lines: no status after it counts. An HTML comment is hidden text and is fine.
+
 The broker refuses a review with no Requirements section, one with no status at all, a deferral
-to a missing issue or to one of the issues the PR closes, and an APPROVE containing `not met`. A
-PR that closes no issue is unaffected.
+to a missing issue or to one of the issues the PR closes, an APPROVE containing `not met`, an
+APPROVE with an unmarked top-level item, and an APPROVE whose section holds raw HTML. A PR that
+closes no issue is unaffected.
 
 ### Verdict budget, not a timer
 

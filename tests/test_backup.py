@@ -1057,6 +1057,8 @@ class LockInventory(unittest.TestCase):
             "registered: LOCK = register_lock(INTENT_FILE + '.lock')",
         ("diaktoros.observer", "lock_path", 'path.name + ".lock"'):
             "registered: register_lock(lock_path(OBSERVATIONS_FILE).name)",
+        ("diaktoros.state.ledger", "claim_lock", 'path.name + ".claims.lock"'):
+            "a test ledger's claim lock; both real ledgers' are registered in CLAIMS_LOCKS",
     }
 
     # The package and the scripts that drive it (#1740: ``scripts/watchdog.py`` keeps a lock in

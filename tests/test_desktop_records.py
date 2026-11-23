@@ -160,8 +160,8 @@ class Records(unittest.TestCase):
             with self.subTest(role=role):
                 broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', role, 'push', 'x')
                 self.assertEqual(self.view()['broker']['items'][0]['role'], role)
-        broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', '/home/private', 'push', 'x')
-        self.assertEqual(self.view()['broker']['items'][0]['role'], 'unknown')
+        with self.assertRaises(broker.BrokerDenied):     # #2637: refused at the writer
+            broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', '/home/private', 'push', 'x')
 
     def test_jsonl_tail_discards_only_incomplete_prefix_and_bounds_io(self):
         self.audit()
