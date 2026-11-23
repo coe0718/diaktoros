@@ -4,6 +4,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import pathlib
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -117,6 +118,39 @@ class ObserverResendTests(unittest.TestCase):
                          ("failed", True))
         with patch.object(routes, "fire", return_value=True):
             self.assertTrue(observer.resend(self.loop, self.state, key))
+
+    def test_a_late_manual_sender_writes_nothing_on_the_sweeps_claim(self):
+        # #2611 review F1: stale is not dead. A capped manual resend paused before its mark, its
+        # claim taken over by the sweep, resumes during the sweep's POST: it must not POST too,
+        # nor record its own outcome on the sweep's claim.
+        key = self.failed_notice()
+        data = observer._read(self.state.observations)
+        data["entries"][key]["attempts"] = observer.MAX_ATTEMPTS
+        observer._save(self.state.observations, data)
+        self.fix_route()
+        real, paused, go = observer._mark_posting, threading.Event(), threading.Event()
+        late = threading.Thread(target=observer.resend, args=(self.loop, self.state, key))
+
+        def mark(*args):
+            if threading.current_thread() is late and not go.is_set():
+                paused.set()
+                go.wait(10)
+            return real(*args)
+
+        def post(*_args, **_kwargs):
+            if threading.current_thread() is not late and not go.is_set():
+                go.set()                                  # the late sender resumes mid-POST
+                late.join(10)
+            return True
+        with patch.object(observer, "_mark_posting", side_effect=mark), \
+                patch.object(routes, "fire", side_effect=post) as fire:
+            late.start()
+            self.assertTrue(paused.wait(10))
+            self.age(key)
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+        self.assertFalse(late.is_alive())
+        self.assertEqual(fire.call_count, 1)                  # the sweep's POST, not a second
+        self.assertEqual(self.entries()[key]["status"], "delivered")
 
     def digest_failed_to_the_cap(self):
         """Two queued notices whose digest fails before its POST on every allowed attempt."""

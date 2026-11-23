@@ -156,10 +156,14 @@ the claim's `posting_marked` field, which every current sender writes with the c
 claim left by a sender from before #1314 has neither field, whether or not its POST ran, so after an
 upgrade it becomes `uncertain` like any claim that reached its POST, never resent (#1319). Each
 resend's claim drops the earlier attempt's `posting_at`, so a sweep killed before its own resend's
-POST leaves a claim the next sweep still resends (#1968). So does a manual resend (a maintainer's
+POST leaves a claim the sweep still resends (#1968). So does a manual resend (a maintainer's
 re-request) of a notice the sweep gave up on, past the three attempts: killed before its POST,
-the next sweep resends it once; if that resend is killed before its POST too, the notice stays
-`failed` (retryable) for another manual resend (#2611). A digest
+it is resent once; if that resend is killed before its POST too, the notice stays `failed`
+(retryable) for another manual resend (#2611). Either way the resend comes from the first
+watchdog sweep after the claim is stale (15 minutes old): a sweep sooner leaves it `pending`, and
+with no watchdog running, nothing resends it (#2633). Each claim carries its own id, which its
+sender's posting mark and receipt must match, so a sender that was only slow, not dead, finds its
+claim taken over and neither POSTs nor records an outcome on the new one. A digest
 claim that stopped, or failed, before its POST on its last attempt is not resent: it and its batch
 members become `uncertain`, so `settle` can resend it once or record it (#1320, #1970). A timeout,
 5xx or other unconfirmed POST may have sent the message and is quarantined rather than
