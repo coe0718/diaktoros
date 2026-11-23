@@ -376,6 +376,8 @@ class LaunchStamp(Base):
     def test_the_real_launch_stamps_its_marker_and_a_lost_cancel_hands_it_back(self):
         import subprocess
         from diaktoros.run_supervisor import claims
+        # A shadow escalation's ruling launches only with the review it answers (#1145).
+        self.shadow("REQUEST_CHANGES", at=time.time() - 100)
         launch, row = self.claim()
         self.assertIsNotNone(launch)
         marker = self.st.breach_get(7)
