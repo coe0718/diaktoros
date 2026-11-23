@@ -15,7 +15,10 @@ ends the item and the block with it; or to the end. An HTML comment (``<!--`` op
 most three columns past that same column) is blanked the same way, through the line holding
 ``-->``, or to a line that dedents out of its list item, as a fence does (tenth and eleventh
 reviews: a commented-out draft item read as an unmarked requirement; a comment left open in an
-item blanked the top-level items after it).
+item blanked the top-level items after it). A comment inside a line is hidden too: ``visible``
+drops it from the line, and one it leaves open hides the lines after it up to its ``-->``, or to
+the next blank line, item, fence or comment line (twelfth review: ``- x <!-- met -->`` read as
+marked ``met``). One that never closes shows as text, so its words are dropped, never counted.
 """
 from __future__ import annotations
 
@@ -50,11 +53,26 @@ def code_line(found, at: int, cols: list[int]) -> bool:
     return bool(found) and at - max((c for c in cols if c <= at), default=0) >= 4
 
 
+def visible(line: str, hidden: bool) -> tuple[str, bool]:
+    """``line`` without the inline HTML comments in it, and whether one is still open at its end;
+    ``hidden``: one was open at its start (twelfth review on #2573)."""
+    out, at = "", 0
+    while True:
+        start = 0 if hidden else line.find("<!--", at)
+        if start < 0:
+            return out + line[at:], False
+        out += line[at:start]
+        end = line.find("-->", start + (0 if hidden else 2))
+        if end < 0:
+            return out, True
+        at, hidden = end + 3, False
+
+
 def unfenced(lines: list[str]) -> list[str]:
     """``lines`` with each fenced code block (its fences too) and HTML comment blanked: code or
     hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
     evidence read as unmarked items)."""
-    out, fence, cols, blank, comment = [], None, [], False, None
+    out, fence, cols, blank, comment, hidden = [], None, [], False, None, False
     for line in lines:
         at, ended = indent(line), False
         if comment is not None and line.strip() and at < comment:
@@ -76,13 +94,14 @@ def unfenced(lines: list[str]) -> list[str]:
                 continue
         if not line.strip():
             out.append(line)
-            blank = True
+            blank, hidden = True, False
             continue
         item, found, opener = ITEM.match(line), FENCE.match(line), COMMENT.match(line)
         item = None if code_line(item, at, cols) else item
         if item or found or opener or blank or ended:   # neither is a lazy continuation
             while cols and at < cols[-1]:
                 cols.pop()
+        hidden = hidden and not (item or found or opener or ended)   # a new block: shown
         blank, col = False, cols[-1] if cols else 0
         if opener and at - col <= 3:
             comment = None if "-->" in opener.group(1) else col
@@ -94,5 +113,6 @@ def unfenced(lines: list[str]) -> list[str]:
             continue
         if item:
             cols.append(item_col(item))
-        out.append(line)
+        text, hidden = visible(line, hidden)
+        out.append(text)
     return out

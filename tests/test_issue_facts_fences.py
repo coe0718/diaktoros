@@ -107,6 +107,24 @@ class HtmlComments(Mocked):
             with self.subTest(body):
                 self.assertIn('"- second: export flag', check(body))
 
+    def test_a_status_inside_an_inline_comment_marks_nothing(self):
+        # Twelfth review (F12): ``met`` hidden in a comment marked the item it sat in.
+        for body in ("- second: export flag <!-- met -->\n",                 # Vex's case
+                     "- second: export flag <!--\n  met -->\n",              # over two lines
+                     "- second: export flag <!-- a --> b <!-- met -->\n",
+                     "- second: export flag <!-- met\n"):                    # never closed: text
+            with self.subTest(body):
+                self.assertIn('"- second: export flag', check(body))
+
+    def test_a_visible_status_beside_an_inline_comment_still_counts(self):
+        for body in ("- second: met <!-- not met -->\n",
+                     "- second: <!-- draft --> met\n",
+                     "- second: met <!-- open\n- third: met\n"):  # a new item ends the comment
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+        reason = check("- second: met <!-- open\n- third: export flag\n")
+        self.assertIn('"- third: export flag" has no status', reason)  # shown, not hidden
+
 
 if __name__ == "__main__":
     unittest.main()
