@@ -20,7 +20,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import doctor, fix_reply, gh, pr_hold, stats_public, triage_sweep  # noqa: E402
+from diaktoros import (doctor, fix_reply, gh, pr_hold, stats_public, triage_resume,  # noqa: E402
+                       triage_sweep)
 from diaktoros.doctor import cron_checks  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 
@@ -52,6 +53,12 @@ GUARDED = {
     "diaktoros/triage_sweep.py::candidates": (
         "an issue with an unreadable creation time cannot be placed in the grace-to-horizon "
         "window and is skipped, as one past the horizon is", "test_late_triage"),
+    "diaktoros/triage_resume.py::boundary": (
+        "an item with an unreadable creation time is never the boundary kept", "test_resume"),
+    "diaktoros/triage_resume.py::reaches_back": (
+        "an unreadable kept or first time proves nothing: the sweep starts over", "test_resume"),
+    "diaktoros/triage_resume.py::ends": ("an unreadable `since` is no floor: only a short page "
+                                         "ends the listing", "test_resume"),
     "scripts/watchdog.py::_observe_heads": (
         "a first-seen PR with an unreadable created_at is not new (no observed_at): it is "
         "treated as preexisting, never as just opened", "an eligibility mark, not a stall"),
@@ -165,6 +172,24 @@ class EveryEpochCaller(unittest.TestCase):
                 self.assertEqual(triage_sweep.candidates(loop, [issue], set(), now), [], bad)
             issue = {"number": 5, "created_at": old_enough, "labels": []}
             self.assertEqual(triage_sweep.candidates(loop, [issue], set(), now), [5])
+
+    def test_resume(self):
+        old = "2020-01-01T00:00:00Z"
+        for bad in BAD:
+            with self.subTest(bad=bad):
+                good, unread = {"number": 4, "created_at": STAMP}, {"number": 5, "created_at": bad}
+                self.assertEqual(triage_resume.boundary([good, unread]),
+                                 {"last": 4, "after": STAMP})
+                self.assertEqual(triage_resume.boundary([unread]), {})
+                kept = {"last": 4, "after": STAMP}
+                self.assertFalse(triage_resume.reaches_back({**kept, "after": bad}, [good]))
+                self.assertFalse(triage_resume.reaches_back(kept, [unread]))
+                self.assertTrue(triage_resume.reaches_back(kept, [unread, good]))  # it is there
+                full = [{"number": n, "created_at": old} for n in range(gh.REVIEW_PAGE_SIZE)]
+                self.assertFalse(triage_resume.ends(full, bad or ""))
+        newer = {"number": 6, "created_at": "2026-09-21T15:13:20Z"}
+        self.assertTrue(triage_resume.reaches_back({"last": 4, "after": STAMP}, [newer]))
+        self.assertTrue(triage_resume.ends(full, STAMP))           # control: a readable floor
 
     def test_closed_listing_reads_an_unreadable_time_as_unknown(self):
         # Fixed with this test: closed_listing read a closed PR's null merged_at as epoch 0.0,
