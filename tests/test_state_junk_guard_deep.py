@@ -14,7 +14,9 @@ F8 (round 7): junk in a file read only when ANOTHER file holds a valid value is 
 every all-junk call replaces that value with junk: each file is also fuzzed alone, beside clean
 companions (Vex's probe: ``arm_probe`` writes the trigger, ``read_probe`` then reads the target).
 And (round 8) whichever valid value the companion must hold: two writers' conflicting values
-(``aa_off`` writes ``ready: false``, ``bb_on`` ``ready: true``) are each laid beside the target.
+(``aa_off`` writes ``ready: false``, ``bb_on`` ``ready: true``) are each laid beside the target,
+and (round 9) two companions' values together (``ff_read`` opens its target only when both of
+``dd_off``'s files hold ``ee_on``'s values), or the walk fails closed past the cap.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -29,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import state  # noqa: E402
 import _state_walk as walk  # noqa: E402
+import _state_walk_seeds as seeds  # noqa: E402
 
 PROBES = '''
 import json
@@ -86,6 +89,21 @@ class ProbeMixin:
         if not (isinstance(trigger, dict) and trigger.get("ready") is True):
             return {}
         path = self.dir / ("conflict-" + "target" + ".json")
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
+    def dd_off(self) -> None:                                 # first: both folded samples'
+        for name in ("pair-a.json", "pair-b.json"):
+            self._save(self.dir / name, {"ready": False})
+
+    def ee_on(self) -> None:
+        for name in ("pair-a.json", "pair-b.json"):
+            self._save(self.dir / name, {"ready": True})
+
+    def ff_read(self) -> dict:
+        ready = [self._load(self.dir / name, {}) for name in ("pair-a.json", "pair-b.json")]
+        if not all(isinstance(r, dict) and r.get("ready") is True for r in ready):
+            return {}
+        path = self.dir / ("pair-" + "target" + ".json")
         return {**json.loads(path.read_text())} if path.exists() else {}
 
     def merge_entry(self, number: int) -> None:               # keeps a junk entry whole
@@ -168,6 +186,18 @@ class TheWalkCatchesDeeper(unittest.TestCase):
         failures = self.walk.run(["cc_read"])
         beside = of(failures, "cc_read", "in conflict-target.json]: raised TypeError")
         self.assertEqual(len(beside), BESIDE, failures)
+
+    def test_junk_read_only_beside_two_companions_values_together_fails_the_walk(self):
+        self.assertIn("pair-target.json", self.walk.discover())     # both of ee_on's, at once
+        failures = self.walk.run(["ff_read"])
+        beside = of(failures, "ff_read", "in pair-target.json]: raised TypeError")
+        self.assertEqual(len(beside), BESIDE, failures)
+
+    def test_too_many_companion_combinations_fail_closed(self):
+        with mock.patch.object(seeds, "COMBINATIONS", 1):
+            failures = self.walk.run(["ff_read"])
+        self.assertTrue(any(f.startswith("ff_read beside pair-target.json: more than 1 "
+                                         "combinations") for f in failures), failures)
 
     def test_a_reader_returning_the_stored_object_fails_the_walk(self):
         # Vex's stub: fix_handoff returns fix-asks.json itself when it is an object. Right on a

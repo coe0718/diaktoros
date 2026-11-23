@@ -9,11 +9,11 @@ no new name turns up, on a dir where every file found holds what the methods wro
 file read only on a branch another file's data opens is found too. ``observations.json`` and
 ``kv.json`` (the key-value API's path) are always in it. Each junk shape is planted in all of
 them at once, and then (#2589 F8) in each file a method touched alone, beside clean companions:
-every other file it touched holding what the methods wrote there, folded, and then one at a time
-each other value a method wrote there whole (``tests/_state_walk_seeds.py``), so a file read only
-when another holds one valid value is reached with junk too, whichever value that is. A file a call touches on junk that was
-not planted (a branch only junk opens) is planted on a further pass, and one still unplanted
-after ``ROUNDS`` passes fails the walk.
+the other files it touched, in each combination of their folded samples and every whole value a
+method wrote there (``tests/_state_walk_seeds.py``, failing closed past a cap), so a file read
+only when others hold particular valid values together is reached with junk too. A file a call
+touches on junk that was not planted (a branch only junk opens) is planted on a further pass,
+and one still unplanted after ``ROUNDS`` passes fails the walk.
 
 **What is checked** for each call on junk (``Walk.check``): it does not raise (except a
 ``RAISES`` entry's own exception); its result conforms to the method's declared return type (its
@@ -39,7 +39,7 @@ from diaktoros import state
 from _state_walk_cases import (  # noqa: F401 - re-exported for the tests
     ANY_SHAPE, ARGS, EMPTY, FLAT, HEAD, HINTS, JUNK_STRINGS, KEEPS, KEY, LIST, LOCK, METHOD_ARGS,
     NEVER, RAISES, SCALARS, SHAPES, SKIP, new_loop)
-from _state_walk_seeds import alternative, variants
+from _state_walk_seeds import alternative, seeds
 from _state_walk_oracle import (  # noqa: F401 - re-exported for the tests
     conforms, healing, kind, plain, returns, strings)
 from _state_walk_trace import (  # noqa: F401 - re-exported for the tests
@@ -55,7 +55,7 @@ class Walk:
     def __init__(self, cls, root: Path):
         self.cls, self.root, self.made = cls, root, 0
         self.clean, self.wrote, self.samples, self.strays, self.files = {}, {}, {}, set(), None
-        self.touched, self.bases, self.alts = {}, {}, {}
+        self.touched, self.bases, self.alts, self.uncovered = {}, {}, {}, set()
 
     def methods(self, only=None) -> list[str]:
         return [n for n in public_methods(self.cls)
@@ -136,7 +136,7 @@ class Walk:
             again, grown = set(), set()
             for name in sorted(todo):
                 seed = {f: self.samples[f] for f in sorted(touched[name] & set(self.samples))}
-                for one in variants(seed, self.alts):
+                for one in seeds(seed, self.alts, self.uncovered, f"{name} (discovery)"):
                     _, seen, written = self.trace(name, one)
                     if seen - touched[name]:
                         touched[name] |= seen
@@ -151,14 +151,13 @@ class Walk:
         return self.files
 
     def base(self, name: str, file: str) -> list:
-        """Each ``(companions, outcome, writes)`` for junk in ``file`` alone: every other file
-        ``name`` touched that holds a valid sample, folded and then each alternative in turn
-        (``variants``), and the call on those alone (none when no other file holds one, so the
-        all-junk pass already covers it)."""
+        """Each ``(companions, outcome, writes)`` for junk in ``file`` alone: every combination
+        (``seeds``) of the valid values of the other files ``name`` touched, and the call on
+        those alone (none when no other file holds one: the all-junk pass covers it)."""
         seed = {f: self.samples[f] for f in sorted(self.touched.get(name, set()) - {file})
                 if f in self.samples}
         bases = []
-        for companions in variants(seed, self.alts):
+        for companions in seeds(seed, self.alts, self.uncovered, f"{name} beside {file}"):
             if (key := (name, file, repr(companions))) not in self.bases:
                 outcome, _, written = self.trace(name, companions)
                 self.bases[key] = companions, outcome, {(name, f): v for f, v in written.items()}
@@ -214,6 +213,7 @@ class Walk:
         branch only junk opens) is planted on a further pass; one still unplanted after
         ``ROUNDS`` passes is a failure (closed, never a silent pass)."""
         known, files, self.strays = self.files, set(self.discover()), set()
+        self.uncovered = {u for u in self.uncovered if "(discovery)" in u}   # this run's own
         if known is not None:            # again, so a method patched since discovery is its own
             for name in self.methods(only):
                 files |= (seen := self.clean_call(name))
@@ -231,6 +231,7 @@ class Walk:
                         problems, seen = self.check(name, shape, [file], base)
                         strays |= seen - files
                         failures += [f"{name}[{shape!r:.30} in {file}]: {p}" for p in problems]
+            failures += sorted(u for u in self.uncovered if u.split()[0] in self.methods(only))
             if not strays:
                 return failures
             self.strays |= strays
