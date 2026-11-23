@@ -9,7 +9,7 @@ _ATTR = r"""(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?
 # In shown HTML: a comment's start or end, or a tag (its attributes are not shown text).
 TAG = re.compile(rf"<!--|-->|<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>")
 LIST = re.compile(r"</?[uo]l\b", re.I)                 # an HTML list's tag
-OPEN = re.compile(rf"<[A-Za-z][A-Za-z0-9-]*{_ATTR}*(?:\s+[\w:.-]+\s*=\s*(?:'[^']*|\"[^\"]*))?\s*$")
+OPEN = re.compile(rf"<[A-Za-z][A-Za-z0-9-]*{_ATTR}*(?:\s+[\w:.-]+\s*=\s*(?:'[^']*|\"[^\"]*)?)?\s*$")
 
 
 def shown(line: str, top: bool, state: list, literal) -> list[str]:
@@ -20,7 +20,8 @@ def shown(line: str, top: bool, state: list, literal) -> list[str]:
     rest goes through ``literal`` (``md_fences.literal``). ``state`` is the block's ``[HTML list
     depth, an item still waiting for its text, inside a comment, a tag left open by the line
     before]`` (nineteenth review; twenty-second: a tag split across lines is read whole, so its
-    attributes never part an item from its text)."""
+    attributes never part an item from its text, wherever the split falls: after its name, in an
+    attribute's value, or between an attribute's ``=`` and its value, round 23)."""
     line, state[3] = state[3] + line, ""
     segs, text, waiting, at = [], [], state[1], 0
     for tag in TAG.finditer(line):
