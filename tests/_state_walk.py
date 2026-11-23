@@ -56,6 +56,7 @@ class Walk:
         self.cls, self.root, self.made = cls, root, 0
         self.clean, self.wrote, self.samples, self.strays, self.files = {}, {}, {}, set(), None
         self.touched, self.bases, self.alts, self.uncovered = {}, {}, {}, set()
+        self.firsts = {}
 
     def methods(self, only=None) -> list[str]:
         return [n for n in public_methods(self.cls)
@@ -95,9 +96,9 @@ class Walk:
                 written[file] = _MISSING
         return outcome, seen, written
 
-    def sample(self, file: str, value) -> bool:
-        """Fold a value a call wrote into ``file``'s sample and alternatives (``fold``)."""
-        return fold(self.samples, self.alts, file, value)
+    def sample(self, file: str, value, name: str) -> bool:
+        """Fold a value a call of ``name`` wrote into ``file``'s sample and alternatives."""
+        return fold(self.samples, self.alts, file, value, name, self.firsts)
 
     def clean_call(self, name: str) -> set[str]:
         """Call ``name`` on an empty dir: record its result and writes; the names it touched."""
@@ -106,7 +107,7 @@ class Walk:
         for file, value in written.items():
             self.wrote[(name, file)] = value
             if value is not _MISSING:
-                self.sample(file, value)
+                self.sample(file, value, name)
         return seen
 
     def discover(self) -> list[str]:
@@ -129,7 +130,7 @@ class Walk:
                         touched[name] |= seen
                         again.add(name)
                     grown |= {f for f, value in written.items()
-                              if value is not _MISSING and self.sample(f, value)}
+                              if value is not _MISSING and self.sample(f, value, name)}
             todo = again | {name for name, seen in touched.items() if seen & grown}
             if not todo:
                 break

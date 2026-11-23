@@ -6,6 +6,10 @@ A writer that writes its value only once another file holds data (``gz_on``: the
 traced, and leaves the folded sample as it was (``ga_off``'s ``ready: false`` came first). The
 reader is traced again with it, so the target it opens is found and fuzzed. A method whose state
 never stops changing (``hh_grow``) fails the walk rather than ending discovery half done.
+
+Round 11: two writers' counts (``ia_two``'s ``count: 2``, ``ib_three``'s ``count: 3``) are two
+alternatives, so a reader that opens a file only on one of them (``ic_read``) reaches it; a
+writer that adds one each call (``id_bump``) still lets discovery settle.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -43,6 +47,24 @@ class LateMixin:
         if isinstance(enable, dict) and enable.get("on") is True:
             self._save(self.dir / "late-trigger.json", {"ready": True})
 
+    def ia_two(self) -> None:
+        self._save(self.dir / "late-count.json", {"count": 2})
+
+    def ib_three(self) -> None:
+        self._save(self.dir / "late-count.json", {"count": 3})
+
+    def ic_read(self) -> dict:
+        count = self._load(self.dir / "late-count.json", {})
+        if not (isinstance(count, dict) and count.get("count") == 3):
+            return {}
+        path = self.dir / ("late-" + "counted" + ".json")     # spelled nowhere whole
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
+    def id_bump(self) -> None:                                # adds one each call
+        data = self._load(self.dir / "late-tally.json", {})
+        seen = data.get("count") if isinstance(data, dict) else 0
+        self._save(self.dir / "late-tally.json", {"count": (seen if type(seen) is int else 0) + 1})
+
     def hh_grow(self) -> None:                                # never the same twice
         data = self._load(self.dir / "late-grow.json", [])
         self._save(self.dir / "late-grow.json", [*(data if isinstance(data, list) else []), "x"])
@@ -72,6 +94,15 @@ class TheWalkCatchesLateValues(unittest.TestCase):
         failures = self.walk.run(["gb_read"])
         beside = [f for f in failures if "in late-target.json]: raised TypeError" in f]
         self.assertEqual(len(beside), BESIDE, failures)
+
+    def test_two_writers_counts_are_both_laid_beside_a_reader(self):
+        self.assertIn("late-counted.json", self.walk.discover())
+        failures = self.walk.run(["ic_read"])
+        beside = [f for f in failures if "in late-counted.json]: raised TypeError" in f]
+        self.assertEqual(len(beside), BESIDE, failures)
+
+    def test_one_writers_growing_count_still_settles(self):
+        self.assertNotIn("id_bump (discovery)", " ".join(self.walk.uncovered))
 
     def test_state_that_never_settles_fails_closed(self):
         failures = self.walk.run(["hh_grow"])

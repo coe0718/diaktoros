@@ -13,14 +13,21 @@ COMBINATIONS = 256      # most companion combinations tried for one call before 
 _NONE = object()
 
 
-def fold(samples: dict, alts: dict, file: str, value) -> bool:
-    """Fold ``value``, one a call wrote into ``file``, into the file's valid sample, and keep it
-    whole among its alternatives: each distinct value, never folded into another, so two
-    writers' conflicting values (``{"ready": false}``, ``{"ready": true}``) are both kept.
-    Whether either gained something, so discovery calls again each method that touches the file
-    (round 10: a new whole value that leaves the folded sample as it was counts too)."""
-    have, kept = samples.get(file, _NONE), alts.setdefault(file, {})
-    added = (key := repr(skeleton(value))) not in kept
+def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
+         firsts: dict | None = None) -> bool:
+    """Fold ``value``, one a call of ``writer`` wrote into ``file``, into the file's valid sample,
+    and keep it whole among its alternatives: each distinct value, never folded into another, so
+    two writers' conflicting values (``{"ready": false}``, ``{"ready": true}``) are both kept.
+    Counts are kept too (round 11: ``{"count": 2}`` and ``{"count": 3}`` from two writers are two
+    alternatives); only one writer's later values alike but for counts fold into its first one
+    (``firsts``: that writer's first counts per ``skeleton``), since a writer that adds one each
+    call would never end discovery. Whether either gained something, so discovery calls again
+    each method that touches the file (round 10: a new whole value that leaves the folded sample
+    as it was counts too)."""
+    have, kept, firsts = samples.get(file, _NONE), alts.setdefault(file, {}), \
+        {} if firsts is None else firsts
+    key = firsts.setdefault((file, writer, repr(skeleton(value))), repr(skeleton(value, True)))
+    added = key not in kept
     if added:
         kept[key] = value
     if isinstance(have, dict) and isinstance(value, dict):
@@ -35,18 +42,18 @@ def fold(samples: dict, alts: dict, file: str, value) -> bool:
     return added or have is _NONE or kind(new) != kind(have) or len(new) > len(have)
 
 
-def skeleton(value):
+def skeleton(value, counts: bool = False):
     """``value`` with what differs call to call blanked: a clock reading, a fresh random id, and
-    a count past 1 (each call can add one, so counts alone would never end discovery). Two
-    values alike but for these are one alternative. A branch opened only by one particular
-    count past 1, or one id, is not told apart: the bound discovery needs to end."""
+    (unless ``counts``) a count past 1. Two values alike but for clocks and ids are one
+    alternative: a branch opened only by one clock reading or one id is not told apart, the
+    bound discovery needs to end. Counts are told apart between writers (``fold``)."""
     if isinstance(value, dict):
-        return {skeleton(k): skeleton(v) for k, v in value.items()}
+        return {skeleton(k, counts): skeleton(v, counts) for k, v in value.items()}
     if isinstance(value, list):
-        return [skeleton(v) for v in value]
+        return [skeleton(v, counts) for v in value]
     if isinstance(value, float) or (type(value) is int and abs(value) > 10 ** 8):
         return "<clock>"
-    if type(value) is int and value not in (0, 1):
+    if type(value) is int and value not in (0, 1) and not counts:
         return "<n>"
     if isinstance(value, str) and len(value) >= 8 and set(value.lower()) <= set("0123456789abcdef-") \
             and len(set(value)) > 1:
