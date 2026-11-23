@@ -146,20 +146,44 @@ class FailedRestoreKeepsTheRightPause(Fixture):
         self.assertIn("nothing was written", text)
         self.assertEqual((self.state / "queue.json").read_text(), live)
 
-    def test_a_disk_that_stays_full_keeps_the_interrupted_pause(self):
-        # Review on #2630: putting the old marker back must not need a write on the full disk.
-        self.plant()
+    def full_after_holds_write(self):
+        """The marker's disk fills once ``hold`` has written restore's own marker."""
         real, writes = state_mod._atomic_write, []
 
         def full(path, data):
             if Path(path) == migrate.marker_path() and writes:
                 raise OSError(28, "No space left on device")
-            writes.append(path)              # restore's own marker, before the disk filled
+            writes.append(path)
             return real(path, data)
-        with self.staging_fails(), mock.patch.object(state_mod, "_atomic_write", full):
+        return mock.patch.object(state_mod, "_atomic_write", full)
+
+    def restore_on_a_full_disk(self, during_staging=None) -> None:
+        self.plant()
+
+        def stage(*_args, **_kwargs):
+            if during_staging:
+                during_staging()
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(backup, "_stage", side_effect=stage), self.full_after_holds_write():
             code, text = self.restore(force=True)
         self.assert_refused_and_still_paused(code, text, "No space left on device")
         self.assertFalse(migrate._kept_path().exists())
+
+    def test_a_disk_that_stays_full_keeps_the_interrupted_pause(self):
+        # Review on #2630: putting the old marker back must not need a write on the full disk.
+        self.restore_on_a_full_disk()
+
+    def test_a_refused_second_holder_leaves_the_kept_marker_alone(self):
+        # Review round 3 on #2630: only the lock's holder removes the kept marker.
+        def contend():
+            with self.assertRaises(migrate.MigrationBusy), migrate.hold():
+                pass
+            self.assertTrue(migrate._kept_path().exists())
+        self.restore_on_a_full_disk(contend)
+
+    def test_without_hard_links_the_marker_is_kept_as_a_copy(self):
+        with mock.patch.object(os, "link", side_effect=OSError(1, "Operation not permitted")):
+            self.restore_on_a_full_disk()
 
     def test_a_full_disk_while_staging_with_no_interrupted_run_leaves_no_pause(self):
         with self.staging_fails():

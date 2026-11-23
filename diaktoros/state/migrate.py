@@ -38,6 +38,7 @@ from ..config import settings_form
 from .. import config, gh, state as state_mod
 from ..gate import shims as gate_shims
 from .. import envnames
+from ..util import atomic_write
 
 OLD_PLUGIN = "hermes-review-loop"
 
@@ -130,19 +131,23 @@ def hold():
     """Hold the marker for one migration; yields what an interrupted one left, if anything."""
     path = marker_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+    fd, owned = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600), False
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise MigrationBusy(describe(migrating() or {})) from None
-        left, kept = migrating(), _kept_path()
+        owned, left, kept = True, migrating(), _kept_path()
         kept.unlink(missing_ok=True)       # a dead holder's leftover: the lock is ours now
         if left is not None:
-            # The interrupted run's own marker, kept as a second name for its file: ``keep_left``
-            # puts it back by a rename, which a full disk cannot refuse as it can a write (#2630).
-            with contextlib.suppress(OSError):
+            # The interrupted run's own marker, kept before ours replaces it: ``keep_left`` puts
+            # it back by a rename, which a full disk cannot refuse as it can a write (#2630). A
+            # second name for its file where the filesystem has them, else a copy; when neither
+            # can be made, this raises with the marker as it was and nothing written.
+            try:
                 os.link(path, kept)
+            except OSError:
+                atomic_write(kept, path.read_bytes())
         mine = {"pid": os.getpid(), "started": time.time()}
         state_mod._atomic_write(path, mine)
         yield left
@@ -154,8 +159,9 @@ def hold():
         if migrating() == mine:
             path.unlink(missing_ok=True)
     finally:
-        with contextlib.suppress(OSError):
-            _kept_path().unlink(missing_ok=True)
+        if owned:                          # only the holder's: a refused one leaves it alone
+            with contextlib.suppress(OSError):
+                _kept_path().unlink(missing_ok=True)
         os.close(fd)
 
 
@@ -193,7 +199,7 @@ def keep_left(left: dict | None) -> None:
     and then refused before any move (#2323): the interrupted run's records may still be half
     moved, so its marker is put back, and ``hold`` leaves a marker it did not write. Its own file,
     by a rename, so a disk too full to write cannot lose it (#2630 review); written again only
-    when ``hold`` could not keep the file."""
+    if the kept file is gone, which ``hold`` never leaves so."""
     if left is None:
         return
     try:
