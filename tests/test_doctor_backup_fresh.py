@@ -128,6 +128,18 @@ class BackupFresh(Base):
         self.assertIn("hermes dk backup", check.detail)
         self.assertIn(str(self.dir), check.detail)
 
+    def test_an_archive_outside_the_directory_is_not_called_missing(self):
+        """#1877: an ``--out`` archive elsewhere is unseen, so the line must not say nothing restores."""
+        outside = self.root / "elsewhere" / "diaktoros-backup-out.tar.gz"
+        outside.parent.mkdir(parents=True)
+        outside.write_bytes(b"archive")
+        check = backup_checks.check_backup_fresh()
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertNotIn("nothing would restore", check.detail)
+        self.assertIn("cannot be confirmed", check.detail)
+        self.assertIn("--out", check.detail)
+        self.assertIn(str(self.dir), check.detail)
+
     def test_a_recent_archive_is_verified(self):
         self.archive("diaktoros-backup-recent.tar.gz", age_days=3)
         check = backup_checks.check_backup_fresh()
@@ -204,6 +216,13 @@ class ThroughDoctor(Base):
         self.assertEqual(self.check_named().status, doctor.UNKNOWN)
         self.archive("diaktoros-backup-now.tar.gz", age_days=0)
         self.assertEqual(self.check_named().status, doctor.VERIFIED)
+
+    def test_check_loop_does_not_claim_nothing_restores(self):
+        """#1877: through ``check_loop``, an empty backups directory is not "no backup at all"."""
+        check = self.check_named()
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertNotIn("nothing would restore", check.detail)
+        self.assertIn("cannot be confirmed", check.detail)
 
     def test_check_loop_does_not_count_a_future_dated_archive(self):
         self.archive("future.tar.gz", age_days=-3650)

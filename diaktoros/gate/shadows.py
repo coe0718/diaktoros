@@ -454,7 +454,8 @@ def _shadow_review_and_ruling(loop: dict, number: int, head: str, marker, db=Non
 def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
     """Send a head for a ruling when the shadow review disagrees with the reviewer's approval
     (#1004 part 2): ``shadow.escalate`` on, the reviewer's effective verdict at the head
-    APPROVED and that approval not stale (#473: a required check at the head has since gone
+    APPROVED (its own approval, not the adjudicator's ruled one: ``gate.reviewer_approved``,
+    #1706) and that approval not stale (#473: a required check at the head has since gone
     red, cancelled or missing, the finding ``ready`` and ``explain`` deny the approval by), and
     the newest shadow review there REQUEST_CHANGES. A stale approval is "not approved": the
     ruling prompt says the reviewer approved the head, which it no longer vouches for. Once per
@@ -466,8 +467,9 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         return "no adjudicator"           # the hold stays; the decision is the operator's
     if not isinstance(reviews, list):
         return "reviews unreadable"
-    latest = gate.latest_effective_review_at_head(reviews, loop, head)
-    if latest is None or gh.review_state(latest) != "APPROVED":
+    # #1706: the reviewer's own approval. The adjudicator's ruled one (#905) stands over the
+    # reviewer's change request, and the ruling prompt would say the reviewer approved.
+    if not gate.reviewer_approved(gate.latest_effective_review_at_head(reviews, loop, head), loop):
         return "not approved"
     if stale_approval.is_stale(st.watch(), number, head):
         return "not approved"             # the one test ``ready`` and ``explain`` apply
