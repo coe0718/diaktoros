@@ -10,6 +10,9 @@ never stops changing (``hh_grow``) fails the walk rather than ending discovery h
 Round 11: two writers' counts (``ia_two``'s ``count: 2``, ``ib_three``'s ``count: 3``) are two
 alternatives, so a reader that opens a file only on one of them (``ic_read``) reaches it; a
 writer that adds one each call (``id_bump``) still lets discovery settle.
+
+Round 12: one writer's count that changes only with another file (``ie_gated``: 2 alone, 3 once
+``gc_enable`` ran) is kept too, so the reader that opens a file only on 3 (``if_read``) reaches it.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -65,6 +68,18 @@ class LateMixin:
         seen = data.get("count") if isinstance(data, dict) else 0
         self._save(self.dir / "late-tally.json", {"count": (seen if type(seen) is int else 0) + 1})
 
+    def ie_gated(self) -> None:                               # 3 only beside the enable file
+        enable = self._load(self.dir / "late-enable.json", {})
+        on = isinstance(enable, dict) and enable.get("on") is True
+        self._save(self.dir / "late-gated.json", {"count": 3 if on else 2})
+
+    def if_read(self) -> dict:
+        count = self._load(self.dir / "late-gated.json", {})
+        if not (isinstance(count, dict) and count.get("count") == 3):
+            return {}
+        path = self.dir / ("late-" + "opened" + ".json")      # spelled nowhere whole
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
     def hh_grow(self) -> None:                                # never the same twice
         data = self._load(self.dir / "late-grow.json", [])
         self._save(self.dir / "late-grow.json", [*(data if isinstance(data, list) else []), "x"])
@@ -99,6 +114,12 @@ class TheWalkCatchesLateValues(unittest.TestCase):
         self.assertIn("late-counted.json", self.walk.discover())
         failures = self.walk.run(["ic_read"])
         beside = [f for f in failures if "in late-counted.json]: raised TypeError" in f]
+        self.assertEqual(len(beside), BESIDE, failures)
+
+    def test_one_writers_count_beside_another_file_is_laid_beside_a_reader(self):
+        self.assertIn("late-opened.json", self.walk.discover())
+        failures = self.walk.run(["if_read"])
+        beside = [f for f in failures if "in late-opened.json]: raised TypeError" in f]
         self.assertEqual(len(beside), BESIDE, failures)
 
     def test_one_writers_growing_count_still_settles(self):

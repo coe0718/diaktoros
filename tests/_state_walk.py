@@ -96,9 +96,10 @@ class Walk:
                 written[file] = _MISSING
         return outcome, seen, written
 
-    def sample(self, file: str, value, name: str) -> bool:
-        """Fold a value a call of ``name`` wrote into ``file``'s sample and alternatives."""
-        return fold(self.samples, self.alts, file, value, name, self.firsts)
+    def sample(self, file: str, value, name: str, seed: dict) -> bool:
+        """Fold a value a call of ``name`` on ``seed`` wrote into ``file``'s sample and
+        alternatives."""
+        return fold(self.samples, self.alts, file, value, name, self.firsts, seed)
 
     def clean_call(self, name: str) -> set[str]:
         """Call ``name`` on an empty dir: record its result and writes; the names it touched."""
@@ -107,7 +108,7 @@ class Walk:
         for file, value in written.items():
             self.wrote[(name, file)] = value
             if value is not _MISSING:
-                self.sample(file, value, name)
+                self.sample(file, value, name, {})
         return seen
 
     def discover(self) -> list[str]:
@@ -130,7 +131,7 @@ class Walk:
                         touched[name] |= seen
                         again.add(name)
                     grown |= {f for f, value in written.items()
-                              if value is not _MISSING and self.sample(f, value, name)}
+                              if value is not _MISSING and self.sample(f, value, name, one)}
             todo = again | {name for name, seen in touched.items() if seen & grown}
             if not todo:
                 break

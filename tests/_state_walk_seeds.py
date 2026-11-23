@@ -14,19 +14,23 @@ _NONE = object()
 
 
 def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
-         firsts: dict | None = None) -> bool:
+         firsts: dict | None = None, seed: dict | None = None) -> bool:
     """Fold ``value``, one a call of ``writer`` wrote into ``file``, into the file's valid sample,
     and keep it whole among its alternatives: each distinct value, never folded into another, so
     two writers' conflicting values (``{"ready": false}``, ``{"ready": true}``) are both kept.
     Counts are kept too (round 11: ``{"count": 2}`` and ``{"count": 3}`` from two writers are two
-    alternatives); only one writer's later values alike but for counts fold into its first one
-    (``firsts``: that writer's first counts per ``skeleton``), since a writer that adds one each
-    call would never end discovery. Whether either gained something, so discovery calls again
-    each method that touches the file (round 10: a new whole value that leaves the folded sample
-    as it was counts too)."""
+    alternatives); only one writer's later values alike but for counts, written beside the same
+    other files (``seed`` but ``file`` itself), fold into its first one (``firsts``), since a
+    writer that adds one to its own file each call would never end discovery. A count it writes
+    only beside another companion is kept (round 12), and a count fed back through another file
+    keeps discovery going until it fails closed. Whether either gained something, so discovery
+    calls again each method that touches the file (round 10: a new whole value that leaves the
+    folded sample as it was counts too)."""
     have, kept, firsts = samples.get(file, _NONE), alts.setdefault(file, {}), \
         {} if firsts is None else firsts
-    key = firsts.setdefault((file, writer, repr(skeleton(value))), repr(skeleton(value, True)))
+    beside = repr(skeleton({f: v for f, v in (seed or {}).items() if f != file}, True))
+    key = firsts.setdefault((file, writer, beside, repr(skeleton(value))),
+                            repr(skeleton(value, True)))
     added = key not in kept
     if added:
         kept[key] = value
