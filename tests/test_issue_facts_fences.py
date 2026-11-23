@@ -208,6 +208,9 @@ class HtmlBlocks(Mocked):
             with self.subTest(body):
                 self.assertIn("has no item marked", bare(body))
         self.assertEqual(bare("- first: met\n- second: met <b>deferred to #999</b>\n"), "")
+        # F6: a status before the HTML on its own line still counts; one after it does not.
+        self.assertEqual(bare("- first: not met <b>evidence</b>\n"), "")
+        self.assertIn("has no item marked", bare("- first: <b>x</b> met\n"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -319,8 +319,10 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
                 "write each requirement as a Markdown list item, with any HTML evidence in a "
                 "fenced code block; nothing was written, resubmit")
     # Outside an APPROVE, nothing from the first raw HTML on is read: an element left open runs
-    # on through any later line, nested items too, so no status after it counts (#2642 F5).
-    items = items[:next((i for i, line in enumerate(items) if md_fences.RAW in line), len(items))]
+    # on through any later line, nested items too, so no status after it counts (#2642 F5). What
+    # comes before it, on its own line too, still counts (F6).
+    cut = next((i for i, line in enumerate(items) if md_fences.RAW in line), len(items))
+    items = items[:cut] + [line.split(md_fences.RAW)[0] for line in items[cut:cut + 1]]
     # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
     marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
     statuses = [found for _, found in marked if found]
