@@ -591,9 +591,12 @@ def _local_state(c) -> None:
     # shadow hold says the fixer answers it, and the next event is the fixer's (until its turn
     # ended unanswered: then the hold says the decision is yours, #2263 review F1).
     c.shadow_fix = gate.shadows.shadow_fix_owed(c.loop, c.marker, c.head)
+    # #2269: with ``shadow.escalate`` off the fixer still takes it, and the ruling holds the head.
+    c.upheld_fix = (not c.shadow_fix and c.ruled == "REJECT"
+                    and gate.shadows.fixer_takes_upheld(c.loop, c.marker, c.head))
     # #2262: that fixer turn may have ended with no push, and the sweep re-arms only some.
-    c.shadow_turn = (gate.shadows.shadow_fix_turn(c.loop, c.number, c.head) if c.shadow_fix
-                     else ("", "", ""))
+    c.shadow_turn = (gate.shadows.shadow_fix_turn(c.loop, c.number, c.head)
+                     if c.shadow_fix or c.upheld_fix else ("", "", ""))
     if c.shadow_fix:
         c.parked, c.ruled = False, None
 
@@ -726,10 +729,12 @@ def _gate_blockers(c) -> None:
         c.blockers.append(f"the author {c.author} is not one of {c.served}")
     if c.shadow_held:
         c.blockers.append(f"shadow review: {c.shadow_held}")
-    if c.shadow_fix and c.shadow_turn[0] and not c.shadow_turn[1]:      # #2262
+    if (c.shadow_fix or c.upheld_fix) and c.shadow_turn[0] and not c.shadow_turn[1]:  # #2262
         c.blockers.append(f"shadow fix: the shadow-fix fixer turn at head {c.short} is "
                           f"{c.shadow_turn[0]} with no fix pushed, and no watchdog sweep re-arms it")
-    if c.ruled:
+    if c.upheld_fix:                 # #2269: with the shadow hold off, the ruling's line holds it
+        c.blockers.append("ruled: " + gate.shadows.upheld_fix_line(c.short, *c.shadow_turn[:2]))
+    elif c.ruled:
         c.blockers.append(f"ruled: the adjudicator ruled {c.ruled} at head {c.short}; the "
                           "decision is yours")
     elif c.parked:
