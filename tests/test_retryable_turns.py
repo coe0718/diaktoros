@@ -532,6 +532,29 @@ class ClaimTimeReads(Base):
                     con.execute("UPDATE runs SET state='pending', retries=0, retry_at=NULL, "
                                 "error=NULL")
 
+    def test_a_malformed_recorded_reset_is_an_ordinary_failed_read(self):
+        # Review of #2613, F12: headers are recorded raw, so a fresh count file can carry a
+        # reset that is not a number. It is no evidence of a limit: the claim's failed read
+        # spends an attempt and backs off, as any other, instead of raising and staying pending.
+        import json
+        from diaktoros import gh_calls
+        self.spent_limit(remaining='4999', reset_in=-1)   # this process: nothing spent
+        gh_calls._seen.clear()
+        gh_calls.directory().mkdir(parents=True, exist_ok=True)
+        sibling = gh_calls.directory() / '1-2-sibling.json'
+        self.addCleanup(sibling.unlink, missing_ok=True)
+        for reset in ('invalid', 'inf', 'nan', None, [1]):
+            with self.subTest(reset=reset):
+                sibling.write_text(json.dumps({'counts': [], 'limits': {'read': {
+                    'remaining': '0', 'reset': reset, 'used': '5000', 'at': time.time()}}}))
+                self.assertIsNone(self.claim(None))
+                row = self.s.get('review')
+                self.assertEqual((row['state'], row['retries']), ('waiting', 1))
+                self.assertNotIn(run_supervisor.LIMIT_WAIT, row['error'])
+                with ledger.connect(self.db) as con:
+                    con.execute("UPDATE runs SET state='pending', retries=0, retry_at=NULL, "
+                                "error=NULL")
+
     def test_a_failed_read_the_readers_limit_does_not_explain_spends_an_attempt(self):
         # Review of #2613, F3: calls left, a reset already past, or only another login spent.
         for left, reset_in, login in (('12', 1800.0, 'read'), ('0', -60.0, 'read'),

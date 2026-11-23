@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
 import pathlib
 import random
@@ -137,10 +138,7 @@ def _note_spent(login: str, seen: dict, result: str) -> None:
     """Keep what ``limited_until`` reads, even where nothing is counted (a worker): each limited
     answer, never erased by a later one, and the newest rate-limit headers, per login."""
     now = time.time()
-    try:
-        reset = float(seen["reset"]) if seen.get("reset") is not None else None
-    except (TypeError, ValueError):
-        reset = None
+    reset = _reset(seen.get("reset"))
     if result == "limited" and reset is not None:
         _limited.append((now, login, reset))
         del _limited[:-LIMITED_KEPT]
@@ -162,9 +160,19 @@ def limited_until(login: str, since: float, now: float | None = None) -> float |
     now = time.time() if now is None else now
     resets = [reset for at, who, reset in _limited if who == login and at >= since and reset > now]
     newest = _newest_seen(login, now)
-    if newest and newest.get("remaining") == "0" and float(newest.get("reset") or 0) > now:
-        resets.append(float(newest["reset"]))
+    if newest and newest["remaining"] == "0" and (newest["reset"] or 0) > now:
+        resets.append(newest["reset"])
     return max(resets) if resets else None
+
+
+def _reset(value) -> float | None:
+    """A recorded reset as epoch seconds, or None when it is missing, not a number or not finite:
+    headers are recorded raw, and a malformed one is no evidence of a limit (#2613 review, F12)."""
+    try:
+        reset = float(value)
+    except (TypeError, ValueError):
+        return None
+    return reset if math.isfinite(reset) else None
 
 
 def _newest_seen(login: str, now: float) -> dict | None:
@@ -179,7 +187,7 @@ def _newest_seen(login: str, now: float) -> dict | None:
         try:
             seen = (json.loads(file.read_text()).get("limits") or {}).get(login)
             if isinstance(seen, dict) and seen.get("remaining") is not None:
-                found.append({"remaining": str(seen["remaining"]), "reset": seen.get("reset"),
+                found.append({"remaining": str(seen["remaining"]), "reset": _reset(seen.get("reset")),
                               "at": float(seen.get("at") or 0)})
         except (OSError, ValueError, TypeError, AttributeError):
             continue
