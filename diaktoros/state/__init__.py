@@ -1382,10 +1382,8 @@ class LoopState(FixAsks):
 
     @contextlib.contextmanager
     def review_request_lock(self):
-        """One step for a review-only PR's grant and the removal of its pending review request
-        (#2622 review, F4): the removal checks for a grant and sends GitHub's DELETE under it, so
-        no grant lands between the two. Taken before the state lock, never inside it; while it is
-        held the removal takes no other state lock, and a grant takes only the state lock."""
+        """A grant and the removal of a pending review request, one at a time (``review_asks.
+        clear_pending_request``, #2622). Taken before the state lock, never inside it."""
         hostdirs.ensure(self.dir)
         fd = os.open(self.dir / REVIEW_REQUEST_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
@@ -1396,8 +1394,7 @@ class LoopState(FixAsks):
 
     def review_cap_grant(self, number: int, head: str, rounds: int, replacing=None) -> bool:
         """Allow one more verdict at ``head`` once ``rounds`` are spent. False when the head holds
-        that grant already, or ``replacing`` (#2401) is no longer the grant. Never while a removal
-        of the PR's review request is deciding (``review_request_lock``)."""
+        that grant already, or ``replacing`` (#2401) is no longer the grant."""
         with self.review_request_lock(), self.locked():
             data = self._review_caps()
             entry = data.get(str(number)) if isinstance(data.get(str(number)), dict) else {}

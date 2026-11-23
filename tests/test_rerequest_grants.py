@@ -527,7 +527,7 @@ class Gate(fg.Base):
         self.assertEqual(len(self.removed), 1)
         self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
 
-    def test_a_push_and_a_grant_at_the_new_head_are_never_followed_by_the_old_heads_removal(self):
+    def test_a_push_a_retarget_or_a_grant_since_the_decision_is_never_followed_by_the_removal(self):
         # Review of #2622 round 3, F4: the sweep (or the gate) decided on the head it listed; a
         # push and a maintainer's grant at the new head land before its removal. The DELETE acts
         # on the PR as it is now, so the removal reads the live PR under the lock and leaves it.
@@ -550,7 +550,15 @@ class Gate(fg.Base):
             for case, live in (("a push and a grant at its head", pushed),
                                ("the PR unreadable", None),
                                ("the reviewer no longer pending",
-                                {"head": self.live["head"], "requested_reviewers": []})):
+                                {"head": self.live["head"], "requested_reviewers": []}),
+                               # Review of #2622 round 4, F5: the same head, no longer this loop's.
+                               ("retargeted to another base",
+                                {"base": {**self.live["base"], "ref": "other-branch"},
+                                 "requested_reviewers": [{"login": "reviewer"}]}),
+                               ("closed", {"state": "closed",
+                                           "requested_reviewers": [{"login": "reviewer"}]}),
+                               ("made a draft", {"draft": True,
+                                                 "requested_reviewers": [{"login": "reviewer"}]})):
                 with self.subTest(path=path, case=case):
                     self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
                     self.pending()

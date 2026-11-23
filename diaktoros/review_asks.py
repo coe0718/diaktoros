@@ -103,20 +103,33 @@ def clear_pending_request(loop, st, number: int, head: str, rounds: int, pr) -> 
     (``rerequest_can_grant``), the reviewer is pending, and no round is granted at ``head`` for
     ``rounds`` spent: checked with the DELETE under ``review_request_lock``, so a grant made
     meanwhile is never followed by the removal (#2622 review, F4). The caller's ``pr`` may
-    predate a push, and the DELETE acts on the PR as it is now: so the live PR is read under the
-    lock too, and an unreadable one, a moved head (whose grant this check cannot see) or a
-    reviewer no longer pending removes nothing; the next capped request judges the new head.
+    predate a push or a retarget, and the DELETE acts on the PR as it is now: so the live PR is
+    read under the lock too, and removes nothing unless it is still this loop's (``_still_ours``)
+    at ``head`` with the reviewer pending (F4, F5); the next capped request judges what changed.
     Written as the fixer seat, which has write access (as the host's base merges are), and
     audited. Whether the request is gone; a failed removal changes nothing, and the next capped
     request tries again."""
     if not rerequest_can_grant(loop) or not reviewer_pending(loop, pr):
         return False
-    with st.review_request_lock():
+    with st.review_request_lock():      # before the state lock; under it only leaf locks
         live = gh.pr(loop, number)
-        if (not isinstance(live, dict) or (live.get("head") or {}).get("sha") != head
-                or not reviewer_pending(loop, live) or st.review_cap_granted(number, head, rounds)):
+        if (not _still_ours(loop, live, number, head) or not reviewer_pending(loop, live)
+                or st.review_cap_granted(number, head, rounds)):
             return False
         return _remove_request(loop, number, head, live)
+
+
+def _still_ours(loop, live, number: int, head: str) -> bool:
+    """Whether the live PR is still the one the cap was judged on: readable, open, not a draft,
+    at ``head``, on the loop's base and by a review-only author, as the gate re-checks before it
+    acts (#2622 review, F5). A moved head may carry a grant this check cannot see (F4), and a PR
+    retargeted to another base is no longer this loop's to touch."""
+    return (isinstance(live, dict) and live.get("number") == number
+            and live.get("state") == "open" and not live.get("draft")
+            and (live.get("head") or {}).get("sha") == head
+            and (live.get("base") or {}).get("ref") == loop["base"]
+            and str((live.get("user") or {}).get("login") or "").lower()
+            in config.review_only(loop))
 
 
 def _remove_request(loop, number: int, head: str, pr) -> bool:
