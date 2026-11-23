@@ -159,56 +159,71 @@ def claim_lock(db) -> Iterator[int]:
         os.close(lock)                    # frees the flock too
 
 
-def _owing(lock: int) -> set[str]:
-    """The run ids the barrier holds: its log (``owe``) replayed, a ``+`` line adding an id and a
-    ``-`` line removing one. A last line with no newline was cut short: an add is read as the
-    next ``owe`` ends it, and a clear is not read, so either way the id stays held (round 8)."""
+def _owing(lock: int) -> tuple[set[str], list[str]]:
+    """What the barrier holds: its log (``owe``) replayed into ids, each ``+`` line adding one and
+    each ``-`` line removing one, and cut adds. An add cut short (a last line with no newline, or
+    one ``owe`` ended with ``~``) may have stopped inside its id, so it holds every id it begins
+    (#2643; ``+`` alone, all) until the writer that cut it ends it with a ``*`` line. A clear cut
+    short is not read, so either way the id stays held (#2634 review F8)."""
     data, at = b"", 0
     while chunk := os.pread(lock, 65536, at):
         data, at = data + chunk, at + len(chunk)
-    *lines, cut = data.split(b"\n")
+    *lines, tail = data.decode(errors="replace").split("\n")
     ids: set[str] = set()
-    for line in [*lines, cut] if cut[:1] == b"+" else lines:
-        text = line.decode(errors="replace")
-        if text[:1] == "+":
-            ids.add(text[1:])
-        elif text[:1] == "-":
-            ids.discard(text[1:])
-    return ids
+    cuts: list[str] = []
+    for text in [*lines, tail + "~"] if tail[:1] == "+" else lines:
+        mark, rest = text[:1], text[1:]
+        if mark == "+" and rest.endswith("~"):
+            cuts.append(rest.rstrip("~"))
+        elif mark == "+":
+            ids.add(rest)
+        elif mark == "-" and not rest.endswith("~"):
+            ids.discard(rest)
+        elif mark == "*" and rest in cuts:
+            cuts.remove(rest)
+    return ids, cuts
 
 
-def owe(lock: int, run_id: str, owed: bool = True) -> None:
+def owe(lock: int, run_id: str, owed: bool = True, own_cut: bool = False) -> None:
     """Under ``claim_lock``, record in its file (``owed``) or clear the reviewer run ``run_id``
     whose owed shadow and stop could not be written (#2634 review F4, round 6): the barrier
     ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
     stop. Each change is a line appended to a log, written whole (a short write is finished, not
-    taken as done) and synced, so an update cut short never loses an id already marked: a cut
-    line is ended before the next (round 7, F8), and read as ``_owing`` says. The log is emptied
-    only once it holds no id."""
-    if not run_id or "\n" in run_id:
+    taken as done) and synced, so an update cut short never loses an id already marked. A cut
+    line is ended with ``~`` before the next, and stays a cut add (``_owing``); with ``own_cut``,
+    the caller cut it adding ``run_id`` under this same lock, so it is ended by that whole add
+    and a ``*`` line (#2643). The log is emptied only once it holds no id and no cut add."""
+    if not run_id or "\n" in run_id or "~" in run_id:
         raise ValueError("invalid run id for the claim barrier")
     end = os.lseek(lock, 0, os.SEEK_END)
-    record = ("+" if owed else "-") + run_id + "\n"
-    data = (b"" if not end or os.pread(lock, 1, end - 1) == b"\n" else b"\n") + record.encode()
+    tail = os.pread(lock, end - (start := max(0, end - len(run_id) - 2)), start).decode(
+        errors="replace").rsplit("\n", 1)[-1] if end else ""
+    data = ("~\n" if tail else "") + ("+" if owed else "-") + run_id + "\n"
+    if own_cut and owed and tail[:1] == "+" and ("+" + run_id).startswith(tail):
+        data += "*" + tail[1:] + "\n"
+    data = data.encode()
     while data:
         wrote = os.pwrite(lock, data, end)
         if wrote <= 0:
             raise OSError(errno.EIO, "the claim barrier could not be written")
         data, end = data[wrote:], end + wrote
     os.fsync(lock)
-    if not owed and not _owing(lock):
+    if not owed and _owing(lock) == (set(), []):
         os.ftruncate(lock, 0)
         os.fsync(lock)
 
 
 def owes(lock: int, con, run_id: str) -> bool:
     """Whether the barrier (``owe``) still holds ``run_id``'s receipt: it does until the shadow
-    row for its turn is in the ledger, and is cleared once it is."""
-    if run_id not in _owing(lock):
+    row for its turn is in the ledger, and is cleared once it is. A cut add (``_owing``) holds
+    every run whose id it begins, until that run's shadow row is in (#2643)."""
+    ids, cuts = _owing(lock)
+    if run_id not in ids and not any(run_id.startswith(cut) for cut in cuts):
         return False
     if con.execute("SELECT 1 FROM runs AS r JOIN runs AS s ON s.repo=r.repo AND s.pr=r.pr AND "
                    "s.head=r.head AND s.turn_key=r.turn_key AND s.seat='shadow' WHERE r.id=?",
                    (run_id,)).fetchone() is None:
         return True
-    owe(lock, run_id, False)
+    if run_id in ids:
+        owe(lock, run_id, False)
     return False
