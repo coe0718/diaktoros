@@ -131,6 +131,33 @@ class ResumedSweep(tts.SweepBase):
         self.assertTrue(seen[0].endswith("&page=2"))
         self.assertEqual((alerts, self.queued()[-1]), ([], 8))
 
+    def test_a_slow_resumed_page_is_bounded_and_the_next_sweep_starts_over(self):
+        # Review on #2578, F5: the page a sweep resumed at was exempt from the window, so a slow
+        # one spent the whole budget and raised; and the cursor stayed on it, never page 1 again.
+        from diaktoros import triage_sweep
+        self.st.kv_set_strict(self.st.dir / triage_sweep.RESUME_FILE, {"next": 2})
+        given, skew, real = [], [0.0], time.monotonic
+
+        def slow(path):                                 # its call ran its whole timeout
+            given.append(gh._budgeted("GET", path))
+            skew[0] += given[0] + 0.1
+            if gh.remaining() <= 0:
+                raise gh.GateBudgetExceeded("open issue page 2 timed out")
+            return None, "timed out"
+        with mock.patch("time.monotonic", lambda: real() + skew[0]):
+            alerts, seen, scope = self.run_sweep(20.0, page2=slow)
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].endswith("&page=2"))
+        self.assertLessEqual(given[0], 15.0)            # 20 s less the 5 s held back
+        self.assertGreater(scope["deadline"] - time.monotonic() - skew[0], 0)   # the rest's time
+        self.assertEqual(len(alerts), 1, alerts)
+        self.assertIn("open issue page 2 not read within the", alerts[0])
+        self.assertIn("the next sweep starts again from page 1", alerts[0])
+        self.assertEqual(triage_sweep.resume_page(self.st), 1)
+        alerts, seen, _ = self.run_sweep(15.0)          # and it does: page 1, then page 2
+        self.assertNotIn("&page=", seen[0])
+        self.assertEqual((alerts, self.queued()), ([], [8]))
+
 
 if __name__ == "__main__":
     unittest.main()

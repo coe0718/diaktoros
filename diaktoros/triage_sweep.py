@@ -22,9 +22,11 @@ read whole (#1147); only past the page bound (or when the page past it cannot be
 the sweep work on the newest issues it read and return an alert line saying the older ones were not
 checked, with the listing's reason (#1037). A listing the watchdog's budget cuts (``gh_paging``)
 reads on from the page it stopped at in the next sweep (``RESUME_FILE``), then starts over from
-page 1, so a page the budget never reaches from page 1 is still read (review on #2578). It reads
-on only once every candidate on the pages it read was queued: one left (past ``PER_SWEEP``, or the
-ledger or worker down) has the next sweep read those pages again (F4).
+page 1, so a page the budget never reaches from page 1 is still read (review on #2578). The page
+it resumes at is bounded like any later page; when even that does not fit, the next sweep starts
+over from page 1 instead of trying it again (F5). It reads on only once every candidate on the
+pages it read was queued: one left (past ``PER_SWEEP``, or the ledger or worker down) has the next
+sweep read those pages again (F4).
 """
 from __future__ import annotations
 
@@ -99,7 +101,9 @@ RESUME_NOTE = {"saved": ", the next sweep reads on from there",
                "cleared": "; where it stopped could not be saved, so the next sweep starts "
                           "again from page 1",
                "stale": "; where it stopped could not be saved, and an older saved page could "
-                        "not be cleared"}
+                        "not be cleared",
+               "restart": "; the page it resumed at did not fit the budget, so the next sweep "
+                          "starts again from page 1"}
 
 
 def keep_resume(st, progress: dict) -> str:
@@ -163,13 +167,17 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     # The ledger cleanup just logged why it is down: one line per cause, nothing queued.
     queued, drained = ([], False) if ledger_down else queue_missed(loop, st, issues, now)
     held = "next" in progress and not drained       # these pages again, not the next (F4)
-    kept = keep_resume(st, ({"next": start} if start > 1 else {}) if held else progress)
+    # A resumed page that never fits starts the next sweep over, not over it again (F5).
+    restart = start > 1 and progress.get("next") == start
+    kept = keep_resume(st, {} if restart else ({"next": start} if start > 1 else {}) if held
+                       else progress)
     lines: list[str] = []
     if error:                             # not proven whole: the newest were read, older not
         log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
         which = (f"the newest {len(issues)}" if start == 1 else
                  f"{len(issues)} (from page {start}, the newer ones last sweep)")
-        note = RESUME_NOTE["held" if held and kept == "saved" else kept]
+        note = RESUME_NOTE[("restart" if restart else "held" if held else kept)
+                           if kept == "saved" else kept]
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only {which} "
                      f"open issues/PRs ({gh.one_line(error)}); older issues inside the sweep "
                      "window were not checked" + (note if "next" in progress else ""))

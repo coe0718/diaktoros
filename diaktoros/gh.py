@@ -673,7 +673,7 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
         def read():
             return fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
         items, error, cut = (gh_paging.later_page(read, what, page) if keep_partial
-                             and page > start else (*read(), ""))
+                             and page > 1 else (*read(), ""))
         if cut:                        # #1870: no page the budget may not fit
             if progress is not None:
                 progress["next"] = page
