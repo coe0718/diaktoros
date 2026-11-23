@@ -73,6 +73,52 @@ def rerequest_can_grant(loop) -> bool:
     return rerequest_grants(loop) and not config.reviewer_is_app(loop) and not unannounced(loop)
 
 
+def reviewer_pending(loop, pr) -> bool:
+    """Whether the reviewer seat is still a pending requested reviewer on ``pr`` (a PR as GitHub
+    returns it). GitHub sends nothing when a pending reviewer is requested again (#2620), so then
+    a maintainer's re-request reaches no gate."""
+    seat = str(loop.get("reviewer_seat") or "").lower()
+    pending = pr.get("requested_reviewers") if isinstance(pr, dict) else None
+    return bool(seat) and any(isinstance(who, dict) and str(who.get("login") or "").lower() == seat
+                              for who in pending or [])
+
+
+def rerequest_hint(loop, pr) -> str:
+    """How a maintainer's re-request grants a round at the cap, for the cap notice and
+    ``explain``: "" where it cannot (``rerequest_can_grant``); while the reviewer is still
+    pending, that GitHub's button sends nothing and the request must be removed and made again
+    (#2620); else the re-request itself."""
+    if not rerequest_can_grant(loop):
+        return ""
+    if reviewer_pending(loop, pr):
+        return ("remove the reviewer's pending request on GitHub and request them again (a "
+                "re-request of a pending reviewer sends nothing)")
+    return "re-request the reviewer on GitHub (`review_only_rerequest_grants`)"
+
+
+def clear_pending_request(loop, number: int, head: str, pr) -> bool:
+    """At a review-only PR's cap, remove the reviewer seat's pending review request (#2620), so
+    GitHub shows the reviewer's last review with its re-request button, whose click reaches the
+    gate as a maintainer's grant (``grant_by_rerequest``). Only where that re-request can grant
+    (``rerequest_can_grant``) and the reviewer is pending. Written as the fixer seat, which has
+    write access (as the host's base merges are), and audited. Whether the request is gone; a
+    failed removal changes nothing, and the next capped request tries again."""
+    if not rerequest_can_grant(loop) or not reviewer_pending(loop, pr):
+        return False
+    from . import broker
+    login = config.seat_login(loop, "fixer")
+    path = f"/repos/{loop['repo']}/pulls/{number}/requested_reviewers"
+    result, why = broker._write(loop, path, "DELETE", {"reviewers": [loop["reviewer_seat"]]}, login)
+    if not isinstance(result, dict) or reviewer_pending(loop, result):
+        gate.log(f"#{number}: the reviewer's pending request was not removed at the cap: "
+                 f"{why or 'GitHub did not confirm it'}")
+        return False
+    branch = str((pr.get("head") or {}).get("ref") or "")
+    broker._audit(loop, loop["repo"], number, head, branch, "fixer", "remove_review_request",
+                  login)
+    return True
+
+
 def grant_by_rerequest(loop, st, number, head, rounds, sender) -> str:
     """The reviewer gate's grant at a review-only PR's cap (#2496), for a head with no verdict
     yet. A maintainer's (``config.maintainers``) ``review_requested``, where a re-request can grant

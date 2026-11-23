@@ -368,8 +368,8 @@ class Gate(fg.Base):
         self.ask(OWNER, notes=notes)
         held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
         self.assertEqual(len(held), 1, notes)
-        self.assertIn("--another-round` or re-request the reviewer on GitHub", held[0])
-        self.assertIn("re-requests the reviewer on GitHub", self.explain()["next"]["action"])
+        self.assertIn("--another-round`, or re-request the reviewer on GitHub", held[0])
+        self.assertIn("re-request the reviewer on GitHub", self.explain()["next"]["action"])
         self.assertIn("(or their re-request on GitHub)",
                       self.explain(self.cap - 1)["next"]["action"])
         self.write(**{KEY: False})
@@ -387,6 +387,80 @@ class Gate(fg.Base):
         held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
         self.assertEqual(len(held), 1, notes)
         self.assertNotIn("re-request", held[0])
+
+    # #2620: GitHub sends nothing for a re-request of a reviewer still pending, and the author's
+    # and the fixer's pushes request the reviewer again, so at the cap the host removes that
+    # pending request: the reviewer's last review then shows GitHub's re-request button, whose
+    # click reaches the gate as the maintainer's grant.
+
+    def pending(self):
+        """The reviewer still requested on the live PR; GitHub's removal answered by ``remove``."""
+        self.live = {**self.live, "requested_reviewers": [{"login": "reviewer"}]}
+        self.removed, self.audited = [], []
+        for patch in (mock.patch("diaktoros.broker._write", side_effect=self.remove),
+                      mock.patch("diaktoros.broker._audit",
+                                 side_effect=lambda *a: self.audited.append(a))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.answer = None
+
+    def remove(self, loop, path, method, body, login):
+        self.removed.append((path, method, body, login))
+        if self.answer is not None:
+            return self.answer
+        return {**self.live, "requested_reviewers": []}, ""
+
+    def capped_notice(self, notes) -> str:
+        [held] = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
+        return held
+
+    def test_at_the_cap_the_pending_request_is_removed_as_the_fixer_seat(self):
+        self.pending()
+        notes = []
+        self.ask(OWNER, notes=notes)                      # the author asks again after a push
+        self.assertEqual(self.removed, [("/repos/owner/one/pulls/7/requested_reviewers", "DELETE",
+                                         {"reviewers": ["reviewer"]},
+                                         config.seat_login(self.loop, "fixer"))])
+        [audit] = self.audited
+        self.assertEqual(audit[5:], ("fixer", "remove_review_request",
+                                     config.seat_login(self.loop, "fixer")))
+        self.assertIn("--another-round`, or re-request the reviewer on GitHub "
+                      "(`review_only_rerequest_grants`)", self.capped_notice(notes))
+        # A push requests the reviewer again: the next capped request removes it again.
+        self.ask(OWNER)
+        self.assertEqual(len(self.removed), 2)
+
+    def test_then_the_maintainers_rerequest_grants_the_round(self):
+        self.pending()
+        self.ask(OWNER)
+        self.live = {**self.live, "requested_reviewers": []}
+        fire = self.feed()
+        block = self.ask(MAINT, notes=False)
+        block.assert_called_once()
+        self.assertEqual(self.events(fire, "granted"), ["granted"])
+
+    def test_a_removal_github_refuses_says_how_to_make_the_button_work(self):
+        self.pending()
+        self.answer = (None, "HTTP 403 Resource not accessible")
+        notes = []
+        self.ask(OWNER, notes=notes)
+        self.assertEqual(self.audited, [])
+        hint = "remove the reviewer's pending request on GitHub and request them again"
+        self.assertIn(hint, self.capped_notice(notes))
+        self.assertIn(hint, self.explain()["next"]["action"])
+        self.assertNotIn("re-request the reviewer on GitHub (", self.explain()["next"]["action"])
+
+    def test_nothing_is_removed_below_the_cap_off_or_where_no_rerequest_can_grant(self):
+        self.pending()
+        self.ask(OWNER, reviews=self.verdicts(self.cap - 1, OLD), ends=SystemExit)
+        self.write(**{KEY: False})
+        self.ask(OWNER)
+        self.write(**{KEY: True})
+        with mock.patch.object(config, "reviewer_is_app", return_value=True):
+            self.ask(OWNER)
+        self.live = {**self.live, "requested_reviewers": [{"login": "someone-else"}]}
+        self.ask(OWNER)
+        self.assertEqual((self.removed, self.audited), ([], []))
 
 
 def routed(case: unittest.TestCase, loop: dict) -> dict:

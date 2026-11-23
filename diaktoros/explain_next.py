@@ -173,8 +173,8 @@ def _next_review_only(c) -> tuple[str, str] | None:
         kind = "operator"
         push_first = ("the author pushes a new head first (this head already has a verdict, so a "
                       "grant now would be wasted), then " if c.reviewed else "")
-        ask = (", or re-requests the reviewer on GitHub (`review_only_rerequest_grants`)"
-               if review_asks.rerequest_can_grant(c.loop) else "")
+        hint = review_asks.rerequest_hint(c.loop, c.pr)     # pending: GitHub sends nothing
+        ask = f", or {hint}" if hint else ""
         action = (f"review cap reached on #{c.number} ({c.spent} verdicts): no further review until "
                   f"{push_first}a maintainer grants another round — merge, close, or "
                   f"`hermes dk review --loop {c.loop['id']} --pr {c.number} --another-round`{ask}")
