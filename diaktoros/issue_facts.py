@@ -313,10 +313,16 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
                 "needs a `Requirements` section (a heading line such as `## Requirements`, then one "
                 "line per requirement) giving each requirement `met` (with evidence), "
                 "`not met` or `deferred to #N`; nothing was written, resubmit")
+    if verdict == "APPROVE" and any(md_fences.RAW in line for line in items):
+        # #2636: raw HTML is outside the subset this check reads, so it is refused, never parsed.
+        return ("the Requirements section holds raw HTML (a tag or an HTML block outside code): "
+                "write each requirement as a Markdown list item, with any HTML evidence in a "
+                "fenced code block; nothing was written, resubmit")
+    items = [line.replace(md_fences.RAW, "") for line in items]
     # #2309: the last status on a line counts, so ``met? no — not met`` is ``not met``.
     marked = [(line, ([None] + list(_STATUS.finditer(line)))[-1]) for line in items]
     statuses = [found for _, found in marked if found]
-    tops = set(_top_items(_section(body) or []))
+    tops = {line.replace(md_fences.RAW, "") for line in _top_items(_section(body) or [])}
     top = [line for line, found in marked if not found and line in tops]
     if not statuses:
         named = f" ({json.dumps(_clip(top[0].strip(), 120))} has none)" if top else ""

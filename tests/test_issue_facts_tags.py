@@ -1,47 +1,54 @@
-"""Twenty-first to twenty-fourth reviews on #2573, beside ``tests/test_issue_facts_fences.py``:
-an HTML tag's attributes are never shown text, whether the tag is inline in a Markdown item or
-split across lines in an HTML list item, so a status in one marks nothing. GitHub is mocked."""
+"""#2636: raw HTML in a Requirements section is refused on an APPROVE, never parsed.
+
+Reviews F17 to F22 on #2573 each found one more HTML construct a hand-written reader got wrong
+(``<pre>`` evidence, ``<ul>`` items, comments around tags, attributes, tags split across lines,
+quoted values holding tags). Every one of those inputs is now refused with one reason; Markdown
+items, fenced or code-span HTML evidence and comments still pass. GitHub is mocked."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import unittest
 
 from test_issue_facts_fences import Mocked, check
 
+RAW = "holds raw HTML"
+# The inputs reviews F17-F22 and rounds 23-24 on #2573 raised, marked and unmarked alike.
+REVIEWED = (
+    "<pre>\n- command --help\n</pre>\n", "<PRE class=x>\n\n- command --help\n</pre>\n",
+    "<div>\n- command --help\n</div>\n", "<?php\n- x\n?>\n", "<span>\n- command --help\n",
+    "- two: met\n\n  <pre>\n  - nested --flag\n  </pre>\n",
+    "<pre>\n- command --help\n</pre>\n- second: export flag\n",
+    "<div>\n- command --help\n\n- second: export flag\n", "Prose.\n<span>\n- second: met\n",
+    "<ul>\n<li>second: not met</li>\n</ul>\n", "<div>\n# Notes\n<li>second: met</li>\n</div>\n",
+    "<ul>\n<li>second: export flag</li>\n</ul>\n", "<ul><li>second: met</li></ul>\n",
+    "<OL>\n  <li class=x>\n    third: met\n  </li>\n</OL>\n",
+    "- two: met\n\n  <ul>\n  <li>evidence: a.py:3</li>\n  </ul>\n",
+    "<ul>\n<!-- <ul> -->\n<li>second: met</li>\n</ul>\n",
+    '<ul>\n<li><span title="x">second: met</span></li>\n</ul>\n',
+    '- second: <span title="met">export flag</span>\n', '- second: <b>met</b>\n',
+    '<ul>\n<li><span\n title="met">second: export flag</span></li>\n</ul>\n',
+    '- second: <span\n  title="met">export flag</span>\n',
+    '<ul>\n<li><span title=\n"met">second: export flag</span></li>\n</ul>\n',
+    '<ul>\n<li><span title="<li>\nmet">second: export flag</span></li>\n</ul>\n')
 
-class Tags(Mocked):
-    def test_an_inline_tags_attribute_marks_nothing(self):
-        # Twenty-first: in a Markdown item an inline tag's attribute is not shown either, so a
-        # `met` in one marks nothing and a `not met` in one unmarks nothing; its text still counts.
-        self.assertIn("has no status", check('- second: <span title="met">export flag</span>\n'))
-        for body in ('- second: met <span title="not met">export flag</span>\n',
-                     '- second: <span title="x">export flag</span> met\n',
-                     '- second: <b>met</b> with `<span title="x">` as evidence\n'):
+
+class RawHtml(Mocked):
+    def test_every_reviewed_html_case_is_refused_on_an_approve(self):
+        for body in REVIEWED:
+            with self.subTest(body):
+                self.assertIn(RAW, check(body))
+
+    def test_markdown_code_and_comments_still_pass(self):
+        # Controls: HTML as evidence in a code span or fenced block, and a comment, are not raw
+        # HTML; a status beside them counts.
+        for body in ('- second: met with `<span title="x">` as evidence\n',
+                     "- second: met\n\n  ```html\n  <ul><li>third</li></ul>\n  ```\n",
+                     "- second: met <!-- <li>draft</li> -->\n", "<!-- <ul><li>x</li></ul> -->\n",
+                     "- second: met, `a < b` holds\n"):
             with self.subTest(body):
                 self.assertEqual(check(body), "")
 
-    def test_a_tag_split_across_lines_stays_in_its_html_item(self):
-        # Twenty-second: a tag split over two lines in an HTML item is read whole, so the item
-        # keeps its text and its attribute marks nothing.
+    def test_an_unmarked_markdown_item_beside_a_comment_is_still_refused(self):
         self.assertIn('"- second: export flag" has no status',
-                      check('<ul>\n<li><span\n title="met">second: export flag</span></li>\n</ul>\n'))
-        self.assertIn('"- second: export flag" has no status',
-                      check('<ul>\n<li><span title="a\nmet">second: export flag</span></li>\n</ul>\n'))
-        self.assertEqual(check('<ul>\n<li><span\n title="x">second: met</span></li>\n</ul>\n'), "")
-
-    def test_a_tag_split_at_an_attributes_equals_sign_stays_in_its_html_item(self):
-        # Round 23: a split between an attribute's `=` and its value, or between its name and
-        # `=`, is read whole too; a marked item split the same way still passes.
-        for split in ('title=\n"met"', 'title =\n  "met"', 'title\n="met"'):
-            with self.subTest(split):
-                self.assertIn('"- second: export flag" has no status',
-                              check(f'<ul>\n<li><span {split}>second: export flag</span></li>\n</ul>\n'))
-                self.assertEqual(check(f'<ul>\n<li><span {split}>second: met</span></li>\n</ul>\n'), "")
-
-    def test_a_tag_left_open_in_a_quoted_value_hides_the_tags_in_it(self):
-        # Round 24: an apparent `<li>` inside a quoted value still open at the line's end is part
-        # of that value, never an item of its own; a marked item split the same way passes.
-        self.assertIn('"- second: export flag" has no status',
-                      check('<ul>\n<li><span title="<li>\nmet">second: export flag</span></li>\n</ul>\n'))
-        self.assertEqual(check('<ul>\n<li><span title="<li>\nx">second: met</span></li>\n</ul>\n'), "")
+                      check("<!-- note -->\n- second: export flag\n"))
 
 
 if __name__ == "__main__":

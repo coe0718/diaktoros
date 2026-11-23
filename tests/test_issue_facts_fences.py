@@ -166,71 +166,23 @@ class HtmlComments(Mocked):
 
 
 class HtmlBlocks(Mocked):
-    """Seventeenth review on #2573 (F17): an HTML block other than a comment is raw HTML, as
-    Markdown renders it, so a line in ``<pre>`` evidence that begins ``- `` is not an item."""
+    """Seventeenth review on #2573 (F17) and #2636: an HTML block other than a comment is raw
+    HTML, never parsed. ``test_issue_facts_tags`` holds every HTML case the reviews raised."""
 
-    def test_html_block_evidence_is_not_an_item(self):
-        for body in ("<pre>\n- command --help\n</pre>\n",                   # Vex's case
-                     "<PRE class=x>\n\n- command --help\n</pre>\n",          # to its </pre>
-                     "<div>\n- command --help\n</div>\n", "<?php\n- x\n?>\n",
-                     "<span>\n- command --help\n",                         # a lone tag
-                     "- two: met\n\n  <pre>\n  - nested --flag\n  </pre>\n"):
-            with self.subTest(body):
-                self.assertEqual(check(body), "")
+    def test_html_in_indented_code_is_code(self):
+        # Four columns past its item's content, `<pre>` is indented code, not raw HTML: an
+        # unmarked item after it is still refused for its own reason, a marked one passes.
+        self.assertIn('"- second: export flag" has no status',
+                      check("      <pre>\n\n- second: export flag\n"))
+        self.assertEqual(check("- second: met\n\n      <ul><li>x</li></ul>\n"), "")
 
-    def test_a_real_unmarked_item_after_the_block_is_still_refused(self):
-        for body in ("<pre>\n- command --help\n</pre>\n- second: export flag\n",
-                     "<div>\n- command --help\n\n- second: export flag\n",   # a blank ends it
-                     "Prose.\n<span>\n- second: export flag\n",   # a lone tag: the prose's text
-                     "    <pre>\n\n- second: export flag\n"):     # indented: code, no block
+    def test_html_outside_an_approve_is_read_as_nothing(self):
+        # A REQUEST_CHANGES or COMMENT review is not refused for it; what the HTML holds is not
+        # read, so its `not met` marks nothing and its `- ` line is no item.
+        for body in ("<ul>\n<li>second: not met</li>\n</ul>\n", "<pre>\n- command --help\n</pre>\n"):
             with self.subTest(body):
-                self.assertIn('"- second: export flag" has no status', check(body))
-
-    def test_a_status_in_shown_html_still_counts(self):
-        # Eighteenth review (F18): a <ul> or <div> block is shown text, so its `not met` counts
-        # (even after a heading-like line in it); code or hidden HTML's does not.
-        for body in ("<ul>\n<li>second: not met</li>\n</ul>\n",                 # Vex's case
-                     "<div>\n- second: not met\n</div>\n",
-                     "<div>\n# Notes\n**Notes**\n<li>second: not met</li>\n</div>\n"):
-            with self.subTest(body):
-                self.assertIn("`not met`", check(body))
-        for body in ("<pre>\n- second: not met\n</pre>\n",
-                     "<ul>\n<li>second: met <!-- not met --></li>\n</ul>\n"):
-            with self.subTest(body):
-                self.assertEqual(check(body), "")
-
-
-    def test_a_shown_html_list_item_is_a_requirement(self):
-        # Nineteenth review (F19): a shown <li> outside any Markdown item is an item, so an
-        # unmarked one is refused on APPROVE, as `- second: export flag` is.
-        for body in ("<ul>\n<li>second: export flag</li>\n</ul>\n",            # Vex's case
-                     "<ul><li>second: met</li><li>third: export flag</li></ul>\n",
-                     "<OL>\n  <li class=x>\n    third: export flag\n  </li>\n</OL>\n"):
-            with self.subTest(body):
-                self.assertIn("export flag", check(body))
-                self.assertIn("has no status", check(body))
                 self.assertEqual(check(body, "REQUEST_CHANGES"), "")
-        for body in ("<ul>\n<li>second: met</li>\n<li>third: deferred to #9</li>\n</ul>\n",
-                     "<ul>\n<li>second: met<ul><li>evidence: a.py:3</li></ul></li>\n</ul>\n",
-                     "- two: met\n\n  <ul>\n  <li>evidence: a.py:3</li>\n  </ul>\n",
-                     "<pre>\n<li>evidence: a.py:3</li>\n</pre>\n"):
-            with self.subTest(body):
-                self.assertEqual(check(body), "")
-
-
-    def test_only_shown_html_text_counts(self):
-        # Twentieth review: a tag inside a comment opens no HTML list (F20), and an attribute is
-        # not shown, so its `met` marks nothing (F21); the unmarked item is still refused.
-        for body in ("<ul>\n<!-- <ul> -->\n<li>second: export flag</li>\n</ul>\n",     # F20
-                     "<ul><!--\n<ul>\n--><li>second: export flag</li></ul>\n",
-                     '<ul>\n<li><span title="met">second: export flag</span></li>\n</ul>\n'):
-            with self.subTest(body):
-                self.assertIn('"- second: export flag" has no status', check(body))
-        for body in ('<ul>\n<li><span title="x">second: met</span></li>\n</ul>\n',
-                     "<ul>\n<!-- <li>draft</li> -->\n<li>second: met</li>\n</ul>\n"):
-            with self.subTest(body):
-                self.assertEqual(check(body), "")
-
+                self.assertEqual(check(body, "COMMENT"), "")
 
 if __name__ == "__main__":
     unittest.main()
