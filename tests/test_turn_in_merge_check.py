@@ -161,15 +161,16 @@ class Ready(Ledger, tmc.KindsBase):
                 self.assertNotIn("; ", said.split("reviewer turn", 1)[1])
 
     def test_the_re_arm_is_named_whatever_the_prs_history(self):
-        # Review of #2613, F10: the run listing holds a PR's 100 oldest actionable runs; the
-        # current failed claim read, newer than 100 failed turns at other heads, still gets it.
+        # Review of #2613, F10: the run listing holds 100 actionable runs; the current failed
+        # claim read, newer than 100 failed turns at other heads, still gets its re-arm.
         now = time.time()
         for n in range(100):
             self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
                      created=now - 1000 + n)
         self.add("reviewer", "failed", f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}"
                  ": PR unreadable (GitHub read failed)", created=now)
-        self.assertEqual(len(views.read_only_view(self.db, "acme/widgets", 7)), 100)
+        listed = views.read_only_view(self.db, "acme/widgets", 7)
+        self.assertEqual((len(listed), listed[-1]["seat"]), (100, "reviewer"))
         self.assertIn("re-arm: hermes dk retry --loop w --pr 7 --seat reviewer",
                       " ".join(text for _, text in self.kinds(reviews=[])))
 
@@ -208,6 +209,71 @@ class Ready(Ledger, tmc.KindsBase):
         # An approved, green head with a failed turn left at it is still success.
         self.add("reviewer", "failed", "a stale failure")
         self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
+
+
+class Explain(Ledger, unittest.TestCase):
+    """``explain``'s ledger lines: the current head's failed claim read is its blocker, with the
+    re-arm as its next step, whatever the PR's history (review of #2613, F10)."""
+
+    READ_FAILED = (f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}: "
+                   "PR unreadable (GitHub read failed)")
+
+    def setUp(self):
+        import json
+        import os
+        self.make_ledger()
+        home = self.db.parent
+        loops = home / "review-loops.d"
+        loops.mkdir()
+        (loops / "w.json").write_text(json.dumps({
+            "id": "w", "repo": "acme/widgets", "base": "main", "cap": 3, "fixers": ["dev"],
+            "reviewers": ["reviewer"], "reviewer_seat": "reviewer",
+            "seats": {"reviewer": {"profile": "r", "route": "review"},
+                      "fixer": {"profile": "f", "route": "fix"}},
+            "state_dir": str(home / "state"), "tokens": {}, "read_token": "reader",
+            "host": "http://127.0.0.1:9"}))
+        env = mock.patch.dict(os.environ, {"HERMES_HOME": str(home),
+                                           "DIAKTOROS_CONFIG_DIR": str(loops)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def explain(self):
+        import argparse
+        import contextlib
+        import io
+        from diaktoros import explain
+        from diaktoros.cli import operations
+        report = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
+                  "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
+                  "hooks": "h", "sweep": "w", "github": "g", "blockers": [],
+                  "next": {"action": "the report's own step"}, "head": HEAD}
+        out = io.StringIO()
+        with mock.patch.object(explain, "explain_facts", return_value={}), \
+             mock.patch.object(explain, "explain", return_value=report), \
+             mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(operations.cmd_explain(argparse.Namespace(loop="w", pr=7)), 0)
+        return out.getvalue()
+
+    def test_the_current_failed_claim_read_is_the_blocker_whatever_the_prs_history(self):
+        now = time.time()
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
+                     created=now - 1000 + n)
+        row = self.add("reviewer", "failed", self.READ_FAILED, created=now)
+        said = self.explain()
+        self.assertIn("blocked:    isolated reviewer turn failed at this head — retry limit", said)
+        self.assertIn("next:       no external write — re-arm: hermes dk retry --loop w --pr 7 "
+                      "--seat reviewer", said)
+        # A turn that may have written is final: it holds nothing and names no re-arm.
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created)"
+                        " VALUES(?, 'confirmed', 'g', 1, 0)", (row["id"],))
+        said = self.explain()
+        self.assertNotIn("isolated reviewer turn failed at this head", said)
+        self.assertIn("blocked:    nothing — no guard is holding this PR back", said)
+        self.assertIn("next:       the report's own step", said)
+        self.assertNotIn("--seat reviewer", said)
 
 
 class Refresh(Ledger, unittest.TestCase):

@@ -71,8 +71,9 @@ def dispute_choices(loop_id: str, pr: int) -> str:
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
-    """Up to 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled runs,
-    oldest first. Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
+    """The newest 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled
+    runs, oldest first: a current head's turn is listed whatever the history before it (#2613
+    review, F10). Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
@@ -105,7 +106,7 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
         "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
         f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
         "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
-        " ORDER BY r.created,r.id LIMIT 100", args)]
+        " ORDER BY r.created DESC,r.id DESC LIMIT 100", args)][::-1]
     for row in rows:
         row['write'] = run_supervisor.write_evidence(con, row['id'])
     return rows
@@ -187,8 +188,8 @@ def rearm_note(db: str | Path, repo: str, pr: int, head: str, seat: str, loop_id
     read with no write (#2608: such a turn, ended by a spent rate limit, waits for no one), as
     ``next_step`` gives it; "" for any other turn, or an unreadable ledger. Newest: a head can
     hold several turns of a seat, one per turn key (a reconsidered review, #1334)."""
-    # Read here, not through ``runs_view``, which lists only a PR's 100 oldest actionable runs
-    # (#2613 review, F10): the newest turn and its write evidence, whatever the PR's history.
+    # Read here, not through ``runs_view``, which lists only actionable runs: the newest turn
+    # in any state (a re-armed one is pending), and its write evidence.
     try:
         con = read_only_connect(db)
         if con is None:
