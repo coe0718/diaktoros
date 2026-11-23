@@ -726,7 +726,11 @@ def cmd_restore(args) -> int:
             refused = restore_checks.refusal(manifest, force=args.force)
             if refused:
                 print(f"cannot restore: {refused}")
-            code = 2 if refused else _restore(args, manifest, archive, left)
+            try:
+                code = 2 if refused else _restore(args, manifest, archive, left)
+            except backup.NothingWritten as exc:    # failed staging: no live file swapped
+                print(f"cannot restore: {exc}; nothing was written")
+                code = 2
             if code == 2:      # refused before any write: an interrupted run's pause stays (#2594)
                 migrate.keep_left(left)
             return code

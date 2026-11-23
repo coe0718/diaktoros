@@ -4,13 +4,16 @@ writing anything leaves that marker as it was.
 ``restore`` holds migrate's marker for its run, so it overwrites the one an interrupted migration
 left. Before the fix a refusal (existing state without ``--force``, a run in flight or a ledger
 that cannot be read, an archive judged unsafe, a pre-restore backup that failed) cleared it on the
-way out, and the install ran on again with records that may be half moved. Uses the
-``test_backup`` fixture: a real temporary home, ledger, state files and route registry.
+way out, and the install ran on again with records that may be half moved. A failure while
+staging the archive's members (before any live file is swapped) counts as such a refusal too
+(review on #2630); a failure once the swap began keeps restore's own marker, rolled back or not.
+Uses the ``test_backup`` fixture: a real temporary home, ledger, state files and route registry.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
+import os
 import sys
 from pathlib import Path
 import unittest
@@ -25,7 +28,9 @@ from diaktoros.state import backup, migrate, restore_checks  # noqa: E402
 INTERRUPTED = {"pid": 999999, "started": 1}
 
 
-class RefusedRestoreKeepsThePause(tb.Base):
+class Fixture(tb.Base):
+    """A backup of the starting install, and the marker an interrupted migrate left."""
+
     def setUp(self):
         super().setUp()
         self.archive = self.root / "b.tar.gz"
@@ -45,6 +50,8 @@ class RefusedRestoreKeepsThePause(tb.Base):
                          "the interrupted migration's own marker must stay, not be cleared")
         self.assertTrue(migrate.dead(migrate.migrating()))
 
+
+class RefusedRestoreKeepsThePause(Fixture):
     def test_existing_state_without_force_keeps_the_interrupted_pause(self):
         self.plant()
         code, text = self.restore(force=False)
@@ -98,6 +105,66 @@ class RefusedRestoreKeepsThePause(tb.Base):
         self.assertIn(code, (0, 1), text)
         self.assertEqual(len(seen), 1)
         self.assertNotEqual(seen[0], INTERRUPTED, "the restore writes under its own marker")
+
+
+
+class FailedRestoreKeepsTheRightPause(Fixture):
+    """Failures inside ``put_files``: before the swap they are refusals; after it, not."""
+
+    def queue_fails_to_swap(self, *, rollback_fails: bool):
+        """``os.replace`` that runs out of disk swapping the state file in, after the runtime file
+        was swapped; with ``rollback_fails`` the runtime file's original cannot be put back."""
+        queue, runtime = self.state / "queue.json", self.root / "home" / "diaktoros-runtime.json"
+        real, failed = os.replace, []
+
+        def flaky(src, dst, *a, **k):
+            if Path(dst) == queue and not failed:
+                failed.append(dst)
+                raise OSError(28, "No space left on device")
+            if rollback_fails and Path(dst) == runtime and ".pre-restore-" in Path(src).name:
+                raise OSError(5, "Input/output error")
+            return real(src, dst, *a, **k)
+        return mock.patch.object(os, "replace", flaky)
+
+    def assert_restores_own_marker(self, code: int, text: str) -> None:
+        self.assertEqual(code, 2, text)
+        held = migrate.migrating()
+        self.assertIsNotNone(held, "a failure after the swap began must stay paused")
+        self.assertNotEqual(held, INTERRUPTED)
+        self.assertEqual(held.get("pid"), os.getpid(), "restore's own marker stays")
+
+    def staging_fails(self):
+        return mock.patch.object(backup, "_stage",
+                                 side_effect=OSError(28, "No space left on device"))
+
+    def test_a_full_disk_while_staging_keeps_the_interrupted_pause(self):
+        self.plant()
+        live = (self.state / "queue.json").read_text()
+        with self.staging_fails():
+            code, text = self.restore(force=True)
+        self.assert_refused_and_still_paused(code, text, "No space left on device")
+        self.assertIn("nothing was written", text)
+        self.assertEqual((self.state / "queue.json").read_text(), live)
+
+    def test_a_full_disk_while_staging_with_no_interrupted_run_leaves_no_pause(self):
+        with self.staging_fails():
+            code, text = self.restore(force=True)
+        self.assertEqual(code, 2, text)
+        self.assertIsNone(migrate.migrating())
+
+    def test_a_swap_that_fails_and_is_rolled_back_keeps_restores_own_marker(self):
+        self.plant()
+        with self.queue_fails_to_swap(rollback_fails=False):
+            code, text = self.restore(force=True)
+        self.assertNotIn("nothing was written", text)
+        self.assert_restores_own_marker(code, text)
+
+    def test_a_swap_whose_rollback_fails_keeps_restores_own_marker(self):
+        self.plant()
+        with self.queue_fails_to_swap(rollback_fails=True):
+            code, text = self.restore(force=True)
+        self.assertIn("could not be undone for", text)
+        self.assert_restores_own_marker(code, text)
 
 
 if __name__ == "__main__":
