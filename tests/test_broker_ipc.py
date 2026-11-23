@@ -22,7 +22,7 @@ HEAD = "a" * 40
 REPO = "acme/widgets"
 
 
-class BrokerIPCTests(unittest.TestCase):
+class BrokerIPCBase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(self.temp.cleanup)
@@ -80,6 +80,8 @@ class BrokerIPCTests(unittest.TestCase):
     def review(self):
         return {"operation": "review", "verdict": "APPROVE", "body": "verified\nNot verified: nothing"}
 
+
+class BrokerIPCTests(BrokerIPCBase):
     def test_success_rechecks_live_head_and_audits_without_secrets(self):
         server = self.start()
         with mock.patch.object(broker_client, "SOCKET", str(server.socket_path)):
@@ -188,6 +190,9 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertEqual((got["findings"]["F1"]["state"], got["findings"]["F2"]["state"]),
                          ("fixed", "open"))
         self.assertEqual(got["last_head"], HEAD)
+        # #2573, F6: the new finding keeps the id of the review that raised it; F1 has none.
+        self.assertEqual((got["findings"]["F1"].get("review"), got["findings"]["F2"]["review"]),
+                         (None, 9))
 
     def test_a_restated_finding_that_was_answered_must_deal_with_the_answer_through_the_broker(self):
         # #703: the enforcing entry point. Removing the call in findings.check turns this red.
