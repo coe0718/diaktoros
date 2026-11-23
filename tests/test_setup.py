@@ -755,8 +755,35 @@ class Setup(unittest.TestCase):
         self.assertEqual((self.ran, self.hermes.jobs), ([], jobs))
         # It stops before steps 4 to 6: no summary is printed and the record is not even read.
         self.assertNotIn("onboarding for", out)
-        with patch("diaktoros.onboarding.inspect", side_effect=AssertionError("record read")):
+        self.assert_a_dry_run_reads_no_record()
+
+    def assert_a_dry_run_reads_no_record(self):
+        """Run ``setup --dry-run --arm`` and fail if it read the onboarding record. Every read
+        goes through handlers that catch Exception (``_resume_rows``, ``_print_onboarding``),
+        so a raising stub would be swallowed (#1719): count the calls instead."""
+        from diaktoros import onboarding
+        with patch.object(onboarding, "inspect", wraps=onboarding.inspect) as inspect:
             self.assertEqual(self.setup_cli(*self.flags("--dry-run", "--arm"))[0], 0)
+        self.assertEqual(inspect.call_args_list, [], "a --dry-run read the onboarding record")
+
+    def test_the_dry_run_record_guard_catches_a_read_before_the_dry_run_exit(self):
+        # #2590 review F1: inject the read #1719 describes (``_resume_rows`` ahead of the
+        # dry-run return in ``_setup_watchdog``) and prove the guard fails on it. The old
+        # guard (``inspect`` raising AssertionError) passed here: the handler swallowed it.
+        from diaktoros.cli import setup_command
+        loop = self.installed()
+        self.record_checks(loop)
+        self.record(loop, "armed")
+        original = setup_command._setup_watchdog
+
+        def read_first(args, loop_id, interactive):
+            setup_command._resume_rows(config.load_id(loop_id))
+            return original(args, loop_id, interactive)
+
+        with patch.object(setup_command, "_setup_watchdog", read_first):
+            with self.assertRaisesRegex(self.failureException, "read the onboarding record"):
+                self.assert_a_dry_run_reads_no_record()
+        self.assert_a_dry_run_reads_no_record()     # without the injected read it passes
 
     def test_resuming_leaves_unattended_fixer_push_as_it_was(self):
         loop = self.installed()
