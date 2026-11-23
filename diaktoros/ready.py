@@ -134,7 +134,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             add(FAILURE, _changes_requested(loop, number, head, reviews))
         elif latest is None or gh.review_state(latest) != "APPROVED":
             # No verdict at the head yet is a review still to come.
-            add(PENDING, _not_approved(loop, st, number, head, reviews, author))
+            add(PENDING, _not_approved(loop, st, number, head, reviews, author, pr))
         else:
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
@@ -209,12 +209,18 @@ def _held_for_a_ruling(loop: dict, st, number: int, head: str, reviews,
     return why
 
 
-def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author: str) -> str:
+def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author: str,
+                  pr: dict | None = None) -> str:
     """Why a head has no approval yet. A review-only author's PR that has spent its verdict cap
-    (#1797) says so: no review is coming until a maintainer grants another round."""
+    (#1797) says so: no review is coming until a maintainer grants another round, and how (#2620:
+    the re-request only once the reviewer is no longer pending)."""
+    from . import review_asks
     said = f"not approved at head {head[:7]}"
     if gate.review_cap_hit(loop, st, number, head, len(gate.verdicts(reviews, loop)), author):
-        said += " — review cap reached; a maintainer grants another round"
+        hint = review_asks.rerequest_hint(loop, pr)
+        said += (f" — review cap reached; a maintainer grants another round: `hermes dk review "
+                 f"--loop {loop['id']} --pr {number} --another-round`"
+                 + (f", or {hint}" if hint else ""))
     return _with_turn(loop, number, head, "reviewer", said)
 
 

@@ -394,8 +394,11 @@ class Gate(fg.Base):
     # click reaches the gate as the maintainer's grant.
 
     def pending(self):
-        """The reviewer still requested on the live PR; GitHub's removal answered by ``remove``."""
+        """The reviewer still requested on the live PR (as a push's request leaves it); GitHub's
+        removal answered by ``remove``."""
         self.live = {**self.live, "requested_reviewers": [{"login": "reviewer"}]}
+        if hasattr(self, "removed"):
+            return
         self.removed, self.audited = [], []
         for patch in (mock.patch("diaktoros.broker._write", side_effect=self.remove),
                       mock.patch("diaktoros.broker._audit",
@@ -405,10 +408,19 @@ class Gate(fg.Base):
         self.answer = None
 
     def remove(self, loop, path, method, body, login):
+        """GitHub's DELETE of the request: on success the live PR no longer lists the reviewer."""
         self.removed.append((path, method, body, login))
         if self.answer is not None:
             return self.answer
-        return {**self.live, "requested_reviewers": []}, ""
+        self.live = {**self.live, "requested_reviewers": []}
+        return self.live, ""
+
+    def click(self, sender, **kw):
+        """A re-request on GitHub's page: while the reviewer is still pending, GitHub sends no
+        event at all, so the gate never runs (#2620)."""
+        if review_asks.reviewer_pending(self.loop, self.live):
+            return None
+        return self.ask(sender, **kw)
 
     def capped_notice(self, notes) -> str:
         [held] = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
@@ -427,15 +439,16 @@ class Gate(fg.Base):
         self.assertIn("--another-round`, or re-request the reviewer on GitHub "
                       "(`review_only_rerequest_grants`)", self.capped_notice(notes))
         # A push requests the reviewer again: the next capped request removes it again.
+        self.pending()
         self.ask(OWNER)
         self.assertEqual(len(self.removed), 2)
 
     def test_then_the_maintainers_rerequest_grants_the_round(self):
         self.pending()
-        self.ask(OWNER)
-        self.live = {**self.live, "requested_reviewers": []}
+        self.ask(OWNER)                       # the author's request at the cap: removed
         fire = self.feed()
-        block = self.ask(MAINT, notes=False)
+        block = self.click(MAINT, notes=False)
+        self.assertIsNotNone(block, "GitHub sent nothing: the reviewer is still pending")
         block.assert_called_once()
         self.assertEqual(self.events(fire, "granted"), ["granted"])
 
@@ -450,7 +463,52 @@ class Gate(fg.Base):
         self.assertIn(hint, self.explain()["next"]["action"])
         self.assertNotIn("re-request the reviewer on GitHub (", self.explain()["next"]["action"])
 
+    sweep = tro.Gates.sweep
+
+    def test_the_sweep_removes_a_pending_request_no_capped_event_brought(self):
+        # Review of #2622, F1: a push sends no event, a stranger's request and a request at the
+        # head the reviewer just reviewed are declined before the cap: every sweep reconciles.
+        self.sweep(self.verdicts(self.cap, OLD))          # the first sweep arms and baselines
+        self.pending()
+        self.sweep(self.verdicts(self.cap, OLD))
+        self.assertEqual([call[1] for call in self.removed], ["DELETE"])
+        self.assertEqual(len(self.audited), 1)
+        self.assertFalse(review_asks.reviewer_pending(self.loop, self.live))
+        self.sweep(self.verdicts(self.cap, OLD))          # nothing pending: nothing more
+        self.assertEqual(len(self.removed), 1)
+        for case, reviews, granted in (("below the cap", self.verdicts(self.cap - 1, OLD), False),
+                                       ("a round granted", self.verdicts(self.cap, OLD), True)):
+            with self.subTest(case=case):
+                self.pending()
+                self.removed.clear()
+                if granted:
+                    self.st.review_cap_grant(7, HEAD, self.cap)
+                self.sweep(reviews)
+                self.assertEqual(self.removed, [])
+
+    def test_ready_names_the_grant_and_how_the_button_works(self):
+        # Review of #2622, F2: the merge check's words say how to grant a round, and offer the
+        # re-request only once the reviewer is no longer pending.
+        from diaktoros import ci, ready
+        def said():
+            kinds = ready.assess_kinds(self.loop, self.st, self.live, self.verdicts(self.cap, OLD),
+                                       ci.CIState(passed=["tests"]), self.live)
+            return " ".join(text for _, text in kinds)
+        self.pending()
+        text = said()
+        self.assertIn("review cap reached; a maintainer grants another round: `hermes dk review "
+                      "--loop one --pr 7 --another-round`", text)
+        self.assertIn("remove the reviewer's pending request on GitHub and request them again",
+                      text)
+        self.live = {**self.live, "requested_reviewers": []}
+        self.assertIn("--another-round`, or re-request the reviewer on GitHub", said())
+
     def test_nothing_is_removed_below_the_cap_off_or_where_no_rerequest_can_grant(self):
+        self.pending()
+        self.ask(OWNER)                       # the positive control: at the cap, removed
+        self.assertEqual(len(self.removed), 1)
+        self.removed.clear()
+        self.audited.clear()
         self.pending()
         self.ask(OWNER, reviews=self.verdicts(self.cap - 1, OLD), ends=SystemExit)
         self.write(**{KEY: False})
