@@ -132,6 +132,20 @@ class HtmlComments(Mocked):
         self.assertIn('"- second: x `', check("- second: x ` <!-- met -->\n"))  # no span: hidden
         self.assertEqual(check("- second: `<!--` x <!-- not met --> met\n"), "")
 
+    def test_a_code_span_across_lines_hides_nothing(self):
+        # Fourteenth review (F14): a span that closes on the next line was read as a comment.
+        self.assertIn("`not met`", check("- second: met `example\n  text <!--` not met\n"))
+        reason = check("- second: `a <!--` x\n  y ` <!-- met -->\n")   # the span closes early
+        self.assertIn('"- second: `a <!--` x" has no status', reason)
+        self.assertEqual(check("- second: met `open\n\n- third: x <!-- not met --> met\n"), "")
+
+    def test_an_escaped_backtick_opens_no_code_span(self):
+        # Fifteenth review (F15): ``\\``` read as a span opener, so a real comment showed.
+        self.assertIn('"- second: export flag', check("- second: export flag \\`x <!-- met --> y`\n"))
+        self.assertIn("`not met`", check("- second: met \\\\`<!--` not met\n"))  # \\ is a \
+        self.assertEqual(check("- second: x \\<!-- met -->\n"), "")  # shown as text: met
+        self.assertEqual(check("- second: export flag `x <!-- met --> y` met\n"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,7 +19,10 @@ item blanked the top-level items after it). A comment inside a line is hidden to
 drops it from the line, and one it leaves open hides the lines after it up to its ``-->``, or to
 the next blank line, item, fence or comment line (twelfth review: ``- x <!-- met -->`` read as
 marked ``met``). One that never closes shows as text, so its words are dropped, never counted.
-A ``<!--`` inside a code span is text, not a comment (thirteenth review).
+A ``<!--`` inside a code span is text, not a comment (thirteenth review). Inline comments and
+code spans are read over a whole paragraph, as Markdown reads them, not line by line: a code span
+may run across lines (fourteenth review), and a backslash escapes the character after it, so an
+escaped backtick opens no code span (fifteenth review).
 """
 from __future__ import annotations
 
@@ -28,7 +31,8 @@ import re
 ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 COMMENT = re.compile(r"^[ \t]*<!--(.*)$")
-TICKS = re.compile(r"`+")
+# An inline token: a backslash escape (ASCII punctuation), a backtick run or a comment opener.
+INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|<!--")
 
 
 def width(text: str) -> int:
@@ -55,34 +59,40 @@ def code_line(found, at: int, cols: list[int]) -> bool:
     return bool(found) and at - max((c for c in cols if c <= at), default=0) >= 4
 
 
-def visible(line: str, hidden: bool) -> tuple[str, bool]:
-    """``line`` without the inline HTML comments in it, and whether one is still open at its end;
-    ``hidden``: one was open at its start (twelfth review on #2573). A code span is text, so a
-    ``<!--`` inside one opens nothing (thirteenth review); an unmatched backtick run is text."""
-    out, at = "", 0
-    while True:
-        if hidden:
-            end = line.find("-->", at)
-            if end < 0:
-                return out, True
-            at, hidden = end + 3, False
+def visible(text: str) -> str:
+    """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
+    (twelfth review on #2573); each line break they held is kept, so the lines still line up.
+    A code span is text, so a ``<!--`` inside one opens nothing (thirteenth review), and it may
+    run across lines (fourteenth); an unmatched backtick run is text. A backslash escapes the
+    character after it: an escaped backtick opens no span, an escaped ``<`` no comment (fifteenth).
+    A comment that never closes hides the rest of the paragraph."""
+    out, at = [], 0
+    while (token := INLINE.search(text, at)) is not None:
+        start, stop = token.span()
+        if token.group() == "<!--":                     # ``<!-->`` closes at once
+            end = text.find("-->", start + 2)
+            out.append(text[at:start])
+            at = len(text) if end < 0 else end + 3
+            out.append("\n" * text.count("\n", start, at))
             continue
-        start, tick = line.find("<!--", at), TICKS.search(line, at)
-        if start < 0:
-            return out + line[at:], False
-        if tick and tick.start() < start:               # a code span first: kept as it is
-            close = re.compile(rf"(?<!`){tick.group()}(?!`)").search(line, tick.end())
-            stop = close.end() if close else tick.end()
-            out, at = out + line[at:stop], stop
-            continue
-        out, at, hidden = out + line[at:start], start + 2, True   # ``<!-->`` closes at once
+        if token.group()[0] == "`":                     # a code span: kept as it is
+            close = re.compile(rf"(?<!`){token.group()}(?!`)").search(text, stop)
+            stop = close.end() if close else stop
+        out.append(text[at:stop])
+        at = stop
+    return "".join(out) + text[at:]
 
 
 def unfenced(lines: list[str]) -> list[str]:
     """``lines`` with each fenced code block (its fences too) and HTML comment blanked: code or
     hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
-    evidence read as unmarked items)."""
-    out, fence, cols, blank, comment, hidden = [], None, [], False, None, False
+    evidence read as unmarked items). The lines left are read for inline comments a paragraph
+    at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
+    out, fence, cols, blank, comment, para = [], None, [], False, None, []
+
+    def flush():                          # the paragraph so far, read inline as one text
+        out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
+        para.clear()
     for line in lines:
         at, ended = indent(line), False
         if comment is not None and line.strip() and at < comment:
@@ -103,15 +113,17 @@ def unfenced(lines: list[str]) -> list[str]:
                 out.append("")
                 continue
         if not line.strip():
+            flush()
             out.append(line)
-            blank, hidden = True, False
+            blank = True
             continue
         item, found, opener = ITEM.match(line), FENCE.match(line), COMMENT.match(line)
         item = None if code_line(item, at, cols) else item
         if item or found or opener or blank or ended:   # neither is a lazy continuation
             while cols and at < cols[-1]:
                 cols.pop()
-        hidden = hidden and not (item or found or opener or ended)   # a new block: shown
+        if item or found or opener or ended:   # a new block: its own paragraph
+            flush()
         blank, col = False, cols[-1] if cols else 0
         if opener and at - col <= 3:
             comment = None if "-->" in opener.group(1) else col
@@ -123,6 +135,7 @@ def unfenced(lines: list[str]) -> list[str]:
             continue
         if item:
             cols.append(item_col(item))
-        text, hidden = visible(line, hidden)
-        out.append(text)
+        out.append(line)
+        para.append(line)
+    flush()
     return out
