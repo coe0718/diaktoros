@@ -2331,6 +2331,23 @@ test('page: a withheld recorded head is admitted and reads unknown in the list a
   assert.match(drawer, /unknown grok-4\.7 would have approved/)
 })
 
+test('page: a run head is withheld, a short SHA or the issue word, never other text', async () => {
+  // #2475: the row's own head is shape-checked like its retry target, so a malformed head that a
+  // backend failed to withhold never reaches the list or the drawer verbatim.
+  const h = await harness()
+  h.render('page')
+  const row = { pr: 42, seat: 'reviewer', state: 'failed', why: 'failed: see explain',
+    retry: { eligible: false, head: '', reason: 'withheld', target: 'head' } }
+  for (const head of ['', 'abcdef1', 'issue']) {
+    h.respond(stalled([{ ...row, head }]))
+    assert.equal((await h.options.now.queryFn()).runs[0].head, head)
+  }
+  for (const head of ['ghp_SECRETxxxx', 'ghp_SEC', 'ABCDEF1', 'issues', ' abcdef1', null]) {
+    h.respond(stalled([{ ...row, head }]))
+    await assert.rejects(h.options.now.queryFn(), /Invalid now response/)
+  }
+})
+
 test('page: an issue fixer whose rows mix the word and a commit keeps /now and every run', async () => {
   // #2397 review F1: an older row's verdict names the head a retry would re-arm, and its target
   // describes THAT head, not the row shown. Both orderings, exactly as the backend emits them.
@@ -2786,6 +2803,15 @@ test('drawer: unknown or no issue context, an unread, unavailable or cut list ar
   assert.doesNotMatch(d.text(), /No declared dependency involves/)
   d = await depsDrawer(5, 5, (await harness()).good(cut))
   assert.match(d.text(), /Only 50 of 60 dependencies were read; #5 may have more\./)
+  // #2476: a cut waiver list is said too, whether or not a waiver read involves the issue.
+  const cutWaivers = depsFixture({ waivers_total: 60, waivers: Array.from({ length: 50 }, (_, i) => ({ issue: 100 + i, on: i === 0 ? 7 : 200, by: 'operator', at: null })) })
+  d = await depsDrawer(99, 99, (await harness()).good(cutWaivers))
+  assert.match(d.text(), /None of the 50 waivers read involve #99; 10 more were not read\./)
+  d = await depsDrawer(7, 7, (await harness()).good(cutWaivers))
+  assert.match(d.text(), /#100 no longer waits on #7/)
+  assert.match(d.text(), /Only 50 of 60 waivers were read; #7 may have more\./)
+  d = await depsDrawer(99, 99)
+  assert.doesNotMatch(d.text(), /waivers read|waivers were read/)
   // A malformed issue context never reaches the cache.
   d.h.respond({ ...d.data, issue: '12' }); await assert.rejects(d.h.options.pr.queryFn(), /Invalid pr response/)
   d.h.respond({ ...d.data, issue: 0 }); await assert.rejects(d.h.options.pr.queryFn(), /Invalid pr response/)
@@ -2970,7 +2996,10 @@ function healthFixture(loop = 'fixture-loop') {
 }
 
 for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'), 'caller'],
-  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'http503']]) {
+  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'http503'],
+  // #2538, as the docs say: a status is read from a brace-delimited body, parsed or not.
+  [new Error('503: {not json}'), 'http503'], [new Error('503: []'), 'unreachable'],
+  [new Error('503: <html>private</html>'), 'unreachable']]) {
   test('health fallback retains validated local checks and honest disclosure: ' + failure.message, async () => {
     const h = await harness(); h.render('page')
     const offline = { ...healthFixture(), offline: true, checks: [
