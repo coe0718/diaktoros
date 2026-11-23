@@ -83,6 +83,24 @@ class BackupError(RuntimeError):
     pass
 
 
+class NothingWritten(BackupError):
+    """A restore failed before any live file was swapped (#2594 review): in ``put_files``'
+    staging, or in the reads before it. It wrote nothing, so its caller may treat it as a
+    refusal."""
+
+
+@contextlib.contextmanager
+def nothing_written():
+    """Raise any ``Exception`` inside as :class:`NothingWritten`: for the steps of a restore before
+    its first live write (a ``KeyboardInterrupt`` is not wrapped)."""
+    try:
+        yield
+    except NothingWritten:
+        raise
+    except Exception as exc:
+        raise NothingWritten(str(exc)) from exc
+
+
 def backups_dir() -> pathlib.Path:
     """Where ``create`` puts a default-named archive, and the one place ``doctor``'s
     ``backup:fresh`` check looks for one (#1081)."""
@@ -615,7 +633,8 @@ def put_files(archive: pathlib.Path, manifest: dict) -> int:
     """Put the archive's files back, all or none (#1049).
 
     Every member is first streamed to a temp file beside its target (``_stage``), so a member that
-    cannot be read or a full disk fails before anything live is touched. Only then are the staged
+    cannot be read or a full disk fails before anything live is touched; such a failure is raised
+    as ``NothingWritten`` (a ``KeyboardInterrupt`` is not wrapped). Only then are the staged
     files swapped in (``_swap_in``), each displaced file renamed aside and journalled; if a swap
     fails, the journal is rolled back (``_roll_back``) and the live files are what they were. A
     rollback that itself fails is named in the ``BackupError``, with where each original was left.
@@ -624,7 +643,7 @@ def put_files(archive: pathlib.Path, manifest: dict) -> int:
     staged: list[tuple[pathlib.Path, pathlib.Path, bool]] = []
     undo: list[tuple[pathlib.Path, pathlib.Path | None]] = []
     try:
-        with tarfile.open(archive, "r:gz") as tar:
+        with nothing_written(), tarfile.open(archive, "r:gz") as tar:   # no live file swapped yet
             for entry in manifest["files"]:
                 member = tar.getmember(entry["member"])
                 if not member.isfile():
