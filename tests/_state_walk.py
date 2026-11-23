@@ -9,8 +9,9 @@ no new name turns up, on a dir where every file found holds what the methods wro
 file read only on a branch another file's data opens is found too. ``observations.json`` and
 ``kv.json`` (the key-value API's path) are always in it. Each junk shape is planted in all of
 them at once, and then (#2589 F8) in each file a method touched alone, beside clean companions:
-every other file it touched holding what the methods wrote there, so a file read only when
-another holds a valid value is reached with junk too. A file a call touches on junk that was
+every other file it touched holding what the methods wrote there, folded, and then one at a time
+each other value a method wrote there whole (``tests/_state_walk_seeds.py``), so a file read only
+when another holds one valid value is reached with junk too, whichever value that is. A file a call touches on junk that was
 not planted (a branch only junk opens) is planted on a further pass, and one still unplanted
 after ``ROUNDS`` passes fails the walk.
 
@@ -38,6 +39,7 @@ from diaktoros import state
 from _state_walk_cases import (  # noqa: F401 - re-exported for the tests
     ANY_SHAPE, ARGS, EMPTY, FLAT, HEAD, HINTS, JUNK_STRINGS, KEEPS, KEY, LIST, LOCK, METHOD_ARGS,
     NEVER, RAISES, SCALARS, SHAPES, SKIP, new_loop)
+from _state_walk_seeds import alternative, variants
 from _state_walk_oracle import (  # noqa: F401 - re-exported for the tests
     conforms, healing, kind, plain, returns, strings)
 from _state_walk_trace import (  # noqa: F401 - re-exported for the tests
@@ -53,7 +55,7 @@ class Walk:
     def __init__(self, cls, root: Path):
         self.cls, self.root, self.made = cls, root, 0
         self.clean, self.wrote, self.samples, self.strays, self.files = {}, {}, {}, set(), None
-        self.touched, self.bases = {}, {}
+        self.touched, self.bases, self.alts = {}, {}, {}
 
     def methods(self, only=None) -> list[str]:
         return [n for n in public_methods(self.cls)
@@ -94,7 +96,9 @@ class Walk:
         return outcome, seen, written
 
     def sample(self, file: str, value) -> bool:
-        """Fold a value a call wrote into ``file``'s valid sample; whether it gained a part."""
+        """Fold a value a call wrote into ``file``'s valid sample, keeping it whole among the
+        file's alternatives too; whether the sample gained a part."""
+        alternative(self.alts, file, value)
         have = self.samples.get(file, _MISSING)
         if isinstance(have, dict) and isinstance(value, dict):
             new = {**value, **have}
@@ -132,14 +136,13 @@ class Walk:
             again, grown = set(), set()
             for name in sorted(todo):
                 seed = {f: self.samples[f] for f in sorted(touched[name] & set(self.samples))}
-                if not seed:
-                    continue
-                _, seen, written = self.trace(name, seed)
-                if seen - touched[name]:
-                    touched[name] |= seen
-                    again.add(name)
-                grown |= {f for f, value in written.items()
-                          if value is not _MISSING and self.sample(f, value)}
+                for one in variants(seed, self.alts):
+                    _, seen, written = self.trace(name, one)
+                    if seen - touched[name]:
+                        touched[name] |= seen
+                        again.add(name)
+                    grown |= {f for f, value in written.items()
+                              if value is not _MISSING and self.sample(f, value)}
             todo = again | {name for name, seen in touched.items() if seen & grown}
             if not todo:
                 break
@@ -147,19 +150,20 @@ class Walk:
                                         {state.OBSERVATIONS_FILE, "kv.json"}))
         return self.files
 
-    def base(self, name: str, file: str):
-        """``(companions, outcome, writes)`` for junk in ``file`` alone: every other file
-        ``name`` touched that holds a valid sample, and the call on those alone (None when
-        there are none, so the all-junk pass already covers it)."""
-        companions = {f: self.samples[f] for f in sorted(self.touched.get(name, set()) - {file})
-                      if f in self.samples}
-        if not companions:
-            return None
-        key = (name, file, repr(companions))
-        if key not in self.bases:
-            outcome, _, written = self.trace(name, companions)
-            self.bases[key] = companions, outcome, {(name, f): v for f, v in written.items()}
-        return self.bases[key]
+    def base(self, name: str, file: str) -> list:
+        """Each ``(companions, outcome, writes)`` for junk in ``file`` alone: every other file
+        ``name`` touched that holds a valid sample, folded and then each alternative in turn
+        (``variants``), and the call on those alone (none when no other file holds one, so the
+        all-junk pass already covers it)."""
+        seed = {f: self.samples[f] for f in sorted(self.touched.get(name, set()) - {file})
+                if f in self.samples}
+        bases = []
+        for companions in variants(seed, self.alts):
+            if (key := (name, file, repr(companions))) not in self.bases:
+                outcome, _, written = self.trace(name, companions)
+                self.bases[key] = companions, outcome, {(name, f): v for f, v in written.items()}
+            bases.append(self.bases[key])
+        return bases
 
     def check(self, name: str, shape, files, base=None) -> tuple[list[str], set[str]]:
         """The call's problems with ``shape`` planted in every one of ``files`` (beside
@@ -221,9 +225,8 @@ class Walk:
                     problems, seen = self.check(name, shape, sorted(files))
                     strays |= seen - files
                     failures += [f"{name}[{shape!r:.30}]: {p}" for p in problems]
-                for file in sorted(self.touched.get(name, set()) & files):
-                    if (base := self.base(name, file)) is None:
-                        continue
+                for file, base in ((f, b) for f in sorted(self.touched.get(name, set()) & files)
+                                   for b in self.base(name, f)):
                     for shape in SHAPES:
                         problems, seen = self.check(name, shape, [file], base)
                         strays |= seen - files

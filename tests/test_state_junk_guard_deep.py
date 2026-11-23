@@ -13,6 +13,8 @@ writer that rewrites an object but keeps the junk inside what it writes fails to
 F8 (round 7): junk in a file read only when ANOTHER file holds a valid value is reached, though
 every all-junk call replaces that value with junk: each file is also fuzzed alone, beside clean
 companions (Vex's probe: ``arm_probe`` writes the trigger, ``read_probe`` then reads the target).
+And (round 8) whichever valid value the companion must hold: two writers' conflicting values
+(``aa_off`` writes ``ready: false``, ``bb_on`` ``ready: true``) are each laid beside the target.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -71,6 +73,19 @@ class ProbeMixin:
         if not (isinstance(trigger, dict) and trigger.get("ready") is True):
             return {}
         path = self.dir / "independent-target.json"
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
+    def aa_off(self) -> None:                                 # first: the folded sample's
+        self._save(self.dir / "conflict-trigger.json", {"ready": False})
+
+    def bb_on(self) -> None:
+        self._save(self.dir / "conflict-trigger.json", {"ready": True})
+
+    def cc_read(self) -> dict:
+        trigger = self._load(self.dir / "conflict-trigger.json", {})
+        if not (isinstance(trigger, dict) and trigger.get("ready") is True):
+            return {}
+        path = self.dir / ("conflict-" + "target" + ".json")
         return {**json.loads(path.read_text())} if path.exists() else {}
 
     def merge_entry(self, number: int) -> None:               # keeps a junk entry whole
@@ -146,6 +161,13 @@ class TheWalkCatchesDeeper(unittest.TestCase):
         beside = of(failures, "read_probe", "in independent-target.json]: raised TypeError")
         self.assertEqual(len(beside), BESIDE, failures)
         self.assertEqual(of(failures, "read_probe", everywhere=True), [])  # all-junk: unreached
+
+    def test_junk_read_only_beside_a_conflicting_writers_value_fails_the_walk(self):
+        self.assertIn("conflict-target.json", self.walk.discover())   # on bb_on's value
+        self.assertEqual(self.walk.samples["conflict-trigger.json"], {"ready": False})
+        failures = self.walk.run(["cc_read"])
+        beside = of(failures, "cc_read", "in conflict-target.json]: raised TypeError")
+        self.assertEqual(len(beside), BESIDE, failures)
 
     def test_a_reader_returning_the_stored_object_fails_the_walk(self):
         # Vex's stub: fix_handoff returns fix-asks.json itself when it is an object. Right on a
