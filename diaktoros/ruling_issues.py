@@ -35,9 +35,10 @@ from .run_supervisor import shadow_filings
 
 # The first `path:line` or `path:line-line` a body cites (#2209), extensionless paths such as
 # `Makefile:5` included. Never one inside a URL: each whole URL, its query string with it, is
-# blanked out first; a last component of digits alone (`12:30`) names no file.
+# blanked out first; a last component of digits alone (`12:30`) names no file, nor does a line
+# number (or range end) past nine digits, which ``int`` may refuse (review of #2585, F10).
 _URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.I)
-_CITE = re.compile(r"(?<![\w./:-])((?:[\w.-]+/)*[\w-][\w.-]*):(\d+)(?:-(\d+))?(?!\d)")
+_CITE = re.compile(r"(?<![\w./:-])((?:[\w.-]+/)*[\w-][\w.-]*):(\d{1,9})(?:-(\d{1,9}))?(?!-?\d)")
 
 
 def _cited(body) -> tuple[str, int, int] | None:

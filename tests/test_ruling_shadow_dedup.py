@@ -103,6 +103,27 @@ class FilePending(unittest.TestCase):
                                                  "run_id=? ORDER BY seq", (run,)).fetchall(),
                                      [(1, "duplicate"), (2, "posted")])
 
+    def test_a_line_number_too_long_to_read_cites_nothing_and_the_sweep_goes_on(self):
+        # Review of #2585, F10: ``int`` refused a 4,400-digit line number, so every sweep raised
+        # and the row stayed recorded. Now it cites nothing; a later citation still counts.
+        huge = "diaktoros/history.py:" + "9" * 4400
+        self.assertIsNone(ruling_issues._cited(huge))
+        self.assertIsNone(ruling_issues._cited("diaktoros/history.py:48-" + "9" * 4400))
+        self.assertEqual(ruling_issues._cited(huge + " see diaktoros/history.py:48"),
+                         ("diaktoros/history.py", 48, 48))
+        run = self.ruled_over_shadow(huge, "diaktoros/history.py:48: false doc",
+                                     shadow_state="posted")
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,"
+                        "labels,state,created,updated) VALUES(?,2,?,7,?,'Another finding',"
+                        "'another finding','no place','[]','recorded',1,1)", (run, REPO, HEAD))
+        _, posts = self.file()
+        self.assertEqual(sorted(post[1]["title"] for post in posts),
+                         sorted([RULING_TITLE, "Another finding"]))
+        with ledger.connect(self.db) as con:
+            self.assertEqual(con.execute("SELECT state FROM shadow_issues WHERE run_id=? ORDER BY "
+                                         "seq", (run,)).fetchall(), [("posted",), ("posted",)])
+
     def test_only_the_ruled_shadow_at_the_same_head_and_still_to_be_filed_counts(self):
         cited = "diaktoros/history.py:48: false doc"
         for name, kwargs in (("another head", {"shadow_head": "f" * 40}),
