@@ -1157,7 +1157,7 @@ def check_app_signature(report: Report, loop: dict, *, ping: bool = False) -> No
     elif found.startswith("no deliveries"):
         report.add(step, name, WARN, f"{app}: {found}",
                    f"`hermes dk selftest --loop {loop['id']} --no-model --ping` redelivers the "
-                   "App's newest ping, if GitHub still holds one")
+                   f"App's newest ping, if one is among its newest {app_deliveries.SEARCHED}")
     else:
         report.add(step, name, PASS, f"{app}: {found} — signature accepted")
 

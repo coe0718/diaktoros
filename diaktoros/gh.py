@@ -34,7 +34,7 @@ import urllib.request
 from typing import NamedTuple
 
 from .util import epoch, log, login_entry
-from . import envnames
+from . import envnames, gh_paging
 
 API = "https://api.github.com"
 # The reads that inspect the credential itself, read for their headers (scopes, expiry, limits):
@@ -104,7 +104,8 @@ def _gate() -> dict:
 def gate_scope(deadline: float, per_call: float = 30.0):
     """This call's GitHub budget (#1046): ``begin_gate`` for the calls made inside it only, with
     its own failed-call list and ``record_failures`` flag. Yields the scope's state."""
-    scope = {"deadline": deadline, "errors": [], "per_call": per_call, "record": False}
+    scope = {"deadline": deadline, "errors": [], "per_call": per_call, "record": False,
+             "budget": deadline - time.monotonic()}
     token = _SCOPED.set(scope)
     try:
         yield scope
@@ -113,7 +114,8 @@ def gate_scope(deadline: float, per_call: float = 30.0):
 
 
 def begin_gate(deadline: float, per_call: float = 30.0) -> None:
-    _gate().update(deadline=deadline, errors=[], per_call=per_call)
+    _gate().update(deadline=deadline, errors=[], per_call=per_call,
+                   budget=deadline - time.monotonic())
 
 
 def end_gate() -> list[tuple[str, str, str]]:
@@ -229,12 +231,12 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
             login: str | None = None) -> Response:
     """One REST call with its HTTP status and response headers. No logging, no interpretation.
 
-    ``fetch`` is this without the status: most callers only need "did it work". The watchdog's
-    health check needs the rest — a 401 (the token is dead) and a 502 (GitHub is) ask different
-    things of the operator, and the token's expiry arrives only as a response header.
+    ``fetch`` is this without the status. The watchdog's health check needs the rest: a 401 (the
+    token is dead) and a 502 (GitHub is) ask different things of the operator, and the token's
+    expiry arrives only as a response header.
 
-    Budgeted (#75): inside a gate or a watchdog sweep each call gets at most what is left of the
-    budget, and a call that fails because the budget ran out raises ``GateBudgetExceeded``.
+    Budgeted (#75): in a gate a call gets what the budget has left after its token (#2578);
+    failing as it runs out raises ``GateBudgetExceeded``.
     """
     timeout = _budgeted(method, path)
     _LAST.status = None
@@ -258,6 +260,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         _LAST.unsent = True             # no credential: the request was never built or sent
         gh_calls.record(who, method, path, "unsent")
         return Response(None, str(exc))
+    timeout = min(timeout, _budgeted(method, path))     # less what the token took
     # #1646: a GET asks whether its stored answer changed; a 304 is free on the rate limit.
     cached = gh_cache.lookup(who, path) if method == "GET" else None
     data = json.dumps(body).encode() if body is not None else None
@@ -645,37 +648,42 @@ def reviews_read(loop: dict, number: int,
 
 def _read_pages(loop: dict, path: str, what: str, max_pages: int,
                 login: str | None = None,
-                keep_partial: bool = False,
-                created_floor: float = 0.0) -> tuple[list[dict] | None, str]:
+                keep_partial: bool = False, created_floor: float = 0.0,
+                start: int = 1, progress: dict | None = None) -> tuple[list[dict] | None, str]:
     """Every page of a ``per_page=100`` listing, or ``(None, reason)`` — never a prefix of it.
 
-    A failed, malformed or oversized page anywhere makes the whole listing unknown: the caller
-    would otherwise read "the first N items" as "all of them". With ``keep_partial`` a listing
-    that is merely past the page bound returns the pages read *and* the reason (an incomplete
-    listing the caller must say is incomplete); a failed or malformed page is still unknown.
+    A failed, malformed or oversized page makes the whole listing unknown, or the caller would
+    read "the first N items" as "all of them". With ``keep_partial``, a listing past the page
+    bound, or one the budget cannot finish (#1870, ``gh_paging``), returns the pages read *and*
+    the reason, which the caller must report; a failed or malformed page is still unknown. Read
+    from page ``start``; a cut sets ``progress['next']`` to the page not read.
 
-    A listing of exactly ``max_pages`` full pages is told from a longer one by reading one page
-    past the bound (#1146): empty means whole, any item means past the bound. That probe is one
-    extra request, made only when every page up to the bound was full. A failed or malformed
-    probe proves neither: the listing is not proven whole, and its reason says that page could
-    not be read, not that the listing exceeds the bound (#1727).
+    Exactly ``max_pages`` full pages is told from more by one probe page past the bound (#1146),
+    read only when every page was full: empty means whole, an item means past the bound. A failed
+    probe proves neither, and its reason says so, not "exceeds" (#1727).
 
-    ``created_floor`` is for a listing sorted by ``created`` descending (#1147): the caller needs
-    nothing created before that epoch, so a page whose last item is older than it ends the
-    listing as whole, however many pages the newer ones took. An item with no readable
-    ``created_at`` never ends it.
+    ``created_floor`` (a listing sorted by ``created`` descending, #1147): a page whose last item
+    is older than it ends the listing as whole; an item with no readable ``created_at`` never does.
     """
     result: list[dict] = []
     # One page past the bound is a probe: a full last page does not prove another exists, so a
     # listing of exactly ``max_pages`` full pages is whole when the next page is empty.
-    for page in range(1, max_pages + 2):
+    for page in range(start, max_pages + 2):
         page_path = path if page == 1 else f"{path}&page={page}"
-        items, error = fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
+        def read():
+            return fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
+        items, error, cut = (gh_paging.later_page(read, what, page) if keep_partial
+                             and page > 1 else (*read(), ""))
+        if cut:                        # #1870: no page the budget may not fit
+            if progress is not None:
+                progress["next"] = page
+            return result, cut
         if not error and (not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE
                           or not all(isinstance(item, dict) for item in items)):
             error = f"invalid {what} list"
-        if page > max_pages:              # the probe: only an empty page proves the listing whole
-            if not error and not items:
+        if page > max_pages:              # the probe past the bound
+            # An empty probe, or one older than the floor (sorted desc, #1868), proves it whole.
+            if not error and (not items or _older_than(items[0], created_floor)):
                 return result, ""
             # An unreadable probe proves neither whole nor longer: say so, not "exceeds" (#1727).
             reason = (f"{what} page {page}, past the {max_pages}-page bound, could not be read: "
@@ -796,7 +804,8 @@ def open_prs(loop: dict, errors: list | None = None):
 MAX_ISSUE_PAGES = 30
 
 
-def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
+def open_issues_read(loop: dict, since: str, start: int = 1,
+                     progress: dict | None = None) -> tuple[list[dict] | None, str]:
     """Open issues and PRs updated since ``since`` (ISO-8601), newest first (#849, #1037).
 
     GitHub's issues listing includes pull requests (they carry ``pull_request``) and cannot be
@@ -804,14 +813,14 @@ def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
     first so a burst (the case the recovery sweep exists for) stays reachable. It keeps paging
     until a page reaches issues created before ``since`` (older than the window, so nothing the
     caller wants lies beyond), so eligible issues older than the newest 500 are read too (#1147).
-    A listing past
-    the bound returns the pages read *and* a reason: ``(issues, reason)`` is an incomplete
-    listing the caller must report; ``(None, reason)`` is unreadable; ``(issues, "")`` is whole.
+    A listing past the bound or the budget returns the pages read *and* a reason: ``(issues,
+    reason)`` is incomplete and the caller must report it; ``(None, reason)`` is unreadable;
+    ``(issues, "")`` is whole from page ``start`` on. ``start``/``progress``: ``_read_pages``.
     """
     path = (f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=desc"
             f"&since={since}&per_page=100")
     return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES, keep_partial=True,
-                       created_floor=epoch(since))
+                       created_floor=epoch(since), start=start, progress=progress)
 
 
 def request_review(loop: dict, number: int, login: str | None = None, as_login: str | None = None):
