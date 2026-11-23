@@ -140,7 +140,7 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
         waits = review_asks.grant_by_rerequest(
             loop, st, number, head, rounds, sender if action == "review_requested" else "")
     if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
-        if review_asks.clear_pending_request(loop, number, head, pr):
+        if review_asks.clear_pending_request(loop, st, number, head, rounds, pr):
             pr = {**pr, "requested_reviewers": []}
         hint = review_asks.rerequest_hint(loop, pr)
         ask = f", or {hint}" if hint else ""

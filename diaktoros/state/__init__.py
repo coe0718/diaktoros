@@ -43,6 +43,7 @@ STATE_LOCK = register_lock("state.lock")
 LOG_LOCK = register_lock("watchdog.log.lock")
 BREACH_LOCK = register_lock("breach.lock")
 TRANSITIONS_LOCK = register_lock("stack-transitions.lock")
+REVIEW_REQUEST_LOCK = register_lock("review-requests.lock")
 OBSERVATIONS_FILE = "observations.json"
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
@@ -1326,10 +1327,25 @@ class LoopState(FixAsks):
             self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
+    @contextlib.contextmanager
+    def review_request_lock(self):
+        """One step for a review-only PR's grant and the removal of its pending review request
+        (#2622 review, F4): the removal checks for a grant and sends GitHub's DELETE under it, so
+        no grant lands between the two. Taken before the state lock, never inside it; while it is
+        held the removal takes no other state lock, and a grant takes only the state lock."""
+        hostdirs.ensure(self.dir)
+        fd = os.open(self.dir / REVIEW_REQUEST_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing releases the flock
+
     def review_cap_grant(self, number: int, head: str, rounds: int, replacing=None) -> bool:
         """Allow one more verdict at ``head`` once ``rounds`` are spent. False when the head holds
-        that grant already, or ``replacing`` (#2401) is no longer the grant."""
-        with self.locked():
+        that grant already, or ``replacing`` (#2401) is no longer the grant. Never while a removal
+        of the PR's review request is deciding (``review_request_lock``)."""
+        with self.review_request_lock(), self.locked():
             data = self._review_caps()
             entry = data.get(str(number)) if isinstance(data.get(str(number)), dict) else {}
             if (entry.get("grant") == {"head": head, "rounds": rounds}

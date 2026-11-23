@@ -21,6 +21,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -486,6 +487,46 @@ class Gate(fg.Base):
                 self.sweep(reviews)
                 self.assertEqual(self.removed, [])
 
+    def test_a_grant_made_while_the_removal_decides_is_never_followed_by_it(self):
+        # Review of #2622 round 2, F4: the sweep (or the gate) has found the PR capped with no
+        # grant; a maintainer's grant lands before its DELETE. The DELETE must not follow it.
+        real = review_asks.clear_pending_request
+
+        def granted_first(*args):
+            self.st.review_cap_grant(7, HEAD, self.cap)
+            return real(*args)
+        self.sweep(self.verdicts(self.cap, OLD))          # the first sweep arms and baselines
+        for path, run in (("the sweep", lambda: self.sweep(self.verdicts(self.cap, OLD))),
+                          ("the gate", lambda: self.ask(OWNER))):
+            with self.subTest(path=path):
+                self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})  # no grant yet
+                self.pending()
+                self.removed.clear()
+                with mock.patch.object(review_asks, "clear_pending_request",
+                                       side_effect=granted_first):
+                    run()
+                self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+                self.assertEqual(self.removed, [])
+        # A grant sent while the DELETE is in flight waits for it, so it lands after.
+        self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
+        self.pending()
+        self.removed.clear()
+        granting = []
+        first = self.remove
+
+        def during(*args):
+            thread = threading.Thread(target=self.st.review_cap_grant, args=(7, HEAD, self.cap))
+            thread.start()
+            thread.join(0.5)
+            granting.append(thread)
+            self.assertTrue(thread.is_alive(), "a grant landed while the DELETE was in flight")
+            return first(*args)
+        with mock.patch("diaktoros.broker._write", side_effect=during):
+            self.sweep(self.verdicts(self.cap, OLD))
+        granting[0].join()
+        self.assertEqual(len(self.removed), 1)
+        self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+
     def test_ready_names_the_grant_and_how_the_button_works(self):
         # Review of #2622, F2: the merge check's words say how to grant a round, and offer the
         # re-request only once the reviewer is no longer pending.
@@ -502,6 +543,26 @@ class Gate(fg.Base):
                       text)
         self.live = {**self.live, "requested_reviewers": []}
         self.assertIn("--another-round`, or re-request the reviewer on GitHub", said())
+
+    def test_ready_at_the_head_its_cap_reaching_verdict_names_the_push_first(self):
+        # Review of #2622 round 2, F2: right after the verdict that spends the cap, the head has
+        # its change request; the merge check says the author pushes first, then the grant.
+        from diaktoros import ci, merge_check, ready
+        reviews = self.verdicts(self.cap)
+        kinds = ready.assess_kinds(self.loop, self.st, self.live, reviews,
+                                   ci.CIState(passed=["tests"]), self.live)
+        said = [text for _, text in kinds if text.startswith("changes requested at head")]
+        self.assertEqual(len(said), 1, kinds)
+        self.assertIn(f"({self.cap} of ", said[0])
+        self.assertIn("review cap reached; the author pushes a new head first (this head already "
+                      "has a verdict), then a maintainer grants another round: `hermes dk "
+                      "review --loop one --pr 7 --another-round`, or re-request the reviewer on "
+                      "GitHub", said[0])
+        self.assertIn("the author pushes a new head first", merge_check.decide(kinds)[1])
+        # Below the cap the change request is the author's to answer, with no grant to name.
+        kinds = ready.assess_kinds(self.loop, self.st, self.live, self.verdicts(self.cap - 1),
+                                   ci.CIState(passed=["tests"]), self.live)
+        self.assertNotIn("review cap reached", " ".join(text for _, text in kinds))
 
     def test_nothing_is_removed_below_the_cap_off_or_where_no_rerequest_can_grant(self):
         self.pending()

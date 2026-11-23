@@ -96,15 +96,25 @@ def rerequest_hint(loop, pr) -> str:
     return "re-request the reviewer on GitHub (`review_only_rerequest_grants`)"
 
 
-def clear_pending_request(loop, number: int, head: str, pr) -> bool:
+def clear_pending_request(loop, st, number: int, head: str, rounds: int, pr) -> bool:
     """At a review-only PR's cap, remove the reviewer seat's pending review request (#2620), so
     GitHub shows the reviewer's last review with its re-request button, whose click reaches the
     gate as a maintainer's grant (``grant_by_rerequest``). Only where that re-request can grant
-    (``rerequest_can_grant``) and the reviewer is pending. Written as the fixer seat, which has
-    write access (as the host's base merges are), and audited. Whether the request is gone; a
-    failed removal changes nothing, and the next capped request tries again."""
+    (``rerequest_can_grant``), the reviewer is pending, and no round is granted at ``head`` for
+    ``rounds`` spent: checked with the DELETE under ``review_request_lock``, so a grant made
+    meanwhile is never followed by the removal (#2622 review, F4). Written as the fixer seat,
+    which has write access (as the host's base merges are), and audited. Whether the request is
+    gone; a failed removal changes nothing, and the next capped request tries again."""
     if not rerequest_can_grant(loop) or not reviewer_pending(loop, pr):
         return False
+    with st.review_request_lock():
+        if st.review_cap_granted(number, head, rounds):
+            return False
+        return _remove_request(loop, number, head, pr)
+
+
+def _remove_request(loop, number: int, head: str, pr) -> bool:
+    """``clear_pending_request``'s DELETE and its audit."""
     from . import broker
     login = config.seat_login(loop, "fixer")
     path = f"/repos/{loop['repo']}/pulls/{number}/requested_reviewers"
