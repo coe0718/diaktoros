@@ -1085,10 +1085,12 @@ class ClaimAndLaunch:
             self.record_saw(turn.run_id, turn.owner, seen)     # what its ACCEPT may dismiss
             # Last step before launch: mark the breach as being ruled on. Anyone else's
             # claim (a legacy gateway route included) refuses this one.
-            if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
-                                                     marker['rounds']) is None:
+            # Stamped with this launch (#1767), so only this attempt's end hands it back.
+            attempt = claims.attempt_of(row['id'], row['launch_intent'])
+            if state_mod.state_for(loop).breach_start(row['pr'], row['head'], marker['rounds'],
+                                                     attempt=attempt) is None:
                 raise ValueError('breach marker already claimed or replaced')
-            turn.breach = (state_mod.state_for(loop), marker['rounds'])
+            turn.breach = (state_mod.state_for(loop), marker['rounds'], attempt)
         return _Launch(prompt, scope, change=change)
 
     @staticmethod
@@ -1244,7 +1246,8 @@ class ClaimAndLaunch:
                 with self._connect() as con:
                     unwritten = run_supervisor.write_records(con, run_id) is None
                 if unwritten:
-                    turn.breach[0].breach_resume(turn.row['pr'], turn.row['head'], turn.breach[1])
+                    turn.breach[0].breach_resume(turn.row['pr'], turn.row['head'], turn.breach[1],
+                                                 attempt=turn.breach[2])
             except Exception:
                 pass
         claims.release_seat(turn.claim, state)
