@@ -6,7 +6,9 @@ every constant closed. Ninth: a ``setattr`` of a computed name on anything not s
 a scanned module (an ``except`` capture, an import from another package) fails them closed too.
 Tenth: a parameter that shadows such an import is not shown so, since a caller may pass a module.
 Eleventh: nor is a name imported from another package (``from sys import x``, ``import a.b as x``),
-which is that package's attribute and may be a scanned module it exported.
+which is that package's attribute and may be a scanned module it exported. Twelfth: nor through
+``setattr`` spelled any way but a direct call (bound to another name, read from ``builtins``,
+passed on, or ``__setattr__``), whose writes the guard cannot read.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -56,6 +58,17 @@ REBOUND = {
         "name = 'ALLOWED_2587'\nsetattr(external_2587, name, ('reviewer', 'intruder'))\n",
     'by setattr on a submodule imported under a name': "import os.path as sub\n"
         "name = 'ALLOWED_2587'\nsetattr(sub, name, ('reviewer', 'intruder'))\n",
+    # Twelfth: through setattr under another spelling, even with a literal name.
+    'by setattr bound to another name': "import sys\nset_attr = setattr\n"
+        "set_attr(sys.modules[__name__], 'ALLOWED_2587', ('reviewer', 'intruder'))\n",
+    'by setattr imported under a name': "from builtins import setattr as put\nimport synthetic\n"
+        "put(synthetic, 'ALLOWED_2587', ('intruder',))\n",
+    'by setattr read from builtins': "import builtins, synthetic\n"
+        "getattr(builtins, 'setattr')(synthetic, 'ALLOWED_2587', ('intruder',))\n",
+    'by setattr passed on': "import functools, synthetic\n"
+        "functools.partial(setattr, synthetic)('ALLOWED_2587', ('intruder',))\n",
+    'by __setattr__ of its module': "import synthetic\n"
+        "synthetic.__setattr__('ALLOWED_2587', ('intruder',))\n",
 }
 # Reads of a namespace dict, and a computed setattr on another package's module or on a caught
 # exception, in the scope that name resolves in, rebind nothing here.

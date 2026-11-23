@@ -117,18 +117,39 @@ def _never_module(target, up, modules) -> bool:
     return seen == {True}
 
 
+_SETATTR = {'setattr', '__setattr__', '__builtins__', 'builtins'}
+
+
+def _other_setattr(node, up) -> bool:
+    """Whether ``node`` spells ``setattr`` any way but a direct ``setattr(…)`` call (twelfth review
+    on #2587): the name passed or bound again (``set_attr = setattr``), ``__setattr__``, the
+    ``builtins`` module, or its name as a string (``getattr(builtins, 'setattr')``). What such a
+    spelling writes cannot be read, so the guard fails closed on it."""
+    if isinstance(node, ast.Name) and node.id in _SETATTR:
+        call = up.get(node)
+        return not (node.id == 'setattr' and isinstance(node.ctx, ast.Load)
+                    and isinstance(call, ast.Call) and call.func is node)
+    if isinstance(node, ast.Attribute):
+        return node.attr in _SETATTR
+    if isinstance(node, ast.alias):
+        return {node.name.partition('.')[0], node.name.rpartition('.')[2]} & _SETATTR != set()
+    return isinstance(node, ast.Constant) and node.value in _SETATTR
+
+
 def module_bindings(trees, modules=frozenset()) -> Counter:
     """Every binding of every name anywhere in ``trees``, inside functions too, plus each
     attribute store or ``setattr`` of a literal name (``mod.NAME = …``), which may rebind a
     module's constant from elsewhere (seventh review on #2587), and each write to a namespace
     dict (eighth). A write whose name the guard cannot read (``globals().update(…)``, a
     ``setattr`` of a computed name on anything not shown never to be a scanned module: ninth)
-    counts under ``ANY``."""
+    counts under ``ANY``, as does any other spelling of ``setattr`` (twelfth)."""
     found = Counter()
     for tree in trees:
         up = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
             found.update(_bound(node))
+            if _other_setattr(node, up):
+                found[ANY] += 1
             if _namespace(node) and (name := _namespace_writes(node, up)) is not None:
                 found[name] += 1
             elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
