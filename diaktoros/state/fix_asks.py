@@ -7,6 +7,8 @@ state's ``dir``, ``locked``, ``_load`` and ``_save_strict``, and adds no state o
 from __future__ import annotations
 from ..util import plain_number
 
+import secrets
+
 
 class FixAsks:
     # fix-asks.json: {"open": {issue: {kind, comment_id, text}}, "count": {issue: n},
@@ -69,7 +71,10 @@ class FixAsks:
             if isinstance(ask, dict) and ask.get("pending") and ask.get("run") == run:
                 return {**ask, "reconcile": True}
             check(self, number)
-            claim = {"kind": kind, "comment_id": None, "text": text, "run": run, "pending": True}
+            # ``claim``: this reservation's own id, so a fresh one never adopts the comment of
+            # an earlier one of the same run that was dropped (review on #2579).
+            claim = {"kind": kind, "comment_id": None, "text": text, "run": run, "pending": True,
+                     "claim": secrets.token_hex(6)}
 
             def change(data):
                 data["open"][str(number)] = claim

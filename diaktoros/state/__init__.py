@@ -173,6 +173,11 @@ def _delivery_in_flight(marker: dict, now: float | None = None) -> bool:
     return -DELIVERY_SKEW_S <= age < DELIVERY_LEASE_S
 
 
+# The breach marker's field naming the isolated launch that started it (``breach_start``), so
+# only that launch's end hands it back (#1767).
+BREACH_ATTEMPT = "attempt"
+
+
 def _mapping(raw) -> dict:
     """A state file's top level as a dict: a file that is not a mapping holds nothing (#80)."""
     return raw if isinstance(raw, dict) else {}
@@ -533,10 +538,12 @@ class LoopState(FixAsks):
 
     def acquire(self, seat: str, key: str, head: str = "", why: str = "",
                 budget: float | None = None, run: str | None = None,
-                exclusive: bool = False) -> bool:
+                exclusive: bool = False, attempt: str | None = None) -> bool:
         """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
         own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
-        with, and only a release naming the same ``run`` may free it.
+        with, and only a release naming the same ``run`` may free it. ``attempt`` names the
+        launch of that run (``claims.attempt_of``): a retry reuses the run id, so a release
+        naming an earlier attempt must not free the retry's claim (#1767).
 
         By default the claim overwrites whatever is there (last writer wins). With ``exclusive``
         it is a compare-and-swap (#727): under the state lock, a *live* claim on ``(seat, key)``
@@ -558,6 +565,8 @@ class LoopState(FixAsks):
                      "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
             if run is not None:
                 entry["run"] = run
+            if attempt is not None:
+                entry["attempt"] = attempt
             _seat(data, seat)[key] = entry
             # A claim that did not reach disk is no claim: a second gate would take the same
             # seat. Raise (#726) so the caller does not run, and never record it in CLAIMS.
@@ -579,13 +588,20 @@ class LoopState(FixAsks):
             return True
 
     def release_if(self, seat: str, key: str, head: str | None = None,
-                   run: str | None = None) -> bool:
+                   run: str | None = None, attempt: str | None = None,
+                   mark: str | None = None) -> bool:
         """Free a seat only for *this* PR's turn — never another PR's in-flight work.
 
         With ``head``, only a claim made for that head is freed: a late verdict on an older
         head must not end a newer run on the same PR. With ``run``, only the claim that run
         wrote is freed (#98): a run's own release (its worker ending it, or an operator
         reconciling it) must never free a newer run's claim on the same seat, PR and head.
+        With ``attempt``, a claim stamped with another attempt of that run (its retry, #1767)
+        is kept too; a claim from before attempts were stamped is matched by ``run`` alone.
+        With ``mark``, that in-flight mark is dropped along with the claim it belongs to, in
+        the same hold of the state lock: a retry's ``acquire`` and its ``inflight`` record
+        cannot land between the two, so the old attempt's release never clears the retry's
+        new mark (#1767). Nothing is cleared when the claim is kept.
         """
         with self.locked():
             data = _mapping(self._load(self.locks, {}))
@@ -595,10 +611,15 @@ class LoopState(FixAsks):
                 return False
             if run is not None and not (isinstance(entry, dict) and entry.get("run") == run):
                 return False
+            if (attempt is not None and isinstance(entry, dict) and "attempt" in entry
+                    and entry["attempt"] != attempt):
+                return False
             data[seat].pop(key)
             if not data[seat]:
                 data.pop(seat, None)
             self._save(self.locks, data)
+            if mark:
+                self.inflight_clear(mark)      # reentrant: still the same lock hold
             return True
 
     def release_all(self, seat: str) -> int:
@@ -929,11 +950,13 @@ class LoopState(FixAsks):
                             or (marker.get("status") == "delivery-pending"
                                 and marker.get("delivery_token")))):
                 return None
-            data[key] = {**marker, "status": "adjudicating", "adjudicating_at": now_iso()}
+            data[key] = {**{k: v for k, v in marker.items() if k != BREACH_ATTEMPT},
+                         "status": "adjudicating", "adjudicating_at": now_iso()}
             self._breach_save(data)
             return marker
 
-    def breach_start(self, number: int, head: str, rounds: int) -> dict | None:
+    def breach_start(self, number: int, head: str, rounds: int,
+                     attempt: str | None = None) -> dict | None:
         """Mark the breach at this head as being ruled on by an isolated adjudicator turn.
 
         The run ledger's unique turn index is what makes a ruling at-most-once; this marks the
@@ -942,6 +965,10 @@ class LoopState(FixAsks):
         been durable even when its delivery attempt reported failure (a spawn error), and that
         attempt's token is gone by the time the worker runs. A marker already claimed by
         anyone else — including a legacy gateway route — refuses.
+
+        ``attempt`` (``claims.attempt_of``) is stamped on the marker as the launch that started
+        it, so a hand-back naming that attempt (``breach_resume``) can tell its own start from
+        another actor's or a retry's (#1767).
         """
         key = f"{self.loop['repo']}#{number}"
         with self.breach_lock():
@@ -956,22 +983,32 @@ class LoopState(FixAsks):
             data[key]["status"] = "adjudicating"
             # When the ruling started: the watchdog's stall clock for it counts from here.
             data[key]["adjudicating_at"] = now_iso()
+            data[key].pop(BREACH_ATTEMPT, None)
+            if attempt is not None:
+                data[key][BREACH_ATTEMPT] = attempt
             self._breach_save(data)
             return marker
 
-    def breach_resume(self, number: int, head: str, rounds: int) -> dict | None:
+    def breach_resume(self, number: int, head: str, rounds: int,
+                      attempt: str | None = None) -> dict | None:
         """Undo ``breach_start`` for an isolated adjudicator turn that failed before recording
         any ruling (issue #53), so its retry can start it again. Only this head and round
-        count, and only from ``adjudicating``; anything else is left alone."""
+        count, and only from ``adjudicating``; anything else is left alone.
+
+        With ``attempt``, only a marker that attempt started (its ``breach_start`` stamp) is
+        handed back (#1767): never one a legacy gateway route claimed, another run started,
+        or the same run's retry started again since."""
         key = f"{self.loop['repo']}#{number}"
         with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
                     or marker.get("head") != head or marker.get("rounds") != rounds
-                    or marker.get("status") != "adjudicating"):
+                    or marker.get("status") != "adjudicating"
+                    or (attempt is not None and marker.get(BREACH_ATTEMPT) != attempt)):
                 return None
-            data[key] = {**marker, "status": "awaiting-adjudication"}
+            data[key] = {**{k: v for k, v in marker.items() if k != BREACH_ATTEMPT},
+                         "status": "awaiting-adjudication"}
             self._breach_save(data)
             return data[key]
 
@@ -988,7 +1025,8 @@ class LoopState(FixAsks):
                     or marker.get("head") != head or marker.get("rounds") != rounds
                     or marker.get("status") != "adjudicating"):
                 return False
-            data[key] = {**{k: v for k, v in marker.items() if k != "adjudicating_at"},
+            data[key] = {**{k: v for k, v in marker.items()
+                            if k not in ("adjudicating_at", BREACH_ATTEMPT)},
                          "rounds": rounds + 1, "reason": reason, "at": now_iso(),
                          "status": "delivery-pending"}
             self._breach_save(data)

@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, gate
+from . import config, gate, run_supervisor
 from .config import prices
 from .state.ledger import read_only
 from .util import plain_number
@@ -285,7 +285,7 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
     return out
 
 
-LIVE_STATES = ("pending", "claimed", "launching", "running", "waiting", "uncertain")
+LIVE_STATES = (*run_supervisor.NOT_ENDED, "uncertain")  # as explain.LIVE_TURN (#2073)
 RECENT_FAILED_S = 24 * 3600
 WHY_MAX = 160
 CLIP_TRIM = " ;,:—-"   # what _clip trims before its ellipsis: the boundaries a cut may stop at
@@ -1129,9 +1129,11 @@ def shadow_found(db: Path, repo: str, since: float, until: float, pr_state) -> d
     for row in rows:
         model = models.setdefault(row["model"] or "unknown", {"filed": 0, "fixed": 0})
         model["filed"] += 1
-        for number in sorted(prs[row["issue_number"]]):
-            partial |= _read_pr(reads, number, pr_state)
-        model["fixed"] += any(reads[number] == "merged" for number in prs[row["issue_number"]])
+        for n in sorted(prs[row["issue_number"]]):
+            partial |= _read_pr(reads, n, pr_state)
+        got = {reads[n] for n in prs[row["issue_number"]]}
+        model["fixed"] += "merged" in got
+        partial |= None in got and "merged" not in got  # unread, not unfixed (#1981)
     return {"filed": len(rows), "fixed": sum(m["fixed"] for m in models.values()),
             "models": dict(sorted(models.items())), "partial": partial}
 
