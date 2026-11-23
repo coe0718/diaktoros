@@ -1,6 +1,6 @@
 """What ``Supervisor.retry`` reads before it re-arms a run (moved out of ``intake``, #2628): the
 state lock it holds from its reads to the re-arm, the push-policy or snapshot refusal and the
-fixer's fresh admission, and the shadow row a re-armed reviewer turn owes.
+fixer's fresh admission, every other refusal, and the shadow row a re-armed reviewer turn owes.
 
 Reads the package's names through the package (``run_supervisor.X``), so a test patching
 ``run_supervisor.X`` still reaches this code, as in ``intake``.
@@ -39,21 +39,74 @@ def locks(first) -> tuple:
     return st, st.locked(), loop
 
 
-def owed_shadow(loop, first, db) -> tuple[str, float] | None:
-    """The ``(delivery, budget)`` of the shadow row a re-armed reviewer run owes, or None (#2628):
-    the rule ``gate.enqueue_isolated`` applies to a queued one. The loop has a shadow profile,
-    this reviewer turn is sampled and its findings snapshot is kept now (``snapshot_shadow``,
-    which never takes one for a shadow row in ledger ``db`` whose own snapshot is gone, #1139).
-    Called under ``locks``' state lock, before the re-arm's transaction."""
-    if loop is None or first is None or first['seat'] != 'reviewer':
+def refusal(con, run_id: str, policy_off: str, budget) -> str:
+    """Why ``retry`` refuses this run, ``''`` when it re-arms it; read in its transaction, before
+    anything is written (a shadow's findings snapshot included, #2634 review F2).
+
+    Anything that may have written — uncertain, quarantined, reconciled, or with any write-ahead
+    record — is refused with the reconcile instructions; so is a state that is not failed,
+    waiting or cancelled, and a cancellation that was neither an operator's nor the push
+    policy's (superseded: a new head gets its own turn). ``policy_off`` comes after those, which
+    say more about the run."""
+    row = con.execute('SELECT state,error FROM runs WHERE id=?', (run_id,)).fetchone()
+    if row is None:
+        return f'no run {run_id}'
+    wrote = run_supervisor.write_evidence(con, run_id)
+    if wrote is not None:
+        return (f'refused: {wrote}. A run that may have written is never replayed. Inspect the PR '
+                'for its external writes, establish no worker remains, then `python -m '
+                f'diaktoros.run_supervisor reconcile DB {run_id} --reason \'external writes '
+                "inspected' --acknowledge-no-live-worker`; a new head gets a fresh turn.")
+    if row['state'] not in run_supervisor.REARMABLE + ('waiting',):
+        return f"refused: run is {row['state']}, not failed, waiting or cancelled"
+    if row['state'] == 'cancelled' and not (run_supervisor.policy_cancelled(row['error'])
+                                            or run_supervisor.operator_cancelled(row['error'])):
+        # Re-arming it would only be cancelled again by the claim (the line runs_view draws).
+        return (f"refused: cancelled because {row['error'] or 'superseded'} — a new head gets "
+                "its own turn; nothing to retry")
+    if policy_off:
+        return policy_off
+    if budget is not None and (isinstance(budget, bool) or not budget > 0):
+        return 'positive turn budget required'
+    return ''
+
+
+def owed_shadow(sup, con, loop, first):
+    """The shadow row a re-armed reviewer run owes (#2628): ``(delivery, budget)``, its findings
+    snapshot kept now; None when it owes none; or why ``retry`` is refused, when it may owe one
+    that cannot be queued (#2634 review F1: unknown is never "none owed"). Called in ``retry``'s
+    transaction once ``refusal`` passed, so a refused retry keeps no snapshot (F2).
+
+    None: not a reviewer run, no loop configured, no shadow profile, not sampled, or a shadow row
+    already at its identity, left as it is (#1139: never a new snapshot for it). Refused: a loop
+    configuration that cannot be read, a shadow seat or budget that cannot take the row (checked
+    before the snapshot), or a snapshot that cannot be kept (``gate.shadow_owed``)."""
+    if first is None or first['seat'] != 'reviewer':
         return None
     from .. import config
-    from ..gate import shadows
-    number, head, turn_key = first['pr'], first['head'], first['turn_key'] or ''
-    if not shadows.snapshot_shadow(loop, number, head, turn_key, db):
+    from ..gate import shadow_owed, shadows
+    repo, number, head, key = first['repo'], first['pr'], first['head'], first['turn_key'] or ''
+    if loop is None:
+        try:
+            config.by_repo(repo)
+        except config.ConfigError as exc:
+            return (f"refused: the loop configuration for {repo} is unusable ({exc}), so whether "
+                    "this reviewer turn owes a shadow review is unknown; fix it, then retry")
         return None
-    return (shadows.shadow_delivery(loop, number, head, turn_key),
-            config.turn_budget(loop, run_supervisor.SHADOW))
+    if not config.shadow_profile(loop) or not shadows.shadow_sampled(loop, number, head, key):
+        return None
+    if con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? AND "
+                   "turn_key=?", (repo, number, head, run_supervisor.SHADOW, key)).fetchone():
+        return None
+    if run_supervisor.SHADOW not in sup.capacity or not config.turn_budget(
+            loop, run_supervisor.SHADOW) > 0:
+        return ("refused: this reviewer turn owes a shadow review, and a shadow row needs the "
+                "shadow seat and a positive budget")
+    owed = shadow_owed.owed(loop, 'reviewer', number, head, key, sup.db)
+    if isinstance(owed, str):
+        return (f"refused: this reviewer turn owes a shadow review, but {owed}; nothing was "
+                "re-armed, retry once it can be kept")
+    return owed
 
 
 def policy(first, st) -> tuple[int | None, str]:
