@@ -27,6 +27,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import threading
 import time
 import uuid
@@ -34,7 +35,7 @@ from collections.abc import Callable
 
 from .. import config, hostdirs
 from ..config import settings_form
-from ..util import atomic_write, finite_time, log, now_iso, register_lock
+from ..util import atomic_write, finite_time, log, now_iso, plain_number, register_lock
 from .fix_asks import FixAsks
 
 # The flock files this module keeps in a loop's state directory, each registered by its writer
@@ -182,6 +183,49 @@ def _mapping(raw) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _kept(raw, keep: Callable[[str, object], bool]) -> dict:
+    """A keyed state file's top level with only the entries ``keep(key, value)`` accepts (#2303):
+    a malformed entry reads as absent, as in a missing file, and the well-formed ones beside it
+    stay. Each reader passes the shape its own writers produce."""
+    return {key: value for key, value in _mapping(raw).items() if keep(key, value)}
+
+
+def _breach_marker(_key: str, marker) -> bool:
+    """A breach marker as ``breach_deliver`` writes it: an object naming the head it holds."""
+    return isinstance(marker, dict) and isinstance(marker.get("head"), str) and bool(marker["head"])
+
+
+def _findings_entry(entry) -> dict | None:
+    """A ``findings.json`` entry as ``findings.apply`` writes it (#475): an object whose
+    ``findings`` maps an id to a finding object. None for a junk entry; a junk ``findings`` field,
+    or a junk finding in it, reads as absent (#2303), so the next review records over it instead
+    of raising in ``findings.apply`` on every review of the PR from then on."""
+    if not isinstance(entry, dict):
+        return None
+    found = entry.get("findings")
+    if found is None or (isinstance(found, dict)
+                         and all(isinstance(item, dict) for item in found.values())):
+        return entry
+    return {**entry, "findings": {fid: item for fid, item in found.items()
+                                  if isinstance(item, dict)} if isinstance(found, dict) else {}}
+
+
+# ``watchdog.json``'s keys, each with the JSON type its writers give it (``scripts/watchdog.py``,
+# ``watch_health``, ``watch_mode``, ``watch_stacked``, ``stale_approval``). A key no writer
+# stamps, or an object key holding junk (its readers index into it), reads as absent (#2303); a
+# new key is added here, or it is dropped on its first read (``test_state_junk_callers`` checks
+# the code against this). A stamp is kept as stored, junk too: the watchdog validates its own (a
+# junk ``armed_since`` re-arms), and a sweep whose listing fails saves the file back unchanged.
+WATCH_KEYS = {"last_run": str, "armed_since": float, "gate_failure_seen": float,
+              **dict.fromkeys(("alerts", "github_alerts", "github_read", "head_history", "heads",
+                               "open_prs", "review_kicks", "stacked_wait", "stale_approvals"),
+                              dict)}
+
+
+def _watch_value(key: str, value) -> bool:
+    return key in WATCH_KEYS and (WATCH_KEYS[key] is not dict or isinstance(value, dict))
+
+
 def _seat(data: dict, seat: str) -> dict:
     """``data[seat]`` for writing, replacing a value that is not a mapping (#547, #548): a writer
     heals the shape its readers already ignore, instead of raising on it."""
@@ -219,6 +263,12 @@ def read_record(st, name: str, unreadable: Callable[[str], None] | None = None) 
             unreadable("does not hold a JSON object")
         return {}
     return data
+
+
+def _numbered(key) -> bool:
+    """A key ``int`` reads as a PR or issue number (``util.plain_number``): not '²', nor a run of
+    digits too long to convert (fourth and fifth reviews on #2589)."""
+    return plain_number(key) is not None
 
 
 def _deps_number(key) -> int:
@@ -668,7 +718,10 @@ class LoopState(FixAsks):
             return junk
 
     def queue_all(self) -> dict:
-        return _mapping(self._load(self.pending, {}))
+        """Every seat's queue, ``{seat: {key: entry}}``. A seat that is not an object reads as
+        absent (#2303). An entry is kept as stored, junk too, so ``status`` can name one
+        ``mark_at`` cannot age before the drain drops it (``queue_drop_unreadable``)."""
+        return _kept(self._load(self.pending, {}), lambda _seat, items: isinstance(items, dict))
 
     def queue_pop(self, seat: str, key: str) -> None:
         with self._queue_lock():
@@ -980,12 +1033,12 @@ class LoopState(FixAsks):
             return True
 
     def breach_all(self) -> dict:
-        return _mapping(self._load(self.breach, {}))
+        return _kept(self._load(self.breach, {}), _breach_marker)
 
     # -- watchdog memory ----------------------------------------------------
 
     def watch(self) -> dict:
-        return _mapping(self._load(self.watch_file, {}))
+        return _kept(self._load(self.watch_file, {}), _watch_value)
 
     def watch_save(self, data: dict) -> None:
         self._save(self.watch_file, data)
@@ -1016,7 +1069,7 @@ class LoopState(FixAsks):
     def pr_holds(self) -> dict:
         raw = self._load(self.dir / "held-prs.json", {})
         return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
-                if str(k).isdigit() and isinstance(v, dict)}
+                if _numbered(k) and isinstance(v, dict)}
 
     def pr_hold_set(self, number: int, hold: dict) -> bool:
         """Record the hold; True when the PR was not held before (a hold began)."""
@@ -1039,7 +1092,7 @@ class LoopState(FixAsks):
     def scope_holds(self) -> dict:
         raw = self._load(self.dir / "held-scope.json", {})
         return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
-                if str(k).isdigit() and isinstance(v, dict)}
+                if _numbered(k) and isinstance(v, dict)}
 
     def scope_hold_set(self, number: int, hold: dict) -> bool:
         """Record the hold; True when it is new or its head or files changed (say it once)."""
@@ -1087,7 +1140,7 @@ class LoopState(FixAsks):
         raw = self._load(self.dir / "held-fixes.json", {})
         out = {}
         for key, pr in (raw.items() if isinstance(raw, dict) else ()):
-            if str(key).isdigit() and type(pr) is int:
+            if _numbered(key) and type(pr) is int:
                 out[int(key)] = pr
         return out
 
@@ -1117,7 +1170,7 @@ class LoopState(FixAsks):
         raw = self._load(self.dir / "late-triage.json", {})
         out = {}
         for key, entry in (raw.items() if isinstance(raw, dict) else ()):
-            if str(key).isdigit() and isinstance(entry, dict) and isinstance(
+            if _numbered(key) and isinstance(entry, dict) and isinstance(
                     entry.get("at"), (int, float)) and not isinstance(entry.get("at"), bool):
                 out[int(key)] = {"at": float(entry["at"]), "outcome": str(entry.get("outcome"))[:80]}
         return out
@@ -1196,8 +1249,8 @@ class LoopState(FixAsks):
         raw = self._load(path, {})
         out: dict = {}
         for key, deps in (raw.items() if isinstance(raw, dict) else ()):
-            if str(key).isdigit() and isinstance(deps, dict):
-                kept = {int(a): v for a, v in deps.items() if str(a).isdigit() and isinstance(v, dict)}
+            if _numbered(key) and isinstance(deps, dict):
+                kept = {int(a): v for a, v in deps.items() if _numbered(a) and isinstance(v, dict)}
                 if kept:
                     out[int(key)] = kept
         return out
@@ -1388,8 +1441,10 @@ class LoopState(FixAsks):
     # -- numbered review findings (#475) --------------------------------------
 
     def findings_all(self) -> dict:
-        raw = self._load(self.dir / "findings.json", {})
-        return raw if isinstance(raw, dict) else {}
+        """PR number -> its findings entry; a junk entry, field or finding reads as absent."""
+        return {key: kept for key, entry in _mapping(self._load(self.dir / "findings.json",
+                                                                {})).items()
+                if _numbered(key) and (kept := _findings_entry(entry)) is not None}
 
     def findings_get(self, number: int) -> dict:
         entry = self.findings_all().get(str(number))
@@ -1411,8 +1466,9 @@ class LoopState(FixAsks):
         reader, #1323); it is no longer read, so those merges are read once more after an
         upgrade; nor is ``override-checked-v2.json``, which marked approvals read at once (#1761,
         see ``overrides``). That is safe: an override record is written once per PR and head."""
-        raw = self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {})
-        return raw if isinstance(raw, dict) else {}
+        return _kept(self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {}),
+                     lambda key, head: _numbered(key) and isinstance(head, str)
+                     and re.fullmatch(r"[0-9a-f]{40}", head) is not None)
 
     OVERRIDE_CHECKED_FILE = "override-checked-v3.json"
 

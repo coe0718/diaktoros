@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 
 STATES = ("fixed", "open", "withdrawn")
 MISSED = "missed earlier"
@@ -25,6 +26,7 @@ CATEGORIES = ("correctness", "test", "requirement", "docs", "security", "other")
 _TAG = r"(?:\[[A-Za-z-]+\][\s:]*)?"
 _CATEGORY = re.compile(r"^\s*\[([A-Za-z-]+)\]")
 _LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(F\d+)\b(.*)$")
+_ID = re.compile(r"F\d+")                  # an id the parser makes, of any length
 _STATUS = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(fixed|open|withdrawn)\b", re.IGNORECASE)
 
 
@@ -67,14 +69,23 @@ def category_of(rest: str) -> str:
     return name if name in CATEGORIES else "other"
 
 
+def order(fid) -> tuple[int, str, str]:
+    """A finding id's sort key: in number order at any length, and never raising (``int`` refuses
+    a run past 4,300 digits), so no id the parser accepts is dropped to sort it (review on #2589,
+    F6). Its digits are read as the parser reads them (``\\d``: any decimal digit, '٣' as 3) and
+    leading zeroes do not count (F7); the id itself settles a tie (F0001 and F1)."""
+    raw = str(fid)[1:]
+    number = "".join(str(unicodedata.decimal(ch, ch)) for ch in raw).lstrip("0") or "0"
+    return len(number), number, raw
+
+
 def open_ids(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry, dict) else None
     found = found if isinstance(found, dict) else {}
     # Host state may hold a key the parser never makes (hand edit, partial write): skip it.
     return sorted((k for k, v in found.items()
-                   if isinstance(k, str) and re.fullmatch(r"F\d+", k)
-                   and isinstance(v, dict) and v.get("state") == "open"),
-                  key=lambda k: int(k[1:]))
+                   if isinstance(k, str) and _ID.fullmatch(k)
+                   and isinstance(v, dict) and v.get("state") == "open"), key=order)
 
 
 # GitHub lists at most 300 files in a /compare response and sets no flag when it cut the list.
@@ -321,7 +332,7 @@ def record(loop: dict, number: int, head: str, body: str, review=None) -> None:
 def lines(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
     out = []
-    for fid in sorted(found, key=lambda k: int(k[1:]) if k[1:].isdigit() else 0):
+    for fid in sorted(found, key=order):
         item = found[fid]
         if isinstance(item, dict):
             out.append(f"{fid} {item.get('state', '?')}"
