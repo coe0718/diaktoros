@@ -186,6 +186,19 @@ class HtmlBlocks(Mocked):
             with self.subTest(body):
                 self.assertIn('"- second: export flag" has no status', check(body))
 
+    def test_a_status_in_shown_html_still_counts(self):
+        # Eighteenth review (F18): a <ul> or <div> block is shown text, so its `not met` counts
+        # (even after a heading-like line in it); code or hidden HTML's does not.
+        for body in ("<ul>\n<li>second: not met</li>\n</ul>\n",                 # Vex's case
+                     "<div>\n- second: not met\n</div>\n",
+                     "<div>\n# Notes\n**Notes**\n<li>second: not met</li>\n</div>\n"):
+            with self.subTest(body):
+                self.assertIn("`not met`", check(body))
+        for body in ("<pre>\n- second: not met\n</pre>\n",
+                     "<ul>\n<li>second: met <!-- not met --></li>\n</ul>\n"):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,11 +26,14 @@ escaped backtick opens no code span (fifteenth review). A marker line that canno
 paragraph is the paragraph's text, not an item (``interrupts``: ``2. text`` under an item's text,
 second F14): one that dedents past the item it continues is indented back into it. Nor is a
 line that only looks like a fence or comment opener (sixteenth review) a break in the paragraph.
-Every other HTML block (``html_end``: ``<pre>``, ``<div>``, ``<?``, a lone tag and the rest, as
-CommonMark lists them) is raw HTML, not Markdown, so it is blanked as a comment is, through its
-end: a closing ``</pre>`` and the like, or a blank line (seventeenth review: a command beginning
-``- `` in ``<pre>`` evidence read as an unmarked requirement). A lone tag cannot interrupt a
-paragraph, so there it is the paragraph's text.
+Every other HTML block (``html_end``, as CommonMark lists them) is raw HTML, not Markdown, so
+no line in it is an item or heading (seventeenth review: a command beginning ``- `` in ``<pre>``
+evidence read as an unmarked requirement). A ``<pre>``, ``<script>``, ``<style>`` or
+``<textarea>`` block, and a ``<?``, ``<!X`` or CDATA one, is code or hidden: blanked as a comment
+is, through its closing tag. Any other (``<div>``, ``<ul>``, a lone tag), up to a blank line, is
+shown text: kept, so a status in it still counts (eighteenth review: ``<li>two: not met</li>``
+was hidden), with a backslash before a leading marker, ``#`` or ``*`` (``literal``). A lone tag
+cannot interrupt a paragraph, so there it is the paragraph's text.
 """
 from __future__ import annotations
 
@@ -102,6 +105,15 @@ def html_end(text: str, para: list) -> tuple | None:
     return None
 
 
+def literal(line: str) -> str:
+    """A shown line of a raw HTML block, never read as an item or heading: a leading list marker,
+    ``#`` or ``*`` escaped (eighteenth review on #2573), the rest as it is."""
+    body = line.lstrip()
+    if ITEM.match(body) or body[:1] in "#*":
+        return line[:len(line) - len(body)] + "\\" + body
+    return line
+
+
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
     (twelfth review on #2573); each line break they held is kept, so the lines still line up.
@@ -131,19 +143,24 @@ def unfenced(lines: list[str]) -> list[str]:
     hidden text, not items, statuses or headings (seventh review on #2573: a ``diff`` given as
     evidence read as unmarked items). The lines left are read for inline comments a paragraph
     at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
-    out, fence, cols, kinds, blank, html, para = [], None, [], [], False, None, []
+    out, fence, cols, kinds, blank, html, para, raw = [], None, [], [], False, None, [], None
 
     def flush():                          # the paragraph so far, read inline as one text
         out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
         para.clear()
     for line in lines:
         at, ended = indent(line), False
+        if raw is not None and line.strip() and at < raw:
+            raw, ended = None, True                # its list item ended, and the block with it
+        elif raw is not None and line.strip():     # shown HTML: text, never an item (F18)
+            out.append(literal(line))
+            para.append(out[-1])
+            continue
+        raw = None                                 # a blank line ends it, and is read as one
         if html is not None and line.strip() and at < html[0]:
             html, ended = None, True               # its list item ended, and the block with it
-        elif html is not None and html[1] is None and not line.strip():
-            html = None                            # a blank line ends it, and is read as one
         elif html is not None:                     # inside an HTML block, through its end
-            html = None if html[1] and html[1].search(line) else html
+            html = None if html[1].search(line) else html
             out.append("")
             continue
         if fence is not None:
@@ -179,8 +196,10 @@ def unfenced(lines: list[str]) -> list[str]:
         if item or found or opener or ended:   # a new block: its own paragraph
             flush()
         blank, col = False, cols[-1] if cols else 0
-        if opener:
-            html = None if opener[0] and opener[0].search(line) else (col, opener[0])
+        if opener and opener[0] is None:           # shown HTML, to the next blank line
+            raw, line = col, literal(line)
+        elif opener:                               # code or hidden HTML, through its end
+            html = None if opener[0].search(line) else (col, opener[0])
             out.append("")
             continue
         if found:
