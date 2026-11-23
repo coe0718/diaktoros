@@ -140,15 +140,8 @@ class RunIntake:
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
             if prior and prior['state'] in run_supervisor.REARMABLE and (self.fixture_mode or self.production_config):
-                # A new event for a head whose run never wrote is a reason to try again
-                # (#53): re-arm it, one attempt per event, up to MAX_REARMS failures.
-                refused = redelivery_refusal(con, prior, admitted=bool(admitted),
-                                             production=bool(self.production_config), seat=seat)
-                if refused is not None:
-                    outcome += f": {refused}"
-                else:
-                    self._rearm(con, prior['id'], reset=False, budget=requested, settle=settle)
-                    outcome = 'rearmed'
+                outcome = self._redeliver(con, prior, outcome, bool(admitted), requested, settle,
+                                          shadow, now)
             elif prior and prior['state'] == 'waiting' and prior['retry_at']:
                 outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
             con.execute("COMMIT")
@@ -156,6 +149,22 @@ class RunIntake:
         # transient generation/read outage; active or completed runs stay deduped.
         self._start_worker(repo, prior, outcome, settle)
         return outcome
+
+    def _redeliver(self, con, prior, outcome: str, admitted: bool, budget, settle: float,
+                   shadow, now: float) -> str:
+        """``submit``'s answer for a ``REARMABLE`` row: a new event for a head whose run never
+        wrote is a reason to try again (#53), one attempt per event, up to MAX_REARMS failures.
+        A re-armed reviewer turn owes its shadow too (#2072, #2076): one from before #1682, or
+        first queued unsampled, may have no shadow row, so it is written in this transaction."""
+        refused = redelivery_refusal(con, prior, admitted=admitted,
+                                     production=bool(self.production_config), seat=prior['seat'])
+        if refused is not None:
+            return f"{outcome}: {refused}"
+        self._rearm(con, prior['id'], reset=False, budget=budget, settle=settle)
+        if shadow is not None:
+            self._insert_runs(con, [], shadow, (prior['repo'], prior['pr'], prior['head'],
+                                                prior['turn_key']), now)
+        return 'rearmed'
 
     def _start_worker(self, repo: str, prior, outcome: str, settle: float) -> None:
         """Spawn ``submit``'s worker, if it wants one; for a settling row, one told its repo, so
@@ -184,8 +193,9 @@ class RunIntake:
     def _insert_runs(self, con, rows: list, shadow, identity: tuple, now: float,
                      settle: float = 0.0) -> None:
         """Insert new run rows, ``(delivery, seat, push_admitted, budget)`` each, in the caller's
-        transaction. With ``shadow``, a reviewer turn's shadow row goes in with it (#1682): no
-        reviewer row is ever visible without the shadow it owes, so neither an APPROVE posted
+        transaction. With ``shadow``, a reviewer turn's shadow row goes in with it (#1682), and
+        with a re-armed one (``rows`` empty, #2076): no new or re-armed reviewer row is visible
+        without the shadow it owes, so neither an APPROVE posted
         before a second submit nor that submit failing can leave ``shadow.escalate`` with
         nothing to wait for. A failure rolls both back. A shadow row already at the identity
         is left as it is, for ``gate.shadows.enqueue_shadow`` to re-arm or refuse.

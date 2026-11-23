@@ -196,9 +196,10 @@ class Operator(ruling.Base):
                 with closing(sqlite3.connect(self.db)) as con, con:
                     con.execute("DELETE FROM runs WHERE seat='fixer'")
 
-    def ruling_notice(self, author="fixer", verdict="REJECT", shown=None, **live):
+    def ruling_notice(self, author="fixer", verdict="REJECT", shown=None, fix_turn=None, **live):
         """#2258: the operator's ruling notice for a new ruling that was shown shadow review
-        ``shown`` (default: the newest one recorded), with the live PR changed by ``live``."""
+        ``shown`` (default: the newest one recorded), with the live PR changed by ``live``, and
+        that ruling's shadow-fix turn in the ``fix_turn`` (state, error) when given (#2563)."""
         from diaktoros.run_supervisor import notices
         with closing(sqlite3.connect(self.db)) as con:
             newest = con.execute("SELECT run_id FROM shadow_reviews ORDER BY created DESC "
@@ -209,6 +210,8 @@ class Operator(ruling.Base):
                         (newest[0] if shown is None else shown, f"r{self.n}"))
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM rulings WHERE run_id=?", (f"r{self.n}",)).fetchone()
+        if fix_turn:
+            self.shadow_fix_row(*fix_turn)
         sender = run_supervisor.Supervisor(self.db)
         pr = {**fg.LIVE, "user": {"login": author}, **live}
         scope = broker_ipc.RunScope(fg.REPO, 7, row["head"], "adjudicator", "fix-7",
@@ -240,9 +243,10 @@ class Operator(ruling.Base):
         on = self.loop
         self.loop = {**on, "unattended_fixer_push": False}
         self.assertIn("the decision is yours", self.ruling_notice())               # push off
-        # #2491 review F2: escalation turned off after the turn started, as ready says.
+        # #2491 review F2: escalation turned off after the turn started, as ready says: the fix
+        # is still queued then (#2269), so the fixer still answers it.
         self.loop = {**on, "shadow": {**on["shadow"], "escalate": False}}
-        self.assertIn("the decision is yours", self.ruling_notice())
+        self.assertIn("so the fixer answers its findings", self.ruling_notice())
         self.loop = on
         # #2491 review F1: a newer shadow review landed during the turn; this REJECT of the
         # older one upholds nothing, so no fixer is queued and none is promised.
@@ -262,26 +266,36 @@ class Operator(ruling.Base):
     def test_ready_still_holds_it_with_shadow_escalate_off(self):
         # Shadow review of #2254 (F1): with ``shadow.escalate`` off there is no shadow-hold line,
         # so the escalation's own FAILURE is the only hold; the merge check must not read success.
+        # #2269: that line says the fixer answers it, since the fix is queued all the same.
         from diaktoros import merge_check, ready
         self.upheld_marker()
         self.escalate_off()
         self.assertFalse(gate.shadows.shadow_fix_owed(self.loop, self.st.breach_get(7), fg.HEAD,
                                               db=self.db))
         why = self.ready()
-        self.assertTrue(any(w.startswith("escalated:") and "a person decides" in w for w in why),
-                        why)
+        self.assertTrue(any(w.startswith("escalated:") and "the fixer answers its findings" in w
+                            for w in why), why)
+        self.assertFalse(any("a person decides" in w or "decision is yours" in w for w in why), why)
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
         with mock.patch.object(gh, "pr", return_value=pr), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
             kinds = ready.assess_kinds(self.loop, self.st, pr, ruling.APPROVED, None, None)
         self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE, kinds)
 
-    def test_explain_still_leaves_it_to_you_with_shadow_escalate_off(self):
+    def test_explain_hands_it_to_the_fixer_with_shadow_escalate_off(self):
+        # #2269: the ruling's line still holds the head, but names the fixer, and the next step
+        # is its push, not "a human merges it" or "your decision".
         self.upheld_marker()
         self.escalate_off()
         report = self.explain()
-        self.assertTrue(any(b.startswith("ruled:") for b in report["blockers"]), report["blockers"])
-        self.assertNotEqual(report["next"]["kind"], "fixer-push", report["next"])
+        ruled = [b for b in report["blockers"] if b.startswith("ruled:")]
+        self.assertEqual(len(ruled), 1, report["blockers"])
+        self.assertIn("the fixer answers its findings", ruled[0])
+        self.assertFalse(any("decision is yours" in b for b in report["blockers"]),
+                         report["blockers"])
+        self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
+        self.assertIn("do not merge head", report["next"]["action"])
+        self.assertNotIn("your decision", report["next"]["action"])
 
     def test_explain_still_leaves_it_to_you_where_no_fixer_takes_it(self):
         self.upheld_marker()
