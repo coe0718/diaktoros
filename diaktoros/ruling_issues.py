@@ -104,6 +104,7 @@ def _shadow_asked(loop: dict, sup, row, con=None) -> str | None:
 
 
 _RULED = {"posted": "filed", "unlabelled": "filed", "uncertain": "maybe", "posting": "flying"}
+_AS_CLAIM = {"filed": "filed", "maybe": "maybe", "waiting": "flying"}  # _shadow_asked, at a claim
 
 
 def ruled_copy(sup, row, con=None) -> str | None:
@@ -172,7 +173,10 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         depth = shadow_issues._lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
-        filing = shadow_issues._claim(sup, row, number, head, depth, log, "adjudicator-found")
+        # Rechecked as the claim is written (#2603 review F1): a shadow copy claimed since holds it.
+        filing = shadow_issues._claim(sup, row, number, head, depth, log, "adjudicator-found",
+                                      copy=lambda con: _AS_CLAIM.get(_shadow_asked(loop, sup, row,
+                                                                                   con=con)))
         if filing is None:
             continue
         issue, sent = shadow_issues._post(loop, sup, row, filing, depth, log, send=_send,

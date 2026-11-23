@@ -62,20 +62,21 @@ def _drop(sup, row, number: int, asked=None) -> None:
     sup.drop_copy(row["run_id"], row["seq"], decide)
 
 
-def _claim(sup, row, number: int, head: str, depth: int, log, what: str) -> int | None:
+def _claim(sup, row, number: int, head: str, depth: int, log, what: str,
+           copy=None) -> int | None:
     """Claim one recorded issue (``posting``) and commit its ``filed_issues`` row before the
     POST, so a second sweep never files it twice and the origin-PR hold (#324) and lineage bound
     (#487) see it. Both fenced by the attempts the row was read with (review of #2585, F7): a
     sweep whose claim ``settle_stale`` ended meanwhile (it counts an attempt) writes no row, so it
-    never POSTs. Whether the title is taken is decided in the transaction that writes the row
-    (F1): taken only by a POST under way, the claim goes back to ``recorded`` and waits for it.
-    The row's sequence, or None: not claimed, the claim lost, waiting, or a ``duplicate``."""
+    never POSTs. Whether the title, or the other seat's ``copy`` (#2603 review F1), is taken is
+    decided in the transaction that writes the row (F1): taken only by a POST under way, the claim
+    goes back to ``recorded``. The row's sequence, or None: not claimed, lost, waiting, a copy."""
     run_id, seq, attempts = row["run_id"], row["seq"], int(row["attempts"])
     if not sup.shadow_issue_status(run_id, seq, "posting", expect="recorded", attempts=attempts):
         return None
     try:
         filing = sup.record_shadow_filing(run_id, row["repo"], number, head, row["title"],
-                                          depth, claim=(seq, attempts),
+                                          depth, claim=(seq, attempts), copy=copy,
                                           same=lambda key: _same(row["title"], [key]))
     except ValueError:            # InFlight, MaybeFiled or filed: settled with the claim (F8)
         return None
@@ -128,7 +129,8 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
         # A crash after the claim leaves it `posting`, never replayed, only ended by `settle_stale`.
-        filing = _claim(sup, row, number, head, depth, log, "shadow-found")
+        filing = _claim(sup, row, number, head, depth, log, "shadow-found",
+                        copy=lambda con: ruling_issues.ruled_copy(sup, row, con=con))
         if filing is None:
             continue
         issue, sent = _post(loop, sup, row, filing, depth, log)
