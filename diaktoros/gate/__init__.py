@@ -184,7 +184,7 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
         # shadow is queued only on that snapshot: one taken later could hold the review's own
         # findings. The lock keeps another enqueue from evicting it before the shadow's row is
         # visible as open (review of #1656, F6). A ``str`` is a shadow owed whose snapshot was
-        # not kept: no reviewer row is re-armed or left to run on it (#2634 review F1).
+        # not kept: no reviewer row is written, re-armed or left to run on it (#2634 F1, F3).
         from . import shadow_owed
         shadow = shadow_owed.owed(loop, seat, number, head, turn_key, _ledger_of(supervisor))
         snapped = isinstance(shadow, tuple)
@@ -203,7 +203,8 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
             # row is written in the re-arm's own transaction (#2076).
             shadows.enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     if isinstance(shadow, str) and outcome not in SCHEDULED_OUTCOMES and shadow in outcome:
-        # Held, so a later event re-arms it with its shadow once a snapshot can be kept.
+        # Held, so a later event re-arms it with its shadow once a snapshot can be kept (a new
+        # row's ``submit`` raised the same before writing it).
         raise RuntimeError(f"reviewer turn not armed: {outcome}")
     return outcome
 

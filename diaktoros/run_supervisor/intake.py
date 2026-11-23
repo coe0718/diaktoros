@@ -227,6 +227,9 @@ class RunIntake:
         until then, not runnable now; ``recover`` makes it pending once due, and its claim and
         pre-launch reads decide it as any pending row's."""
         repo, pr, head, turn_key = identity
+        if isinstance(shadow, str):
+            # A new reviewer row that owes a shadow it cannot have is not written (#2634 F3).
+            raise RuntimeError(f"reviewer turn not armed: {SHADOW_OWED}: {shadow}")
         state = "pending" if self.fixture_mode or self.production_config or not rows else "blocked"
         if isinstance(shadow, tuple) and not con.execute(
                 "SELECT 1 FROM runs WHERE delivery=? OR (repo=? AND pr=? AND head=? AND "

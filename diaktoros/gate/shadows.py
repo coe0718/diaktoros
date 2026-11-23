@@ -519,15 +519,18 @@ def shadow_snapshot_gone(st, repo: str, number: int, head: str, turn_key: str, d
 def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "", db=None) -> bool:
     """Keep the findings ledger for a sampled head's shadow review (#218): the broker judges the
     shadow against it, never against what the real review records. Taken before the reviewer's
-    row exists (#1647); the first snapshot wins. Whether one is kept; never raises. Never for a
-    shadow row already in the ledger ``db`` whose own snapshot is gone (#1139): a re-queued
-    reviewer turn would otherwise give it one from the live ledger, which ``retry`` accepts."""
+    row exists (#1647); the first snapshot wins once its shadow row is in the ledger ``db``, and
+    one whose row was never written (a refused or rolled-back queueing) is taken again (#2634
+    review F2). Whether one is kept; never raises. Never for a shadow row already in ``db``
+    whose own snapshot is gone (#1139): a re-queued reviewer turn would otherwise give it one
+    from the live ledger, which ``retry`` accepts."""
     if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head, turn_key):
         return False
     try:
         st = state_mod.state_for(loop)
         with st.locked():
-            if shadow_snapshot_gone(st, loop["repo"], number, head, turn_key, db):
+            row = shadow_row_exists(loop["repo"], number, head, turn_key, db)
+            if row and st.shadow_findings_get(number, head, turn_key) is None:
                 from ..run_supervisor import intake
                 log(f"#{number}: no shadow findings snapshot taken: {intake.SHADOW_SNAPSHOT_GONE}")
                 return False
@@ -537,7 +540,8 @@ def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "", db=N
                 keep = None                  # unknown open runs: evict nothing
                 log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
                     f"{type(exc).__name__}: {exc}")
-            st.shadow_findings_put(number, head, st.findings_get(number), keep, turn_key)
+            st.shadow_findings_put(number, head, st.findings_get(number), keep, turn_key,
+                                   replace=not row)
         return True
     except Exception as exc:
         log(f"#{number}: shadow findings snapshot not kept: {type(exc).__name__}: {exc}")

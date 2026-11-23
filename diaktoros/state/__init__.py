@@ -1432,10 +1432,11 @@ class LoopState(FixAsks):
 
     def shadow_findings_put(self, number: int, head: str, entry: dict,
                             keep: "set[tuple[int, str]] | None" = None,
-                            turn_key: str = "") -> None:
+                            turn_key: str = "", replace: bool = False) -> None:
         """Keep the snapshot for this PR, head and reviewer turn (``turn_key``, #1139): a new turn
         at a head that already has one takes its own, and never shares or replaces another's.
-        The first snapshot of a turn wins. Past ``SHADOW_FINDINGS_KEPT`` the oldest are
+        The first snapshot of a turn wins, unless ``replace`` (its shadow row was never written,
+        #2634 review F2). Past ``SHADOW_FINDINGS_KEPT`` the oldest are
         dropped, but never one of a (number, head) in ``keep`` (this loop's repo's shadow run
         that has not ended: its broker would fall back to the live ledger, #1013; another
         repo's run is not in it, #1133). ``keep=None`` means the
@@ -1445,7 +1446,7 @@ class LoopState(FixAsks):
             data = self._load(path, {})
             data = data if isinstance(data, dict) else {}
             key = self._shadow_findings_key(number, head, turn_key)
-            if key in data:
+            if key in data and not replace:
                 return
             data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
             if keep is not None and len(data) > self.SHADOW_FINDINGS_KEPT:
