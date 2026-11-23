@@ -199,7 +199,8 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
                                     settle=settle)
         if snapped and outcome == "enqueued":
             # Re-arms or refuses a shadow row that was already there (#1139); the one just
-            # written is pending, and stays as it is.
+            # written is pending, and stays as it is. A re-armed reviewer turn's missing shadow
+            # row is written in the re-arm's own transaction (#2076).
             shadows.enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     return outcome
 
@@ -512,6 +513,16 @@ def _review_pr(review: dict, repo: str) -> int | None:
 def is_ruled_approval(review, loop: dict) -> bool:
     """Whether ``review`` (an effective verdict) is the adjudicator's, not the reviewer's (#905)."""
     return isinstance(review, dict) and not is_reviewer(review, loop)
+
+
+def reviewer_approved(latest, loop: dict) -> bool:
+    """Whether ``latest`` (the head's effective verdict, ``latest_effective_review_at_head``) is
+    the reviewer's own approval (#1706): an approval, and not the adjudicator's on its ACCEPT
+    ruling (#905), which stands at a head where the reviewer's own verdict still requests
+    changes. A shadow escalation, and the ruling prompt it leads to, say the reviewer approved
+    the head: only this counts for it."""
+    return (isinstance(latest, dict) and gh.review_state(latest) == "APPROVED"
+            and not is_ruled_approval(latest, loop))
 
 
 def blocking_reviews(reviews: list) -> list:

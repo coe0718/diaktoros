@@ -470,8 +470,12 @@ using the same code as the command named in it:
 5. **The merge check.** Only when the loop posts `diaktoros/review` (an App reviewer, or
    `merge_check` `on`) and the base does not require it yet: it offers [`protect`](#protect)
    (the question defaults to no; `--protect` says yes). Declining keeps going: the check is
-   posted, but the merge button ignores it until it is required. A loop that does not post it
-   gets one line instead: `5. The merge check — not posted by this loop, nothing to require`.
+   posted, but the merge button ignores it until it is required. When setup could not read one
+   or both of the base's protection sources (rulesets, classic branch protection), it does not
+   say "not required": it says the check is not known to be required, and that the merge
+   button ignores it unless an unread source (either one, if both are unread) requires it. A
+   loop that does not post it gets one line instead: `5. The merge check — not posted by this
+   loop, nothing to require`.
 6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
    Skipped, with a line saying so, when the record has `armed` `passed` and the hooks are still
    as recorded (`--arm` included); a stale `armed` stage asks again. One exception (#1713): an
@@ -2162,7 +2166,13 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
   If the owning worker is already gone (its lease expired), nothing reads the request; the
   next recovery sweep (`recover()`) ends the run the same way: `cancelled` when nothing was
-  written, `uncertain` (naming the cancel) after a write-ahead record. An expired lease does
+  written, freeing the seat and handing back an adjudicator's breach marker as the worker
+  would (#1767), and `uncertain` (naming the cancel, the seat still held) after a write-ahead
+  record. That cleanup touches only what the lost launch itself took: the seat claim and the
+  marker carry the launch that took them, so a `retry` that has relaunched the run in the
+  meantime keeps its claim, its in-flight mark (cleared only together with the lost launch's
+  own claim, in one step) and its `adjudicating` marker, and a marker the lost launch never
+  started (a gateway's, another run's) is left alone. An expired lease does
   not prove the turn stopped, so this happens only when the run's recorded process is provably
   gone (the check `reconcile` uses). A live or unrecorded process, or a fixer run with a push
   intent, stays `uncertain` in quarantine, holding its PR, until `reconcile`.

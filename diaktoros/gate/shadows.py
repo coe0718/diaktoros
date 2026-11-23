@@ -269,12 +269,7 @@ def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marke
         if fixer_answers_upheld(loop, number):
             # #2263 review F1: not once its fixer turn ended unanswered and no sweep re-arms it.
             state, how, _key = shadow_fix_turn(loop, number, head, db=db)
-            if state and not how:
-                return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT), "
-                        f"but its shadow-fix fixer turn is {state} with no fix pushed and no "
-                        "watchdog sweep re-arms it: the decision is yours, not the fixer's"), ""
-            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
-                    "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
+            return "failure", upheld_fix_line(short, state, how), ""
         return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
                 "fixer takes it here, so the decision is yours (`hermes dk explain --pr N` "
                 "shows the findings)"), ""
@@ -304,14 +299,30 @@ def fixer_answers_upheld(loop: dict, number: int) -> bool:
     return config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number)
 
 
+def upheld_fix_line(short: str, state: str, how: str) -> str:
+    """Who answers an upheld shadow review the fixer takes: the fixer, until its shadow-fix turn
+    (``shadow_fix_turn``'s ``state`` and ``how``) ended with no push and no sweep re-arms it
+    (#2263 review F1). One text for the shadow hold, and for ``explain`` with the hold off."""
+    if state and not how:
+        return (f"the adjudicator upheld the shadow review at {short} (REJECT), but its shadow-fix "
+                f"fixer turn is {state} with no fix pushed and no watchdog sweep re-arms it: the "
+                "decision is yours, not the fixer's")
+    return (f"the adjudicator upheld the shadow review at {short} (REJECT): the fixer answers its "
+            "findings, and the fixed head is reviewed fresh")
+
+
 def shadow_fix_owed(loop: dict, marker, head: str, db=None) -> bool:
     """Whether this head's breach marker is a shadow escalation (#1004) the adjudicator upheld
     (REJECT, ``upheld_shadow_ruling``) and the fixer answers it (``fixer_answers_upheld``): its
     findings go to the fixer, so no person is waited for (#1353). The shadow hold still stands,
     so this is False with ``shadow.escalate`` off: ``shadow_state`` gives no hold then, and the
-    escalation's own line is the only thing that keeps the ruled head from reading ready."""
-    if not config.shadow_escalate(loop):
-        return False
+    escalation's own line keeps the ruled head from reading ready (``fixer_takes_upheld``)."""
+    return config.shadow_escalate(loop) and fixer_takes_upheld(loop, marker, head, db=db)
+
+
+def fixer_takes_upheld(loop: dict, marker, head: str, db=None) -> bool:
+    """``shadow_fix_owed`` whatever ``shadow.escalate`` says: ``queue_shadow_fix`` and the push
+    never read it, so with it off the fixer still answers the upheld findings (#2269)."""
     m = marker if isinstance(marker, dict) else {}
     if str(m.get("head") or "") != head or (m.get("escalated") or {}).get("by") != gate.SHADOW_ESCALATION:
         return False
@@ -443,7 +454,8 @@ def _shadow_review_and_ruling(loop: dict, number: int, head: str, marker, db=Non
 def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
     """Send a head for a ruling when the shadow review disagrees with the reviewer's approval
     (#1004 part 2): ``shadow.escalate`` on, the reviewer's effective verdict at the head
-    APPROVED and that approval not stale (#473: a required check at the head has since gone
+    APPROVED (its own approval, not the adjudicator's ruled one: ``gate.reviewer_approved``,
+    #1706) and that approval not stale (#473: a required check at the head has since gone
     red, cancelled or missing, the finding ``ready`` and ``explain`` deny the approval by), and
     the newest shadow review there REQUEST_CHANGES. A stale approval is "not approved": the
     ruling prompt says the reviewer approved the head, which it no longer vouches for. Once per
@@ -455,8 +467,9 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         return "no adjudicator"           # the hold stays; the decision is the operator's
     if not isinstance(reviews, list):
         return "reviews unreadable"
-    latest = gate.latest_effective_review_at_head(reviews, loop, head)
-    if latest is None or gh.review_state(latest) != "APPROVED":
+    # #1706: the reviewer's own approval. The adjudicator's ruled one (#905) stands over the
+    # reviewer's change request, and the ruling prompt would say the reviewer approved.
+    if not gate.reviewer_approved(gate.latest_effective_review_at_head(reviews, loop, head), loop):
         return "not approved"
     if stale_approval.is_stale(st.watch(), number, head):
         return "not approved"             # the one test ``ready`` and ``explain`` apply

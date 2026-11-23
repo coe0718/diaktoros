@@ -38,7 +38,7 @@ def issue(number, author="owner", age=3600.0, labels=(), pr=False):
     return out
 
 
-class Sweep(fg.Base):
+class SweepBase(fg.Base):
     def setUp(self):
         super().setUp()
         self.loop = {**config.load_id("one"),
@@ -76,6 +76,8 @@ class Sweep(fg.Base):
              mock.patch.object(watchdog.observer, "flush"):
             return watchdog.sweep_loop(self.loop, self.st)
 
+
+class Sweep(SweepBase):
     def test_untriaged_issue_without_a_ledger_row_is_queued_by_the_sweep(self):
         lines = self.sweep([issue(7)])
         self.assertEqual(self.enqueued, [("triage", 7, config.TRIAGE_HEAD, "triage")])

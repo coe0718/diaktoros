@@ -86,13 +86,14 @@ def plan_required(st, number: int, issue: dict | None) -> bool:
     return PLAN_LABEL in labels or len(str(issue.get("body") or "")) > PLAN_BODY_MAX
 
 
-def _ask_wants(ask: dict) -> str:
+def _ask_wants(ask: dict, loop_id: str = "<loop>") -> str:
     """What an open ask waits for from a maintainer: the one wording ``ask_line`` (``status``,
     ``explain``) and ``ask_outcome`` (the ``fixed`` notice) share. A plan ``continue --post-plan``
-    reserved but whose comment is unconfirmed (``pending``, #2334) waits on that command first."""
+    reserved but whose comment is unconfirmed (``pending``, #2334) waits on that command first,
+    named whole with the loop it needs (#2367): run again, it confirms or drops the reservation."""
     if ask.get("pending"):
-        return (f"its plan comment to be confirmed (`hermes dk continue --run {ask.get('run')} "
-                "--post-plan` again)")
+        return (f"its plan comment to be confirmed (`hermes dk continue --loop {loop_id} --run "
+                f"{ask.get('run')} --post-plan` again)")
     return ("approval of its plan (`/loop approve`)" if ask.get("kind") == "plan"
             else "an answer to its question")
 
@@ -107,9 +108,9 @@ def posted_ask(kind: str | None, body: str) -> str:
             "other reply is read by the next turn but does not start it.")
 
 
-def ask_line(number: int, ask: dict) -> str:
+def ask_line(number: int, ask: dict, loop_id: str = "<loop>") -> str:
     """The one sentence ``status`` and ``explain`` use for an issue waiting on a maintainer."""
-    return (f"issue #{number} fix waits for a maintainer: {_ask_wants(ask)}; "
+    return (f"issue #{number} fix waits for a maintainer: {_ask_wants(ask, loop_id)}; "
             "no fix turn starts until then")
 
 
@@ -126,7 +127,8 @@ def status_lines(loop: dict, st) -> list[str]:
     from . import fix_declined
     lines = [f"issue #{issue_no} fix waits for PR #{origin} to merge"
              for issue_no, origin in sorted(st.fix_holds().items())]
-    lines += [ask_line(issue_no, ask) for issue_no, ask in sorted(st.fix_ask_open().items())]
+    lines += [ask_line(issue_no, ask, loop["id"])
+              for issue_no, ask in sorted(st.fix_ask_open().items())]
     from . import fix_reply
     lines += fix_reply.status_lines(st)
     try:
@@ -143,12 +145,13 @@ def status_lines(loop: dict, st) -> list[str]:
     return lines
 
 
-def explain_lines(st, number: int) -> list[str]:
+def explain_lines(st, number: int, loop_id: str = "<loop>") -> list[str]:
     """``explain``'s lines when ``number`` is an issue waiting on a maintainer: an open ask, or a
     reply to the fixer's comment (#663)."""
     from . import fix_reply
     ask = st.fix_ask_open().get(number)
-    return ([ask_line(number, ask)] if ask else []) + fix_reply.status_lines(st, only=number)
+    return (([ask_line(number, ask, loop_id)] if ask else [])
+            + fix_reply.status_lines(st, only=number))
 
 
 def explain_rows(loop: dict, st, number: int) -> list[tuple[str, str]]:
@@ -156,7 +159,7 @@ def explain_rows(loop: dict, st, number: int) -> list[tuple[str, str]]:
     or reply it waits on (``explain_lines``), then ``depends:`` for its declared dependencies and
     waivers, the same sentences ``hermes dk depends --issue N`` prints (#1301)."""
     from . import issue_deps
-    return ([("held:", line) for line in explain_lines(st, number)]
+    return ([("held:", line) for line in explain_lines(st, number, loop["id"])]
             + [("depends:", line) for line in issue_deps.explain_lines(loop, st, number)])
 
 

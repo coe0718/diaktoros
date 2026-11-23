@@ -107,7 +107,9 @@ def check_app_deliveries(loop: dict) -> "doctor.Check | str":
                             f"{app}'s webhook points here, but {error} — whether its secret matches "
                             "the route is unproven", "run doctor again once GitHub answers")
     if latest is None:
-        return "no deliveries for this repository in its log yet — the secret is unproven until one arrives"
+        # #2298: only the newest deliveries are searched; say so rather than "none at all".
+        return (f"no deliveries for this repository among the newest {app_deliveries.SEARCHED} in "
+                "its log — the secret is unproven until one is there")
     code, when = latest.get("status_code"), latest["delivered_at"]
     if type(code) is not int or code <= 0:
         return doctor.Check("app-webhook", doctor.UNKNOWN,

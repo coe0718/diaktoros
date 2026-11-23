@@ -782,6 +782,23 @@ def _check_turn(loop, scope, no_write):
             raise TurnDenied(reason)
 
 
+def _stage_pr(loop: dict, scope: broker_ipc.RunScope, sandbox_root: Path,
+              not_exported: list) -> Path:
+    """The PR's exact head, staged for the sandbox (``trusted_fetch.stage``). A review whose
+    head moved while it staged ends as the move #2468 cancels and delivers to the new head
+    (``ReviewHeadMoved``), not as a failure: nothing ran (#2610)."""
+    try:
+        return trusted_fetch.stage(loop, repo=scope.repo, number=scope.number, head=scope.head,
+                                   ref=scope.branch, role=scope.role, sandbox_root=sandbox_root,
+                                   not_exported=not_exported)
+    except trusted_fetch.FetchDenied as exc:
+        if scope.role == 'reviewer' and str(exc) == 'stale PR head':
+            from . import run_supervisor
+            raise run_supervisor.ReviewHeadMoved(run_supervisor.REVIEW_HEAD_MOVED) from exc
+        raise
+
+
+
 def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path,
              runtime: Path, rust: Path, upstream: str, key: str, model: str,
              prompt: str, timeout: int = 600, work_root: Path | None = None,
@@ -872,10 +889,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                                        frozenset(merged["skipped"]))
                 not_exported.extend(merged["skipped"])
             else:
-                checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
-                                               head=scope.head, ref=scope.branch,
-                                               role=scope.role, sandbox_root=root / 'export',
-                                               not_exported=not_exported)
+                checkout = _stage_pr(loop, scope, root / 'export', not_exported)
             cache = dependency_cache(loop)
             _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
                     + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')

@@ -1030,18 +1030,107 @@ class LockInventory(unittest.TestCase):
         "ownership.lock": "native recovery lease inside a private cleanup pool or volume",
         "disposal.lock": "native creator lease inside a private cleanup volume",
         ".fixer-push-policy.lock": "lives in the config directory (*.json only is archived)",
-        ".lock": "a suffix: the pacing, migrate, routes, seat_model and safe_push locks, none in a "
-                 "state directory; observer's and routes' are named in full or registered",
     }
 
-    def named(self, root=Path(backup.__file__).parents[1]):
+    # Every place that builds a ``*.lock`` name at runtime (``x + ".lock"``, ``f"{x}.lock"``,
+    # ``with_suffix(".lock")``), keyed ``(module, enclosing function, expression)``: the scan
+    # cannot read such a name, so each site is accounted for here by hand (#1740). A new site
+    # fails until it is listed with a reason, even in a module that already has one listed
+    # (review F1 on #2604: a module-wide entry let any later site in that module through).
+    RUNTIME = {
+        ("diaktoros.state.migrate", "lock_path", 'marker_path().with_suffix(".lock")'):
+            "the migration marker's lock, in the home's state/ root",
+        ("diaktoros.seat_model", "profile_lock",
+         'hashlib.sha256(home.encode()).hexdigest()[:24] + ".lock"'):
+            "per-profile locks in the host's seat_locks directory",
+        ("diaktoros.safe_push", "_before_attempt", 'part.endswith(".lock")'):
+            "a git ref-name rule, not a file",
+        ("diaktoros.safe_push", "update_branch", 'part.endswith(".lock")'):
+            "a git ref-name rule, not a file",
+        ("diaktoros.routes", "_registry_lock", 'path.name + ".lock"'):
+            "the route registry's lock, beside it in the host directory",
+        ("diaktoros.pacing", "_locked", 'f".{file.stem}.lock"'):
+            "the pacing file's lock, in the host's pacing directory",
+        ("diaktoros.app_tokens", "held", 'f".{_file(key).name}.lock"'):
+            "the app-token cache's locks, in state/diaktoros-app-tokens",
+        ("diaktoros.route_intent", "<module>", 'INTENT_FILE + ".lock"'):
+            "registered: LOCK = register_lock(INTENT_FILE + '.lock')",
+        ("diaktoros.observer", "lock_path", 'path.name + ".lock"'):
+            "registered: register_lock(lock_path(OBSERVATIONS_FILE).name)",
+    }
+
+    # The package and the scripts that drive it (#1740: ``scripts/watchdog.py`` keeps a lock in
+    # every loop's state directory). A script's lock is registered in the package, since a backup
+    # process loads package modules only (``backup._load_writers``). The enforcing tests read
+    # these two attributes, so the regression tests can point them at a copy holding a probe.
+    PACKAGE_PARENT = Path(backup.__file__).parents[2]
+    ROOTS = (PACKAGE_PARENT / "diaktoros", PACKAGE_PARENT / "scripts")
+
+    @staticmethod
+    def scopes(tree):
+        """Each node of ``tree`` with the name of the function or class it sits in
+        (``<module>`` at the top level), so a runtime-built site is keyed by where it is."""
+        stack = [(tree, "<module>")]
+        while stack:
+            node, scope = stack.pop()
+            yield node, scope
+            inner = (node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                                    ast.ClassDef)) else scope)
+            stack.extend((child, inner) for child in ast.iter_child_nodes(node))
+
+    @staticmethod
+    def classify(node, parent):
+        """``(complete, built)`` for a ``*.lock`` string constant. ``complete``: it reads as a
+        whole lock name (a stem, no format markers, nothing built in front of it), so it must be
+        registered or listed as living elsewhere. ``built``: it is a part of a name made at
+        runtime (the bare suffix, a ``+``/``%`` operand, a piece of an f-string, a format
+        string), so its site must be listed in ``RUNTIME``. A constant can be both, as in
+        ``"x.lock" + y`` (review F1 on #2604): the name is checked and the site accounted for."""
+        value = node.value
+        in_fstring = isinstance(parent, ast.JoinedStr)
+        operand = isinstance(parent, ast.BinOp) and isinstance(parent.op, (ast.Add, ast.Mod))
+        preceded = ((operand and parent.right is node)
+                    or (in_fstring and parent.values.index(node) > 0))
+        complete = (re.fullmatch(r"[A-Za-z0-9_.-]+\.lock", value) is not None
+                    and value != ".lock" and not preceded)
+        built = (value == ".lock" or in_fstring or operand
+                 or re.search(r"[{%]", value) is not None)
+        return complete, built
+
+    @classmethod
+    def lock_strings(cls, roots):
+        """Every ``*.lock`` string constant under ``roots``, as
+        ``(module, node, complete, built, site)``; ``site`` is ``(module, scope, expression)``."""
+        for root in roots:
+            for path in sorted(Path(root).rglob("*.py")):
+                module = ".".join(path.relative_to(Path(root).parent).with_suffix("").parts)
+                source = path.read_text()
+                tree = ast.parse(source)
+                parents = {child: node for node in ast.walk(tree)
+                           for child in ast.iter_child_nodes(node)}
+                for node, scope in cls.scopes(tree):
+                    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                            and re.fullmatch(r"[A-Za-z0-9_.{}%-]*\.lock", node.value)):
+                        continue        # not a lock name, nor a piece of one (prose, a message)
+                    parent = parents.get(node)
+                    complete, built = cls.classify(node, parent)
+                    site = (module, scope, ast.get_source_segment(source, parent or node))
+                    yield module, node, complete, built, site
+
+    def named(self, *roots):
+        """Complete lock names, each with the modules that name it."""
         found = {}
-        for path in sorted(root.rglob("*.py")):
-            module = ".".join(path.relative_to(root.parent).with_suffix("").parts)
-            for node in ast.walk(ast.parse(path.read_text())):
-                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                        and re.fullmatch(r"[A-Za-z0-9_.-]*\.lock", node.value)):
-                    found.setdefault(node.value, set()).add(module)
+        for module, node, complete, _built, _site in self.lock_strings(roots or self.ROOTS):
+            if complete:
+                found.setdefault(node.value, set()).add(module)
+        return found
+
+    def built(self, *roots):
+        """The sites that build a lock name at runtime, each with its line numbers."""
+        found = {}
+        for _module, node, _complete, built, site in self.lock_strings(roots or self.ROOTS):
+            if built:
+                found.setdefault(site, set()).add(node.lineno)
         return found
 
     def fresh_lock_names(self, package_parent):
@@ -1058,10 +1147,142 @@ class LockInventory(unittest.TestCase):
     def test_every_lock_name_in_the_package_is_registered_or_accounted_for(self):
         """Judged on the registry a fresh process builds, not on one this test filled by
         importing the writers itself (review: a module ``backup`` never loads would pass)."""
-        production = self.fresh_lock_names(Path(backup.__file__).parents[2])
+        production = self.fresh_lock_names(self.PACKAGE_PARENT)
         for name, modules in self.named().items():
             if name not in self.ELSEWHERE:
                 self.assertIn(name, production, f"{name} in {sorted(modules)} is not registered")
+
+    def test_every_runtime_built_lock_name_is_accounted_for(self):
+        """#1740: a name built at runtime is invisible to the name scan, so each module that
+        builds one must be listed in ``RUNTIME``, site by site; and a listed site that no longer
+        exists is dropped from the list, so it cannot hide a later one."""
+        found = self.built()
+        unlisted = {site: sorted(lines) for site, lines in found.items()
+                    if site not in self.RUNTIME}
+        self.assertEqual(unlisted, {}, "sites build a *.lock name at runtime: register it, "
+                                       "or list the site in LockInventory.RUNTIME with why")
+        self.assertEqual(set(self.RUNTIME) - set(found), set(), "stale RUNTIME entries")
+
+    def test_a_runtime_built_lock_in_a_new_module_is_flagged(self):
+        """The probe of #1740: a writer whose lock name is built at runtime and registered
+        nowhere is caught, in either spelling, and is not passed off as a complete name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "diaktoros"
+            package.mkdir()
+            (package / "runtime_lock.py").write_text(
+                "import pathlib\n"
+                "def lock_path(directory):\n"
+                "    return pathlib.Path(directory) / ('runtime-thing' + '.lock')\n"
+                "def other(directory, name):\n"
+                "    return pathlib.Path(directory) / f'{name}-x.lock'\n")
+            self.assertEqual(self.built(package), {
+                ("diaktoros.runtime_lock", "lock_path", "'runtime-thing' + '.lock'"): {3},
+                ("diaktoros.runtime_lock", "other", "f'{name}-x.lock'"): {5}})
+            self.assertEqual(self.named(package), {})
+        self.assertFalse(any(site[0] == "diaktoros.runtime_lock" for site in self.RUNTIME))
+
+    def test_a_complete_name_in_a_concatenation_is_still_checked_as_a_name(self):
+        """Review F1 on #2604: ``"fresh-full.lock" + ""`` is a whole name with something after
+        it; the scan holds it to the registry as a name and also counts its site as built."""
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "diaktoros"
+            package.mkdir()
+            (package / "probe.py").write_text(
+                "def review_probe(directory, part):\n"
+                "    return (directory / ('fresh-full.lock' + ''),\n"
+                "            directory / (part + '.lock'), f'{part}.lock', f'whole.lock{part}')\n")
+            self.assertEqual(self.named(package), {"fresh-full.lock": {"diaktoros.probe"},
+                                                   "whole.lock": {"diaktoros.probe"}})
+            self.assertEqual(len(self.built(package)), 4)
+
+    def probed(self, probe_module, probe_text, test_name):
+        """Run the enforcing test ``test_name`` on a copy of the package and scripts with
+        ``probe_text`` appended to ``probe_module``, and say whether it failed. The copy is run
+        first without the probe and must pass, so a failure is the probe's, not the copy's."""
+        outcomes = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for root in self.ROOTS:
+                shutil.copytree(root, Path(tmp) / root.name,
+                                ignore=shutil.ignore_patterns("__pycache__"))
+            for text in ("", probe_text):
+                target = Path(tmp) / probe_module
+                target.write_text((target.read_text() if target.exists() else "") + text)
+                inner = LockInventory(test_name)
+                inner.PACKAGE_PARENT = Path(tmp)
+                inner.ROOTS = tuple(Path(tmp) / root.name for root in self.ROOTS)
+                try:
+                    getattr(inner, test_name)()
+                    outcomes.append(False)
+                except AssertionError:
+                    outcomes.append(True)
+        self.assertFalse(outcomes[0], "the copy fails even without the probe")
+        return outcomes[1]
+
+    def test_the_inventory_rejects_an_unlisted_runtime_writer(self):
+        """Review F2 on #2604, through the enforcing test: the issue's probe (an unregistered
+        writer building its name at runtime) turns it red, and so does a new runtime-built site
+        added to a module that already has one listed (review F1)."""
+        test = "test_every_runtime_built_lock_name_is_accounted_for"
+        self.assertTrue(self.probed(
+            "diaktoros/runtime_lock.py",
+            "import pathlib\n"
+            "def lock_path(directory):\n"
+            "    return pathlib.Path(directory) / ('runtime-thing' + '.lock')\n", test))
+        self.assertTrue(self.probed(
+            "diaktoros/safe_push.py",
+            "\ndef review_probe(directory, part):\n    return directory / (part + '.lock')\n",
+            test))
+
+    def test_the_inventory_rejects_an_unregistered_name_in_a_concatenation(self):
+        """Review F1 on #2604, through the enforcing test: the reviewer's probe appended to an
+        already-listed module fails on the unregistered ``fresh-full.lock``."""
+        self.assertTrue(self.probed(
+            "diaktoros/safe_push.py",
+            "\ndef review_probe(directory):\n    return directory / ('fresh-full.lock' + '')\n",
+            "test_every_lock_name_in_the_package_is_registered_or_accounted_for"))
+
+    def test_the_inventory_rejects_an_unregistered_lock_in_a_script(self):
+        """Review F3 on #2604, through both enforcing tests on their default roots: a script
+        naming an unregistered lock in full, and a script building one at runtime, each turn
+        the inventory red. Either half passes if the default scan leaves ``scripts/`` out."""
+        self.assertTrue(self.probed(
+            "scripts/zz_probe.py",
+            "import os\nfd = os.open(st_dir / 'script-only-review.lock', os.O_CREAT)\n",
+            "test_every_lock_name_in_the_package_is_registered_or_accounted_for"))
+        self.assertTrue(self.probed(
+            "scripts/zz_probe.py",
+            "def lock_path(st_dir, part):\n    return st_dir / (part + '.lock')\n",
+            "test_every_runtime_built_lock_name_is_accounted_for"))
+
+    def test_the_inventory_rejects_a_stale_runtime_entry(self):
+        """Review F4 on #2604, through the enforcing test: a ``RUNTIME`` entry whose site no
+        longer builds a lock name fails as stale, while the unchanged table passes."""
+        test = "test_every_runtime_built_lock_name_is_accounted_for"
+        getattr(LockInventory(test), test)()
+        inner = LockInventory(test)
+        inner.RUNTIME = {**self.RUNTIME,
+                         ("diaktoros.safe_push", "gone", 'part + ".lock"'): "a removed site"}
+        with self.assertRaises(AssertionError) as caught:
+            getattr(inner, test)()
+        self.assertIn("stale RUNTIME entries", str(caught.exception))
+
+    def test_the_scan_walks_the_scripts_too(self):
+        """#1740: ``scripts/`` drives the package and keeps locks in state directories (the
+        watchdog's sweep lock), so a lock named there is held to the same rule."""
+        self.assertIn(Path(backup.__file__).parents[2] / "scripts", self.ROOTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = Path(tmp) / "scripts"
+            scripts.mkdir()
+            (scripts / "watcher.py").write_text(
+                "import os\nfd = os.open(st_dir / 'script-only.lock', os.O_CREAT)\n")
+            self.assertEqual(self.named(scripts), {"script-only.lock": {"scripts.watcher"}})
+
+    def test_the_watchdogs_sweep_lock_is_registered_for_a_fresh_backup(self):
+        """The maintainer's case on #1740: ``sweep.lock`` sits in every loop's state directory;
+        the watchdog opens it by the package's registered constant, not a name of its own."""
+        self.assertIn("sweep.lock", self.fresh_lock_names(Path(backup.__file__).parents[2]))
+        watchdog = (Path(backup.__file__).parents[2] / "scripts" / "watchdog.py").read_text()
+        self.assertIn("ci_event.SWEEP_LOCK", watchdog)
 
     def test_a_new_writer_module_is_found_by_a_fresh_backup_process(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1665,6 +1886,18 @@ class InterruptedKeepsThePause(Base):
         self.assertEqual(code, 2)
         self.assertIsNone(migrate.migrating())
 
+
+    def test_a_rerun_whose_backup_fails_keeps_the_interrupted_runs_pause(self):
+        # #2323: the re-run refused before any move, so the interrupted run's records may
+        # still be half moved: its marker stays.
+        marker = {"pid": 999999, "started": 1}
+        migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
+        migrate.marker_path().write_text(json.dumps(marker))
+        with mock.patch.object(backup, "create", side_effect=backup.BackupError("full")):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(code, 2, text)
+        self.assertIn("picking up", text)
+        self.assertEqual(migrate.migrating(), marker)
 
 class Verify(Base):
     """``backup --verify FILE`` (#1078): an archive is read back, not only written."""

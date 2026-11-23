@@ -46,6 +46,8 @@ def process_state(pid: int | None, launched: float | None) -> str:
 
 
 LINGER_MARK = '.linger.'
+# The repo of the settling row a submit spawned this worker for (#2569).
+SETTLE_REPO_ENV = envnames.name('SETTLE_REPO')
 
 
 def linger_mark(db: Path, pid: int) -> Path:
@@ -322,7 +324,7 @@ def lingering(db: Path):
 class WorkerLifecycle:
     """The worker-lifecycle and recovery methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
-    def _spawn(self):
+    def _spawn(self, settle_repo: str | None = None):
         # Trusted supervisor process only, never the credential-owning gateway agent.
         if not self.fixture_mode and not self.production_config:
             return
@@ -351,6 +353,8 @@ class WorkerLifecycle:
             util.leak_guard_env(env)
 
         env[WORKER_ENV] = "1"  # hostdirs: a worker never creates host state (#108)
+        if settle_repo:
+            env[SETTLE_REPO_ENV] = settle_repo
         from .. import app_tokens, gh_calls
         gh_calls.prepare(host_home)       # so the worker can count its GitHub calls there
         app_tokens.prepare(host_home)     # and share the host's App tokens (#1780)
@@ -401,20 +405,8 @@ class WorkerLifecycle:
         return (sys.platform != 'darwin' or self.fixture_mode) and _worker_gone(row)
 
     def _recover_native_storage(self):
-        if sys.platform == 'darwin' and not self.fixture_mode and not in_worker():
-            from .. import native_cleanup
-            for name in ('native-cleanup', 'native-proof-cleanup'):
-                root = self.db.parent.resolve() / name
-                attribute = name.replace('-', '_')
-                setattr(self, attribute + '_parent', root)
-                if not (root.exists() or root.is_symlink()):
-                    continue
-                try:
-                    result = native_cleanup.bounded_sweep(root)
-                except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                    result = {'status': 'unverified', 'results': [], 'reason': str(exc)}
-                    util.log(f'{name} sweep unverified; receipts retained: {exc}')
-                setattr(self, attribute + '_results', result)
+        from . import recovery
+        recovery.sweep_native(self)
 
     def recover(self) -> str:
         """Sweep lost claims and ambiguous launches; schedule waiting work."""
@@ -430,7 +422,9 @@ class WorkerLifecycle:
             # child runs): only a run whose recorded process is provably gone is ended here.
             # A live or unprovable one stays quarantined below (uncertain, still holding its
             # PR and seat, cancel_requested kept) until an operator reconciles it.
-            for lost in con.execute("SELECT id,pid,launch_intent FROM runs WHERE state IN "
+            ended = []      # cancelled with no write record: the worker's cleanup is owed
+            for lost in con.execute("SELECT id,pid,launch_intent,repo,pr,head,seat,turn_key "
+                                    "FROM runs WHERE state IN "
                                     "('launching','running') AND lease<? AND cancel_requested "
                                     "IS NOT NULL AND push_intent IS NULL", (now,)).fetchall():
                 # The recorded PID is the worker's, not the sandbox's (#1769). A gone worker
@@ -446,6 +440,7 @@ class WorkerLifecycle:
                 wrote = run_supervisor.write_records(con, lost['id'])
                 if wrote is None:
                     state, error = 'cancelled', run_supervisor.OPERATOR_CANCEL
+                    ended.append(lost)
                 else:
                     state = 'uncertain'
                     error = (f"{run_supervisor.OPERATOR_CANCEL} after it may have written ({wrote}) — "
@@ -472,6 +467,8 @@ class WorkerLifecycle:
                         "(retry_at IS NULL OR retry_at<=?)", (now, now))
             pending = con.execute("SELECT COUNT(*) FROM runs WHERE state='pending'").fetchone()[0]
             con.execute("COMMIT")
+        for lost in ended:
+            _end_lost_cancel(lost)
         if pending and (self.fixture_mode or self.production_config):
             self._spawn()
         return run_supervisor.SILENT
@@ -613,45 +610,11 @@ class WorkerLifecycle:
     def reconcile_uncertain(self, run_id: str, *, reason: str,
                             acknowledge_no_live_worker: bool = False,
                             acknowledge_native_descendants_stopped: bool = False) -> bool:
-        """Operator-only release after inspecting the turn's external writes.
-
-        A present or inaccessible PID conservatively blocks release. A missing
-        PID still requires acknowledgement: absence alone cannot prove that
-        a GitHub write did not happen before the worker died.
-        Native release also requires the operator to stop all descendants or
-        reboot, then attest to that fact; this is not automatic exit proof.
-        """
-        if not acknowledge_no_live_worker or not reason or len(reason) > 512:
-            raise ValueError('explicit reconciliation acknowledgement and reason required')
-        with self._connect() as con:
-            con.execute('BEGIN IMMEDIATE')
-            row = con.execute("SELECT pid,state,launch_intent,repo,pr,head,seat FROM runs WHERE id=?",
-                              (run_id,)).fetchone()
-            if row is None or row['state'] != 'uncertain':
-                con.execute('COMMIT')
-                return False
-            native = sys.platform == 'darwin' and not self.fixture_mode
-            if native and not acknowledge_native_descendants_stopped:
-                raise ValueError('native process completion unverified; explicit native '
-                                 'descendants stopped acknowledgement required')
-            if row['pid'] is not None:
-                found = process_state(row['pid'], row['launch_intent'])
-                if found == 'unknown':
-                    raise ValueError('cannot establish worker is absent')
-                if found == 'alive':
-                    raise ValueError('worker PID exists; cannot release uncertain run')
-            if row['launch_intent'] is None:
-                raise ValueError('missing launch intent; cannot establish worker identity')
-            con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, "
-                        "push_intent=NULL,updated=? "
-                        "WHERE id=? AND state='uncertain'",
-                        ('operator reconciliation: ' + reason +
-                         ('; native descendants manually acknowledged stopped' if native else ''),
-                         time.time(), run_id))
-            con.execute('COMMIT')
-        # The operator's reconciliation is what ends it, so it frees its claim too.
-        _release_claim(row, run_id)
-        return True
+        """Operator-only release after inspecting the turn's external writes."""
+        from . import recovery
+        return recovery.reconcile(self, run_id, reason=reason,
+                                  acknowledge_no_live_worker=acknowledge_no_live_worker,
+                                  acknowledge_native_descendants_stopped=acknowledge_native_descendants_stopped)
 
     def settle_push_quarantine(self, run_id: str, *, evidence: str) -> bool:
         """End a fixer push quarantine the host proved wrote nothing (#1763): ``failed``, its
@@ -722,11 +685,19 @@ class WorkerLifecycle:
             return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
                                "LIMIT 1", (repo, pr, head, seat)).fetchone() is not None
 
+    # The repos of the settling rows this supervisor submitted or was spawned for (#2569).
+    settle_repos: frozenset = frozenset()
+
     def settling(self) -> bool:
-        """Whether a run waits out a reply's settle window (``SETTLE_HOLD``, #2248)."""
+        """Whether a run of ``settle_repos`` waits out a reply's settle window (``SETTLE_HOLD``,
+        #2248, #2569)."""
+        if not self.settle_repos:
+            return False
+        repos = sorted(self.settle_repos)
         with self._connect() as con:
-            return con.execute("SELECT 1 FROM runs WHERE state='waiting' AND error=? LIMIT 1",
-                               (run_supervisor.SETTLE_HOLD,)).fetchone() is not None
+            return con.execute("SELECT 1 FROM runs WHERE state='waiting' AND error=? AND repo IN ("
+                               + ",".join("?" * len(repos)) + ") LIMIT 1",
+                               (run_supervisor.SETTLE_HOLD, *repos)).fetchone() is not None
 
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, or backing a claim off after a failed GitHub read,
@@ -735,7 +706,8 @@ class WorkerLifecycle:
         sweep interval later, would otherwise start a row waiting out a backoff (#1302). Only a
         row due within this linger's window is waited for: the second and later read-failure
         backoffs (4 min and up) are the watchdog sweep's, as before. A fix turn settling after a
-        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by any worker."""
+        maintainer's reply (``SETTLE_HOLD``, #2248) is waited for the same way, by a worker of its
+        repo (#2569)."""
         if not self.held_for_ci and not self.settling():
             return
         def marked_sleep(seconds):
@@ -750,13 +722,16 @@ class WorkerLifecycle:
         and ``recover()`` it, until the window closes or nothing falls due in it."""
         deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
-                  run_supervisor.CLAIM_READ_FAILED, run_supervisor.SETTLE_HOLD)
+                  run_supervisor.CLAIM_READ_FAILED)
+        repos = sorted(self.settle_repos)
         recovered = None
         while time.time() < deadline:
             with self._connect() as con:
                 due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
-                                  + " OR ".join("error LIKE ?" for _ in polled) + ")",
-                                  tuple(hold + '%' for hold in polled)).fetchone()[0]
+                                  + " OR ".join("error LIKE ?" for _ in polled)
+                                  + " OR (error=? AND repo IN (" + ",".join("?" * len(repos))
+                                  + ")))", (*(hold + '%' for hold in polled),
+                                            run_supervisor.SETTLE_HOLD, *repos)).fetchone()[0]
             if due is None or due > deadline:
                 return          # nothing due in this window: the watchdog sweep is the backstop
             if due <= time.time():
@@ -776,9 +751,39 @@ def _worker_gone(row) -> bool:
             and process_state(row['pid'], row['launch_intent']) == 'gone')
 
 
+def _end_lost_cancel(row) -> None:
+    """The end-of-turn cleanup the worker's own completion path (``_production_finish``) does
+    for a ``cancelled`` run with no write-ahead record, done by ``recover`` for a run whose
+    worker died before reaching it (#1767): an adjudicator's breach marker handed back from
+    ``adjudicating``, then its seat claim and in-flight mark freed. Best effort, like both.
+
+    It runs after the cancel is committed, so the run may already be retried and relaunched,
+    and another actor may hold the marker. Both acts name the lost launch (``row`` carries its
+    ``launch_intent``; ``claims.attempt_of``), and the marker and the claim carry the launch
+    that took them: only what this attempt itself started or claimed is handed back or freed.
+    A marker the lost attempt never started (it died before ``breach_start``), or one started
+    by a gateway, another run or the retry, is left alone."""
+    attempt = claims.attempt_of(row['id'], row['launch_intent'])
+    try:
+        from .. import config, state as state_mod
+        from . import pr_facts
+        rounds = pr_facts.breach_rounds(row['turn_key'])
+        loop = (config.by_repo(row['repo'])
+                if row['seat'] == 'adjudicator' and rounds and attempt is not None else None)
+        if loop is not None:
+            state_mod.state_for(loop).breach_resume(row['pr'], row['head'], rounds,
+                                                    attempt=attempt)
+    except Exception:
+        pass
+    _release_claim(row, row['id'])
+
+
 def _release_claim(row, run_id: str) -> None:
-    """Free an ended uncertain run's seat claim and in-flight mark, which it kept until now
-    (#98). Best effort: the ledger row is the decision; a loop no longer configured has none."""
+    """Free an ended run's seat claim and in-flight mark, which it kept until now (#98): an
+    uncertain one reconciled or settled, or a lost one ``recover`` cancelled (#1767). Best
+    effort: the ledger row is the decision; a loop no longer configured has none. Only the
+    claim of the attempt ``row['launch_intent']`` names: the run may be retried by the time
+    this runs, and its retry's claim stays (#1767)."""
     try:
         from .. import config, gate, state as state_mod
         loop = config.by_repo(row['repo'])
@@ -786,8 +791,10 @@ def _release_claim(row, run_id: str) -> None:
             st = state_mod.state_for(loop)
             # Only the claim this run wrote: the ledger row left `uncertain` already, so a
             # newer run may already hold this seat/PR/head, and keeps its claim and mark.
-            if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
-                              run=run_id) and row['seat'] in claims.INFLIGHT_LABEL):
-                st.inflight_clear(f"{claims.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
+            # The mark goes in the same hold of the state lock as the claim (#1767): a retry
+            # that claims and marks the head in between would otherwise lose its new mark.
+            st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'], run=run_id,
+                          attempt=claims.attempt_of(run_id, row['launch_intent']),
+                          mark=claims.inflight_mark(row))
     except Exception:
         pass
