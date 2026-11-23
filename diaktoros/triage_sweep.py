@@ -26,13 +26,15 @@ page 1, so a page the budget never reaches from page 1 is still read (review on 
 it resumes at is bounded like any later page; when even that does not fit, the next sweep starts
 over from page 1 instead of trying it again (F5). It reads on only once every candidate on the
 pages it read was queued: one left (past ``PER_SWEEP``, or the ledger or worker down) has the next
-sweep read those pages again (F4).
+sweep read those pages again (F4). A page number is no stable boundary when issues close between
+sweeps, so a resumed listing first reads the places before its page again (``triage_resume``):
+when they do not reach back to where the last one stopped, the next sweep starts over (F6).
 """
 from __future__ import annotations
 
 import time
 
-from . import config, gate, gh
+from . import config, gate, gh, triage_resume
 from .run_supervisor import issue_inputs
 from .util import epoch, log
 
@@ -87,12 +89,13 @@ def resolve_late(loop: dict, st) -> bool:
     return False
 
 
-def resume_page(st) -> int:
-    """The page a budget-cut listing stopped at, or 1 (nothing kept, or not a page number)."""
+def resume_point(st) -> tuple[int, dict]:
+    """The page a budget-cut listing stopped at and what was kept with it (the last item read,
+    ``triage_resume.boundary``), or ``(1, {})``: nothing kept, or not a page number."""
     kept = st.kv_get(st.dir / RESUME_FILE, {})
     page = kept.get("next") if isinstance(kept, dict) else None
     ok = isinstance(page, int) and not isinstance(page, bool) and 1 < page <= gh.MAX_ISSUE_PAGES + 1
-    return page if ok else 1
+    return (page, kept) if ok else (1, {})
 
 
 RESUME_NOTE = {"saved": ", the next sweep reads on from there",
@@ -103,17 +106,20 @@ RESUME_NOTE = {"saved": ", the next sweep reads on from there",
                "stale": "; where it stopped could not be saved, and an older saved page could "
                         "not be cleared",
                "restart": "; the page it resumed at did not fit the budget, so the next sweep "
+                          "starts again from page 1",
+               "shifted": "; issues/PRs before where it resumed closed since the last sweep, so "
+                          "some may have moved onto pages it did not read again: the next sweep "
                           "starts again from page 1"}
 
 
-def keep_resume(st, progress: dict) -> str:
-    """Keep where the next sweep starts: the page a budget cut stopped at, or page 1 for a whole
-    listing (review on #2578). ``saved``; else ``cleared`` when the write failed but the old file
+def keep_resume(st, record: dict) -> str:
+    """Keep where the next sweep starts: the page a budget cut stopped at with the last item read
+    (F6), or ``{}``, page 1, for a whole listing (review on #2578). ``saved``; else ``cleared`` when the write failed but the old file
     is gone, so the next sweep starts from page 1; else ``stale``. A failed write is never told
     as a kept one (F3): ``kv_set`` would log and swallow it."""
     path = st.dir / RESUME_FILE
     try:
-        st.kv_set_strict(path, {"next": progress["next"]} if "next" in progress else {})
+        st.kv_set_strict(path, record)
         return "saved"
     except Exception as exc:
         log(f"triage sweep: where the listing stopped not saved: {type(exc).__name__}: {exc}")
@@ -158,29 +164,41 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     if not config.triage_enabled(loop):
         return []
     now = time.time() if now is None else now
-    start, progress = resume_page(st), {}
-    issues, error = gh.open_issues_read(
-        loop, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - HORIZON_S)), start, progress)
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - HORIZON_S))
+    (start, before), progress = resume_point(st), {}
+    # A resumed listing first reads the places before its page again, for what moved up (F6).
+    issues, error = triage_resume.overlap(loop, since, start) if start > 1 else ([], "")
+    if error and issues is not None:      # the budget cut those places: none of the page either
+        progress["next"] = start
+    elif issues is not None:
+        rest, error = gh.open_issues_read(loop, since, start, progress)
+        issues = None if rest is None else triage_resume.joined(issues, rest)
     if issues is None:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
     # The ledger cleanup just logged why it is down: one line per cause, nothing queued.
     queued, drained = ([], False) if ledger_down else queue_missed(loop, st, issues, now)
     held = "next" in progress and not drained       # these pages again, not the next (F4)
-    # A resumed page that never fits starts the next sweep over, not over it again (F5).
-    restart = start > 1 and progress.get("next") == start
-    kept = keep_resume(st, {} if restart else ({"next": start} if start > 1 else {}) if held
-                       else progress)
+    # A resumed page that never fits starts the next sweep over, not over it again (F5), and so
+    # does one whose places read again do not reach back to where the last listing stopped (F6).
+    cut_back = start > 1 and progress.get("next") == start
+    shifted = start > 1 and not cut_back and not triage_resume.reaches_back(before, issues)
+    kept = keep_resume(st, {} if cut_back or shifted else (before if start > 1 else {}) if held
+                       else {"next": progress["next"], **triage_resume.boundary(issues)}
+                       if "next" in progress else {})
     lines: list[str] = []
     if error:                             # not proven whole: the newest were read, older not
         log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
         which = (f"the newest {len(issues)}" if start == 1 else
                  f"{len(issues)} (from page {start}, the newer ones last sweep)")
-        note = RESUME_NOTE[("restart" if restart else "held" if held else kept)
-                           if kept == "saved" else kept]
+        note = RESUME_NOTE[("restart" if cut_back else "shifted" if shifted else "held" if held
+                            else kept) if kept == "saved" else kept]
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only {which} "
                      f"open issues/PRs ({gh.one_line(error)}); older issues inside the sweep "
                      "window were not checked" + (note if "next" in progress else ""))
+    elif shifted:
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep resumed its listing at "
+                     f"page {start}" + RESUME_NOTE["shifted" if kept != "stale" else kept])
     if kept == "stale" and "next" not in progress:
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep could not reset where "
                      "its listing starts: the next sweep may skip the newest open issues")
