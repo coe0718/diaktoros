@@ -31,25 +31,23 @@ from __future__ import annotations
 
 import re
 
+from .md_html import _ATTR, TAG, shown
+
 ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)\S|[ \t]*$)")
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
-_ATTR = r"""(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 _BLOCK_TAGS = ("address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|"
                "dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|"
                "frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|"
                "nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|"
                "tfoot|th|thead|title|tr|track|ul")
+# An inline token: a backslash escape (ASCII punctuation), a backtick run, a comment or a tag.
+INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|" + TAG.pattern.replace("-->|", "", 1))
 # CommonMark's HTML block kinds: what opens one, and what ends it (None: the next blank line).
 HTML = [(re.compile(start, re.I), end and re.compile(end, re.I)) for start, end in (
     (r"<(?:script|pre|style|textarea)(?:\s|>|$)", r"</(?:script|pre|style|textarea)>"),
     (r"<!--", r"-->"), (r"<\?", r"\?>"), (r"<![A-Za-z]", r">"), (r"<!\[CDATA\[", r"\]\]>"),
     (rf"</?(?:{_BLOCK_TAGS})(?:\s|/?>|$)", None),
     (rf"(?:<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$", None))]
-# In shown HTML: a comment's start or end, or a tag (its attributes are not shown text).
-TAG = re.compile(rf"<!--|-->|<[A-Za-z][A-Za-z0-9-]*{_ATTR}*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>")
-# An inline token: a backslash escape (ASCII punctuation), a backtick run, a comment or a tag.
-INLINE = re.compile(r"\\[!-/:-@\[-`{-~]|`+|" + TAG.pattern.replace("-->|", "", 1))
-LIST = re.compile(r"</?[uo]l\b", re.I)                 # an HTML list's tag
 
 
 def width(text: str) -> int:
@@ -109,35 +107,6 @@ def literal(line: str) -> str:
     return line
 
 
-def shown(line: str, top: bool, state: list) -> list[str]:
-    """The lines a shown HTML block's ``line`` reads as: its displayed text, without tags (an
-    attribute is not shown: twentieth review, F21) or comments (nor is a tag inside one: F20).
-    When the block is in no Markdown item (``top``), each ``<li>`` no deeper than one HTML list
-    starts a top-level item line (``- `` and its text, or the next text when it has none); the
-    rest is ``literal``. ``state`` is the block's ``[HTML list depth, an item still waiting for
-    its text, inside a comment]`` (nineteenth review)."""
-    segs, text, waiting, at = [], [], state[1], 0
-    for tag in TAG.finditer(line):
-        word = tag.group()
-        if state[2] or word == "-->":                   # in a comment; or plain text
-            state[2], at = (False, tag.end()) if state[2] and word == "-->" else (state[2], at)
-            continue
-        text.append(line[at:tag.start()] + " ")      # a tag may end a word: keep it apart
-        at, state[2] = tag.end(), word == "<!--"
-        if LIST.match(word):
-            state[0] = max(0, state[0] + (-1 if word[1] == "/" else 1))
-        elif top and state[0] <= 1 and word[:3].lower() == "<li" and not word[3:4].isalnum():
-            segs.append((waiting, "".join(text)))
-            text, waiting = [], True
-    text.append("" if state[2] else line[at:])
-    out = []
-    for opens, part in segs + [(waiting, "".join(text))]:
-        if part.strip():
-            out.append("- " + part.strip() if opens else literal(part))
-        state[1] = opens and not part.strip()
-    return out
-
-
 def visible(text: str) -> str:
     """``text``, one paragraph's lines joined by newlines, without its inline HTML comments
     (twelfth review on #2573) or tags (an attribute is not shown: twenty-first); each line break
@@ -173,7 +142,7 @@ def unfenced(lines: list[str]) -> list[str]:
     evidence read as unmarked items). The lines left are read for inline comments a paragraph
     at a time (``visible``): one runs to a blank line, item, fence, comment line or dedent."""
     out, fence, cols, kinds, blank, html, para, raw = [], None, [], [], False, None, [], None
-    state = [0, False, False]             # a shown HTML block's, for ``shown``
+    state = [0, False, False, ""]         # a shown HTML block's, for ``shown``
 
     def flush():                          # the paragraph so far, read inline as one text
         out[len(out) - len(para):] = visible("\n".join(para)).split("\n") if para else []
@@ -183,7 +152,7 @@ def unfenced(lines: list[str]) -> list[str]:
         if raw is not None and line.strip() and at < raw:
             raw, ended = None, True                # its list item ended, and the block with it
         elif raw is not None and line.strip():     # shown HTML: text, or a <li> item (F18-19)
-            shown_ = shown(line, raw == 0, state)
+            shown_ = shown(line, raw == 0, state, literal)
             out += shown_
             para += shown_
             continue
@@ -228,8 +197,8 @@ def unfenced(lines: list[str]) -> list[str]:
             flush()
         blank, col = False, cols[-1] if cols else 0
         if opener and opener[0] is None:           # shown HTML, to the next blank line
-            raw, state = col, [0, False, False]
-            shown_ = shown(line, raw == 0, state)
+            raw, state = col, [0, False, False, ""]
+            shown_ = shown(line, raw == 0, state, literal)
             out += shown_
             para += shown_
             continue

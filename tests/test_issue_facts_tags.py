@@ -1,0 +1,32 @@
+"""Twenty-first and twenty-second reviews on #2573, beside ``tests/test_issue_facts_fences.py``:
+an HTML tag's attributes are never shown text, whether the tag is inline in a Markdown item or
+split across lines in an HTML list item, so a status in one marks nothing. GitHub is mocked."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import unittest
+
+from test_issue_facts_fences import Mocked, check
+
+
+class Tags(Mocked):
+    def test_an_inline_tags_attribute_marks_nothing(self):
+        # Twenty-first: in a Markdown item an inline tag's attribute is not shown either, so a
+        # `met` in one marks nothing and a `not met` in one unmarks nothing; its text still counts.
+        self.assertIn("has no status", check('- second: <span title="met">export flag</span>\n'))
+        for body in ('- second: met <span title="not met">export flag</span>\n',
+                     '- second: <span title="x">export flag</span> met\n',
+                     '- second: <b>met</b> with `<span title="x">` as evidence\n'):
+            with self.subTest(body):
+                self.assertEqual(check(body), "")
+
+    def test_a_tag_split_across_lines_stays_in_its_html_item(self):
+        # Twenty-second: a tag split over two lines in an HTML item is read whole, so the item
+        # keeps its text and its attribute marks nothing.
+        self.assertIn('"- second: export flag" has no status',
+                      check('<ul>\n<li><span\n title="met">second: export flag</span></li>\n</ul>\n'))
+        self.assertIn('"- second: export flag" has no status',
+                      check('<ul>\n<li><span title="a\nmet">second: export flag</span></li>\n</ul>\n'))
+        self.assertEqual(check('<ul>\n<li><span\n title="x">second: met</span></li>\n</ul>\n'), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
