@@ -81,6 +81,43 @@ class ObserverResendTests(unittest.TestCase):
             self.assertEqual(observer.retry(self.loop, self.state), 1)
             fire.assert_called_once()
 
+    def capped_manual_resend_killed(self):
+        """A failed notice past the sweep's cap whose manual resend died before its POST."""
+        key = self.failed_notice()
+        data = observer._read(self.state.observations)
+        data["entries"][key]["attempts"] = observer.MAX_ATTEMPTS
+        observer._save(self.state.observations, data)
+        self.fix_route()
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.resend(self.loop, self.state, key)
+        self.age(key)
+        return key
+
+    def test_a_capped_manual_resend_killed_before_its_post_is_resent_once(self):
+        # #2611: `resend` takes a notice past MAX_ATTEMPTS; killed before its POST, the sweep
+        # used to mark it failed and never send it, though the claim never reached the gateway.
+        key = self.capped_manual_resend_killed()
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        self.assertEqual(self.entries()[key]["status"], "delivered")
+
+    def test_a_capped_manual_resend_is_recovered_by_the_sweep_only_once(self):
+        # The sweep's own re-claim is not a manual one: killed too, it stays failed for a person.
+        key = self.capped_manual_resend_killed()
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.retry(self.loop, self.state)
+        self.age(key)
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 0)
+            fire.assert_not_called()
+        self.assertEqual((self.entries()[key]["status"], self.entries()[key]["retryable"]),
+                         ("failed", True))
+        with patch.object(routes, "fire", return_value=True):
+            self.assertTrue(observer.resend(self.loop, self.state, key))
+
     def digest_failed_to_the_cap(self):
         """Two queued notices whose digest fails before its POST on every allowed attempt."""
         self.loop["observer"]["digest_min"] = 30

@@ -675,8 +675,9 @@ def _claim(entry: dict) -> dict:
     """``entry`` as a ``pending`` claim of this writer: one whose sender marks ``posting_at``
     before its POST (see :data:`POSTING_MARKED`). Every claim is written through here. A claim is
     a new attempt whose POST has not begun, so an earlier attempt's ``posting_at`` is dropped
-    (#1968): kept, it would make a claim killed before its own mark look as if it had posted."""
-    fresh = {k: v for k, v in entry.items() if k != "posting_at"}
+    (#1968): kept, it would make a claim killed before its own mark look as if it had posted.
+    So is ``manual_resend``: only :func:`resend` sets it, on its own claim (#2611)."""
+    fresh = {k: v for k, v in entry.items() if k not in ("posting_at", "manual_resend")}
     return {**fresh, "status": "pending", POSTING_MARKED: True}
 
 
@@ -983,7 +984,10 @@ def retry(loop: dict, st) -> int:
                     entry.update(status="failed", retryable=True,
                                  error="the sender stopped before the POST; resending")
                     # A digest's members stay `digesting`: the resent batch carries them.
-                    if int(entry.get("attempts") or 0) < MAX_ATTEMPTS:
+                    # #2611: a manual resend's claim may be past the cap; it never reached its
+                    # POST, so it is resent once (the sweep's own claim drops the flag).
+                    if (int(entry.get("attempts") or 0) < MAX_ATTEMPTS
+                            or entry.get("manual_resend")):
                         pending.append((key, dict(entry)))
                 elif status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S:
                     # #1320: this also takes a digest's pre-POST claim already at the cap. It is
@@ -1006,7 +1010,9 @@ def resend(loop: dict, st, key: str) -> bool:
     """Send one notice whose POST definitely failed again, now, at a person's request (#2501
     review, F7): only a ``failed`` entry marked ``retryable`` (it never reached the gateway, so
     no copy can land twice), not a digest's, and whatever its attempts, so a route fixed after
-    ``retry`` gave up still gets it. An ``uncertain`` one is never replayed. True if delivered."""
+    ``retry`` gave up still gets it. An ``uncertain`` one is never replayed. True if delivered.
+    Its claim is marked ``manual_resend`` so that, killed before its POST past the cap, the next
+    sweep still resends it once (#2611)."""
     now = time.time()
     with _lock(st.observations):
         data = _read(st.observations)
@@ -1014,7 +1020,7 @@ def resend(loop: dict, st, key: str) -> bool:
         if (not isinstance(entry, dict) or entry.get("status") != "failed"
                 or entry.get("retryable") is not True or entry.get("batch")):
             return False
-        data["entries"][key] = claim = {**_claim(entry), "at": now}
+        data["entries"][key] = claim = {**_claim(entry), "at": now, "manual_resend": True}
         _save(st.observations, data)
     return _resend(loop, st, [(key, claim)], now) == 1
 
