@@ -29,6 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import (  # noqa: E402
     config,
     escalate_pending,
+    findings,
     gate,
     gh,
     issue_facts,
@@ -73,8 +74,10 @@ def _escalate_instead(loop: dict, st, number: int, pr_head: str, prior: int, pr:
     pending = escalate_pending.get(st, number)
     if pending:
         _take_pending_escalation(loop, st, number, pr_head, prior, pending)
+    # #2548: the ids recorded before this review, so a state line reads as the broker read it.
+    known = findings.recorded_before(st.findings_get(number), review.get("id"))
     cited = issue_facts.cited_own_work(loop, number, pr.get("body"),
-                                       (pr.get("head") or {}).get("ref"), review.get("body"))
+                                       (pr.get("head") or {}).get("ref"), review.get("body"), known)
     if not cited:
         return
     import secrets

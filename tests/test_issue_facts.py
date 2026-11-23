@@ -91,6 +91,75 @@ class IssueFacts(unittest.TestCase):
                 body = f"{heading}\n- one: met (a.py:3)\n"
                 self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
 
+    def test_a_heading_with_two_notes_is_accepted(self):
+        # #2276: a parenthetical plus a dash or colon note.
+        for heading in ("## Requirements (all met) — evidence below",
+                        "## Requirements (all met): see below", "**Requirements** (2) - met"):
+            with self.subTest(heading):
+                body = f"{heading}\n- one: met (a.py:3)\n"
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_an_unmarked_item_on_an_approve_is_refused(self):
+        # #2309 (3a): one met line no longer carries a bare item line through.
+        body = "## Requirements\n- one: met (a.py:3)\n- two: the export flag\n"
+        reason = issue_facts.check(LOOP, 7, "APPROVE", body)
+        self.assertIn("- two: the export flag", reason)
+        self.assertIn("nothing was written", reason)
+        for verdict in ("REQUEST_CHANGES", "COMMENT"):
+            self.assertEqual(issue_facts.check(LOOP, 7, verdict, body), "")
+
+    def test_an_indented_list_is_read_from_its_own_first_item(self):
+        # Review on #2573 (F2): a list indented as a whole is still top level; nested evidence
+        # under it still needs no status.
+        body = "## Requirements\n  - one: met\n  - two: export flag\n"
+        self.assertIn("- two: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
+        body = "## Requirements\n  - one: met\n      - evidence: tests/a.py\n"
+        self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_a_separate_later_list_is_read_from_its_own_first_item(self):
+        # Second review on #2573 (F2): a later list after prose may be indented two spaces and
+        # is still top level; nested evidence after a blank line still needs no status.
+        body = "## Requirements\n- first: met\n\nMore requirements:\n  - second: export flag\n"
+        self.assertIn("- second: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
+        for body in ("## Requirements\n- first: met\n\n  - evidence: tests/a.py\n",
+                     "## Requirements\n- first: met\n\n  Checked by hand:\n\n  - evidence: a\n",
+                     "## Requirements\n- first: met\nlazy text\n  - evidence: tests/a.py\n"):
+            with self.subTest(body):
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_nesting_is_read_from_each_items_own_content_column(self):
+        # Third review on #2573 (F2): two spaces under `1. item` (content at column 3) nest nothing.
+        body = "## Requirements\n1. first: met\n  - second: export flag\n"
+        self.assertIn("- second: export flag", issue_facts.check(LOOP, 7, "APPROVE", body))
+        body = "## Requirements\n- first: met\n-\n  second: missing\n"  # a bare marker (4th)
+        self.assertIn("second: missing", issue_facts.check(LOOP, 7, "APPROVE", body))
+        # F4: a dedenting item is a new level; a tab gap counts from its marker's column (5th).
+        for body in ("## Requirements\n  - first: met\n- second: met\n  - evidence: tests/a.py\n",
+                     "## Requirements\n1. first: met\n   - evidence: tests/a.py\n2. two: met\n",
+                     "## Requirements\n-   first: met\n    - evidence: tests/a.py\n",
+                     "## Requirements\n-\n  first: met\n  - evidence: tests/a.py\n",
+                     "## Requirements\n-\tfirst: met\n    - evidence: tests/a.py\n"):
+            with self.subTest(body):
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_a_section_with_no_status_names_its_unmarked_item(self):
+        # Review on #2573 (F3): #2309 asks which line, also when no item has a status.
+        for verdict in ("APPROVE", "REQUEST_CHANGES"):
+            reason = issue_facts.check(LOOP, 7, verdict, "## Requirements\n- export flag\n")
+            self.assertIn("- export flag", reason)
+            self.assertIn("no item marked", reason)
+
+    def test_the_last_status_on_a_line_counts(self):
+        # #2309 (3b): `met? no — not met` is `not met`.
+        body = "## Requirements\n- one: met (a.py:3)\n- two: met? no — not met\n"
+        self.assertIn("`not met` requirement", issue_facts.check(LOOP, 7, "APPROVE", body))
+
+    def test_a_fully_marked_section_with_prose_and_evidence_passes(self):
+        # Guard: an intro line, nested evidence and a closing remark are not requirement items.
+        body = ("## Requirements (all met)\nChecked against the issue:\n- one: met\n"
+                "  - evidence: tests/a.py::t\n1. two: deferred to #9\n\nLooks good overall.\n")
+        self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
     def test_a_sentence_is_still_not_a_heading(self):
         for line in ("Requirements are met.", "Requirements-based tests pass", "The Requirements",
                      "- Requirements: met"):

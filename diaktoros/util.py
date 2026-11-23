@@ -33,6 +33,18 @@ _TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}" + re.escape(TEMP_SUFFIX) + "$")
 # elsewhere, and for places that build a lock name at runtime, each of which it lists by hand.
 LOCK_NAMES: set[str] = set()
 
+# A PR, issue or finding number as state files store it: at most this many ASCII digits.
+NUMBER_DIGITS_MAX = 18
+
+
+def plain_number(text) -> int | None:
+    """``text`` read as a number when it is plain ASCII digits, at most ``NUMBER_DIGITS_MAX`` of
+    them, else None. ``str.isdigit`` also takes '²', which ``int`` refuses, and ``int`` refuses a
+    run past 4,300 digits: either, as a state file's key, would crash its reader (#2589)."""
+    if not (isinstance(text, str) and 0 < len(text) <= NUMBER_DIGITS_MAX and text.isascii()
+            and text.isdigit()):
+        return None
+    return int(text)
 
 def register_lock(name: str) -> str:
     """Record ``name`` as a flock file a plugin writer creates in a state directory; return it."""
