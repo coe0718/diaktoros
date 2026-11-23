@@ -100,6 +100,43 @@ class Ended(ruling.Base):
                     self.assertNotIn("decision is yours", action)
                 self.clear()
 
+    def test_escalate_off_reads_the_same_turn_the_same_way(self):
+        # #2269: with ``shadow.escalate`` off the ruling's own line is the hold; it promises the
+        # fixer while its turn answers, and leaves it to a person once that turn ended unanswered.
+        self.loop = {**self.loop, "shadow": {**self.loop["shadow"], "escalate": False}}
+        for state, error, retries, ended in self.TURNS:
+            with self.subTest(state=state, retries=retries):
+                self.row(state, error, retries)
+                why = self.ready()
+                self.assertEqual(any(w.startswith("shadow fix:") for w in why), ended, why)
+                self.assertEqual(any(w.startswith("escalated:") and self.PROMISE in w
+                                     for w in why), not ended, why)
+                self.assertEqual(any("a person decides" in w for w in why), ended, why)
+                report = self.explain()
+                blockers, nxt = report["blockers"], report["next"]
+                self.assertEqual(any(b.startswith("ruled:") and self.PROMISE in b
+                                     for b in blockers), not ended, blockers)
+                self.assertEqual(any("decision is yours" in b for b in blockers), ended, blockers)
+                self.assertNotEqual(nxt["kind"], "none", nxt)          # never "a human merges it"
+                self.assertEqual(nxt["kind"] == "fixer-push", not ended, nxt)
+                if ended:
+                    self.assertIn("the decision is yours, not the fixer's", nxt["action"])
+                self.clear()
+
+    ruling_notice = upheld.Operator.ruling_notice
+
+    def test_ruling_notice_stops_promising_the_fixer_once_its_turn_ended(self):
+        # #2563: a notice sent late, after the ruling's shadow-fix turn ended with no push and
+        # no sweep re-arms it, tells the operator the decision is theirs, as ready and explain do.
+        for state, error, retries, ended in self.TURNS:
+            if retries:
+                continue
+            with self.subTest(state=state):
+                text = self.ruling_notice(fix_turn=(state, error))
+                self.assertEqual("so the fixer answers its findings" in text, not ended, text)
+                self.assertEqual("the decision is yours" in text, ended, text)
+                self.clear()
+
     def test_ready_still_promises_the_fixer_before_its_turn_is_in_the_ledger(self):
         why = self.ready()
         self.assertTrue(any("the fixer answers its findings" in w for w in why), why)
