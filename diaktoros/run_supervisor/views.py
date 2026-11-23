@@ -70,10 +70,11 @@ def dispute_choices(loop_id: str, pr: int) -> str:
             f"escalate --loop {loop_id} --pr {pr}`, or merge on its evidence")
 
 
-def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
+def runs_view(con, repo: str | None = None, pr: int | None = None,
+              head: str | None = None) -> list[dict]:
     """The newest 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled
-    runs, oldest first: a current head's turn is listed whatever the history before it (#2613
-    review, F10). Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
+    runs, oldest first, or with ``head`` that head's only: newer turns at other heads cannot
+    push a current head's turn out of its reader's list (#2613 review, F10). Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
@@ -97,6 +98,9 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     if pr is not None:
         where += ' AND r.pr=?'
         args.append(pr)
+    if head is not None:
+        where += ' AND r.head=?'
+        args.append(head)
     # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
     # them; a read-only view never migrates.
     columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
@@ -168,7 +172,8 @@ def read_only_connect(db: str | Path):
     return con
 
 
-def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dict] | None:
+def read_only_view(db: str | Path, repo: str, pr: int | None = None,
+                   head: str | None = None) -> list[dict] | None:
     """``runs_view`` without writing anything — no schema migration, no WAL creation — for
     ``status``/``explain``. None when the ledger is absent or unreadable."""
     try:
@@ -176,7 +181,7 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dic
         if con is None:
             return None
         try:
-            return runs_view(con, repo, pr)
+            return runs_view(con, repo, pr, head)
         finally:
             con.close()
     except sqlite3.Error:

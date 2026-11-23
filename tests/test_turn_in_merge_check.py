@@ -275,6 +275,19 @@ class Explain(Ledger, unittest.TestCase):
         self.assertIn("next:       the report's own step", said)
         self.assertNotIn("--seat reviewer", said)
 
+    def test_the_current_failed_claim_read_is_the_blocker_behind_100_newer_runs(self):
+        # Review of #2613 round 2, F10: the branch came back to a head after turns on others,
+        # so the current head's failed read is older than 100 actionable rows; explain reads it.
+        now = time.time()
+        self.add("reviewer", "failed", self.READ_FAILED, created=now - 1000)
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
+                     created=now + n)
+        said = self.explain()
+        self.assertIn("blocked:    isolated reviewer turn failed at this head — retry limit", said)
+        self.assertIn("next:       no external write — re-arm: hermes dk retry --loop w --pr 7 "
+                      "--seat reviewer", said)
+
 
 class Refresh(Ledger, unittest.TestCase):
     """The worker refreshes the check when a PR turn launches and when it ends with news."""

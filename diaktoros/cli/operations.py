@@ -337,6 +337,18 @@ def _ledger_path() -> pathlib.Path:
     return config.host_path("ledger")
 
 
+def _head_runs(loop: dict, pr: int, head: str | None) -> list[dict]:
+    """The ledger's actionable rows at ``head`` of an open PR, for ``explain``'s blocker: read
+    apart from the PR's listing, whose newest 100 can leave an older turn at this head out
+    (#2613 review, F10)."""
+    from ..run_supervisor import views
+
+    if not head:
+        return []
+    rows = views.read_only_view(_ledger_path(), loop["repo"], pr, head) or []
+    return views.split_history(rows, loop)[0]
+
+
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
@@ -863,14 +875,14 @@ def cmd_explain(args) -> int:
             print(f"  {'decided:':<12}no gate decision recorded for this PR")
         if not report.get("gate_failures"):
             print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
-        runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
+        _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
         _print_shadows(loop, args.pr, f"  {'shadow:':<12}")
         _print_shadow_note(report, f"  {'shadow:':<12}")
         # A ledgered turn at the current head that waits to retry, failed before any write, or
         # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
         # its step is next. A failed turn that did write is final; GitHub shows where it left off.
-        held = [row for row in runs if report.get("head") and row["head"] == report["head"]
-                and (row["state"] != "failed" or row["write"] is None)]
+        held = [row for row in _head_runs(loop, args.pr, report.get("head"))
+                if row["state"] != "failed" or row["write"] is None]
         blockers = list(report["blockers"]) + [
             f"isolated {row['seat']} turn {row['state']} at this head — "
             f"{row['error'] or 'no reason recorded'}" for row in held]
