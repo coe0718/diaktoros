@@ -61,11 +61,30 @@ PR_HOLD_SEATS = ('reviewer', 'fixer', 'adjudicator')
 INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
 
 
+def inflight_mark(row) -> str | None:
+    """The in-flight mark a run of ``row``'s seat holds on its PR's head while it runs (#98);
+    None for a seat that marks nothing. The one spelling ``claim_seat`` records and every
+    release (the worker's, ``recover``'s, an operator's reconcile) clears."""
+    if row['seat'] not in INFLIGHT_LABEL:
+        return None
+    return f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
+
+
+def attempt_of(run_id: str, launch_intent) -> str | None:
+    """The one launch of run ``run_id`` that its ``launch_intent`` stamp names (#1767). A retry
+    keeps the run id but is launched with a new stamp, so a seat claim or breach marker carrying
+    this tells a lost attempt's cleanup from its retry's live hold. None for a run never
+    launched (nothing to tell apart)."""
+    return None if launch_intent is None else f"{run_id}@{float(launch_intent)!r}"
+
+
 def claim_seat(loop: dict, row, budget: float):
     """Claim ``row``'s seat in the loop's ``locks.json`` and mark its head in flight, for the
     life of the run (#98). Best effort: the run ledger is what enforces capacity; these are
     what ``explain``, ``status``, the queue drain and the watchdog's clocks read. Returns what
-    ``release_seat`` needs, or None when nothing was written."""
+    ``release_seat`` needs, or None when nothing was written. The claim carries this launch's
+    ``attempt_of``, so only this attempt's release frees it, never its retry's (#1767)."""
+    attempt = attempt_of(row['id'], row['launch_intent'] if 'launch_intent' in row.keys() else None)
     try:
         from .. import gate, state as state_mod
         st = state_mod.state_for(loop)
@@ -74,20 +93,19 @@ def claim_seat(loop: dict, row, budget: float):
         # run's. Then that run keeps the entry, this one has nothing of its own to release, and
         # the run ledger is what refuses the duplicate.
         if not st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}",
-                          budget=budget, run=row['id'], exclusive=True):
+                          budget=budget, run=row['id'], exclusive=True, attempt=attempt):
             return None
     except Exception:
         return None
     # The claim is written: from here on its release must stay reachable, whatever the mark
     # does (a failed mark write must not orphan the claim).
-    mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
-            if row['seat'] in INFLIGHT_LABEL else None)
+    mark = inflight_mark(row)
     if mark:
         try:
             st.inflight(mark, record=True)
         except Exception:
             mark = None
-    return st, row['seat'], key, row['head'], mark, row['id']
+    return st, row['seat'], key, row['head'], mark, row['id'], attempt
 
 
 def release_seat(claim, state: str | None) -> None:
@@ -96,11 +114,11 @@ def release_seat(claim, state: str | None) -> None:
     until an operator reconciles it, with its TTL and the "that run died" report as backstop."""
     if claim is None or state in (None, 'uncertain'):
         return
-    st, seat, key, head, mark, run = claim
+    st, seat, key, head, mark, run, attempt = claim
     try:
-        # Only this run's own claim; its mark goes with it. A newer run that has claimed the
-        # same seat/PR/head (a retry, a re-armed turn) keeps both (#98).
-        if st.release_if(seat, key, head, run=run) and mark:
-            st.inflight_clear(mark)
+        # Only this attempt's own claim; its mark goes with it, in the same hold of the state
+        # lock. A newer run that has claimed the same seat/PR/head (#98), or this run's retry
+        # (#1767), keeps both: it cannot mark the head between the release and the clear.
+        st.release_if(seat, key, head, run=run, attempt=attempt, mark=mark)
     except Exception:
         pass
