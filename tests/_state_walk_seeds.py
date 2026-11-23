@@ -52,7 +52,8 @@ def fold(samples: dict, alts: dict, file: str, value, writer: str = "",
 
 
 def skeleton(value, counts: bool = False):
-    """``value`` with what differs call to call blanked: a clock reading, a fresh random id, and
+    """``value`` with what differs call to call blanked: a clock reading (a float, as
+    ``time.time()`` gives; an integer is a count however large, round 15), a fresh random id, and
     (unless ``counts``) a count past 1. Two values alike but for clocks and ids are one
     alternative: a branch opened only by one clock reading or one id is not told apart, the
     bound discovery needs to end. Counts are told apart between writers (``fold``)."""
@@ -60,7 +61,7 @@ def skeleton(value, counts: bool = False):
         return {skeleton(k, counts): skeleton(v, counts) for k, v in value.items()}
     if isinstance(value, list):
         return [skeleton(v, counts) for v in value]
-    if isinstance(value, float) or (type(value) is int and abs(value) > 10 ** 8):
+    if isinstance(value, float):
         return "<clock>"
     if type(value) is int and value not in (0, 1) and not counts:
         return "<n>"

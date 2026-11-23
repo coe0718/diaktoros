@@ -22,6 +22,10 @@ Round 14: the exemption names a tally's writers, count paths and readers, not it
 new method that grows a count of its own in the registered ``fix-asks.json`` (``ka_bump``) and one
 that branches on it (``kb_read``, which opens a file only at 3) each fail the walk, as does a
 registered writer whose fold is at a path its entry does not name.
+
+Round 15: an integer past 10**8 is a count, not a clock, so two writers' large counts
+(``la_one``, ``lb_two``) are two alternatives and the reader that opens a file only on the second
+(``lc_read``) reaches it.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import importlib.util
@@ -116,6 +120,19 @@ class LateMixin:
         path = self.dir / ("late-" + "fourth" + ".json")      # spelled nowhere whole
         return {**json.loads(path.read_text())} if path.exists() else {}
 
+    def la_one(self) -> None:
+        self._save(self.dir / "late-large.json", {"count": 100000001})
+
+    def lb_two(self) -> None:
+        self._save(self.dir / "late-large.json", {"count": 100000002})
+
+    def lc_read(self) -> dict:
+        count = self._load(self.dir / "late-large.json", {})
+        if not (isinstance(count, dict) and count.get("count") == 100000002):
+            return {}
+        path = self.dir / ("late-" + "largest" + ".json")     # spelled nowhere whole
+        return {**json.loads(path.read_text())} if path.exists() else {}
+
     def hh_grow(self) -> None:                                # never the same twice
         data = self._load(self.dir / "late-grow.json", [])
         self._save(self.dir / "late-grow.json", [*(data if isinstance(data, list) else []), "x"])
@@ -150,6 +167,12 @@ class TheWalkCatchesLateValues(unittest.TestCase):
         self.assertIn("late-counted.json", self.walk.discover())
         failures = self.walk.run(["ic_read"])
         beside = [f for f in failures if "in late-counted.json]: raised TypeError" in f]
+        self.assertEqual(len(beside), BESIDE, failures)
+
+    def test_two_writers_large_counts_are_both_laid_beside_a_reader(self):
+        self.assertIn("late-largest.json", self.walk.discover())
+        failures = self.walk.run(["lc_read"])
+        beside = [f for f in failures if "in late-largest.json]: raised TypeError" in f]
         self.assertEqual(len(beside), BESIDE, failures)
 
     def test_one_writers_count_beside_another_file_is_laid_beside_a_reader(self):
