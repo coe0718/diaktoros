@@ -154,9 +154,22 @@ class RunIntake:
             con.execute("COMMIT")
         # A redelivery of an unclaimed run must rearm the worker after a
         # transient generation/read outage; active or completed runs stay deduped.
-        if self._wants_worker(prior, outcome):
-            self._spawn()
+        self._start_worker(repo, prior, outcome, settle)
         return outcome
+
+    def _start_worker(self, repo: str, prior, outcome: str, settle: float) -> None:
+        """Spawn ``submit``'s worker, if it wants one; for a settling row, one told its repo, so
+        it lingers for that loop's settling rows only, never another's (#2569)."""
+        if not self._wants_worker(prior, outcome):
+            return
+        settling = (settle > 0 and outcome in ('enqueued', 'rearmed')) or (
+            prior is not None and prior['state'] == 'waiting'
+            and prior['error'] == run_supervisor.SETTLE_HOLD)
+        if not settling:
+            self._spawn()
+            return
+        self.settle_repos = self.settle_repos | {repo}
+        self._spawn(settle_repo=repo)
 
     def _wants_worker(self, prior, outcome: str) -> bool:
         """Whether ``submit`` spawns a worker: for a run it made runnable, and for a redelivery

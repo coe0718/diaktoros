@@ -58,6 +58,10 @@ def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
 # require the check it is a wait
 # (``merge_check.decide``, #1227). OUTSIDE: not a loop PR.
 PENDING, FAILURE, GITHUB, OUTSIDE = "pending", "failure", "github", "outside"
+# GitHub's word for a PR's mergeable state, in a reason; ``BEHIND`` is the one ``base_merge``
+# tells apart from every other (#2292: one string, so the two never drift).
+GITHUB_REPORTS = "not mergeable: GitHub reports "
+BEHIND = GITHUB_REPORTS + "behind"
 
 
 # A required check that has not reported yet is pending this long after its head is first seen:
@@ -166,7 +170,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
         elif mstate not in MERGEABLE_STATES:
             # Only ``blocked`` is GitHub reflecting the rules (the merge check among them) back:
             # ``behind`` needs an update, and an unknown or uncomputed state is not decided yet.
-            said = f"not mergeable: GitHub reports {mstate or 'no merge state yet'}"
+            said = GITHUB_REPORTS + (mstate or "no merge state yet")
             if mstate == "blocked" and config.reviewer_is_app(loop):
                 # #1163 M2c: GitHub never counts an App's approval, so a base that still requires
                 # approvals blocks every PR until a person approves; doctor reads the base.
