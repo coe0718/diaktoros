@@ -1664,6 +1664,18 @@ class InterruptedKeepsThePause(Base):
         self.assertIsNone(migrate.migrating())
 
 
+    def test_a_rerun_whose_backup_fails_keeps_the_interrupted_runs_pause(self):
+        # #2323: the re-run refused before any move, so the interrupted run's records may
+        # still be half moved: its marker stays.
+        marker = {"pid": 999999, "started": 1}
+        migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
+        migrate.marker_path().write_text(json.dumps(marker))
+        with mock.patch.object(backup, "create", side_effect=backup.BackupError("full")):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(code, 2, text)
+        self.assertIn("picking up", text)
+        self.assertEqual(migrate.migrating(), marker)
+
 class Verify(Base):
     """``backup --verify FILE`` (#1078): an archive is read back, not only written."""
 
