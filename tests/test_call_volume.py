@@ -402,7 +402,9 @@ class ThirtyHeldPRsSeatFree(_Workload):
     What the lock cuts is how many workers linger at once: one poller, not every holder. The
     GitHub reads and the workers started are the same either way here (a poll's worker reads the
     due row once, whoever woke it); the reads the 2026-11-22 runaway made, with the seat busy,
-    are the pre-read skip's cut (``ThirtyHeldPRs``)."""
+    are the pre-read skip's cut (``ThirtyHeldPRs``). So, as the maintainer decided on #2609, the
+    lock's 30-held-PR test counts fewer workers lingering at once with the same calls and the
+    same decisions, and the call cut's test (``ThirtyHeldPRs``) counts fewer calls."""
     SPAN = 300.0
     MAX_WORKERS = 2000
 
