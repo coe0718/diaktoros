@@ -77,19 +77,42 @@ def _namespace_writes(node, up) -> str | None:
     return ANY                        # passed on, aliased, updated, assigned: may write any name
 
 
-def _never_modules(tree, up, modules) -> set[str]:
-    """The names a tree binds only to what is never a scanned module (ninth review on #2587): an
-    ``except … as`` exception, or an absolute import from a package outside ``modules``. Any
-    other binding (an assignment, a parameter, an alias of ``sys.modules[…]``) might be one."""
-    kinds: dict[str, set[bool]] = {}
-    for node in ast.walk(tree):
-        imported = up.get(node)
-        safe = isinstance(node, ast.ExceptHandler) or (
-            isinstance(node, ast.alias) and not getattr(imported, 'level', 0)
-            and (getattr(imported, 'module', None) or node.name).partition('.')[0] not in modules)
-        for name in _bound(node):
-            kinds.setdefault(name, set()).add(safe)
-    return {name for name, seen in kinds.items() if seen == {True}}
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.Module)
+
+
+def _own(scope):
+    """The nodes in ``scope`` itself: its parameters and body, not a nested scope's."""
+    todo = list(ast.iter_child_nodes(scope))
+    while todo:
+        node = todo.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            todo.extend(ast.iter_child_nodes(node))
+
+
+def _never_module(target, up, modules) -> bool:
+    """Whether ``target`` is a name bound, in the scope it resolves in, only to what is never a
+    scanned module (ninth review on #2587): an ``except … as`` exception, or an absolute import
+    from a package outside ``modules``. Any other binding (an assignment, a parameter, an alias
+    of ``sys.modules[…]``) might be one; a parameter shadowing a safe import may be passed a
+    module (tenth). A class body binding is read with the scope outside it, failing closed."""
+    if not isinstance(target, ast.Name):
+        return False
+    seen, scope = set(), up.get(target)
+    while scope is not None:
+        if isinstance(scope, _SCOPES):
+            for node in _own(scope):
+                imported = up.get(node)
+                safe = isinstance(node, ast.ExceptHandler) or (
+                    isinstance(node, ast.alias) and not getattr(imported, 'level', 0)
+                    and (getattr(imported, 'module', None) or node.name).partition('.')[0]
+                    not in modules)
+                named = _bound(node) + ([node.arg] if isinstance(node, ast.arg) else [])
+                seen |= {safe} if target.id in named else set()
+            if seen and not isinstance(scope, ast.ClassDef):
+                break
+        scope = up.get(scope)
+    return seen == {True}
 
 
 def module_bindings(trees, modules=frozenset()) -> Counter:
@@ -102,7 +125,6 @@ def module_bindings(trees, modules=frozenset()) -> Counter:
     found = Counter()
     for tree in trees:
         up = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-        never = _never_modules(tree, up, modules)
         for node in ast.walk(tree):
             found.update(_bound(node))
             if _namespace(node) and (name := _namespace_writes(node, up)) is not None:
@@ -113,7 +135,7 @@ def module_bindings(trees, modules=frozenset()) -> Counter:
                   and len(node.args) > 1):
                 if isinstance(node.args[1], ast.Constant):
                     found[str(node.args[1].value)] += 1
-                elif getattr(node.args[0], 'id', None) not in never:
+                elif not _never_module(node.args[0], up, modules):
                     found[ANY] += 1
     return found
 

@@ -4,6 +4,7 @@ record 'intruder' while the drift guard reported only the tuple's roles. Eighth:
 namespace dict (``globals()['ALLOWED'] = …``), nor by a name the guard cannot read, which fails
 every constant closed. Ninth: a ``setattr`` of a computed name on anything not shown never to be
 a scanned module (an ``except`` capture, an import from another package) fails them closed too.
+Tenth: a parameter that shadows such an import is not shown so, since a caller may pass a module.
 
 Each case runs beside every real writer (``_audit_writers.Writers``), as the vocabulary
 assertion in ``test_audit_vocabulary`` does.
@@ -42,12 +43,20 @@ REBOUND = {
         "name = 'ALLOWED_2587'\nsetattr(globals().get('me'), name, ('reviewer', 'intruder'))\n",
     'by setattr on an alias of its module': "import synthetic\nm = synthetic\n"
                                             "name = 'ALLOWED_2587'\nsetattr(m, name, ('x',))\n",
+    # Tenth: on a parameter that shadows a safe import, which a caller may pass its module.
+    'by setattr on a parameter shadowing an import': "import os\ndef widen(os, name):\n"
+        "    setattr(os, name, ('reviewer', 'intruder'))\n",
+    'by setattr on a lambda parameter shadowing an import': "import os\n"
+        "widen = lambda os, name: setattr(os, name, ('reviewer', 'intruder'))\n",
 }
 # Reads of a namespace dict, and a computed setattr on another package's module or on a caught
-# exception, rebind nothing here.
+# exception, in the scope that name resolves in, rebind nothing here.
 READ_ONLY = ("x = globals().get('ALLOWED_2587')\ny = vars(object())['a']\n"
              "import os\nname = 'getcwd'\nsetattr(os, name, os.getcwd)\n"
-             "try:\n    pass\nexcept ValueError as exc:\n    setattr(exc, name, True)\n")
+             "try:\n    pass\nexcept ValueError as exc:\n    setattr(exc, name, True)\n"
+             # Tenth: a parameter of the same name in another function shadows nothing here.
+             "def other(os, exc):\n    return os, exc\n"
+             "def safe(name):\n    setattr(os, name, os.getcwd)\n")
 
 
 def real():
