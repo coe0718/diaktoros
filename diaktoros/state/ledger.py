@@ -26,6 +26,7 @@ then refuses, it closes itself before raising.
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import os
 import sqlite3
@@ -159,23 +160,43 @@ def claim_lock(db) -> Iterator[int]:
 
 
 def _owing(lock: int) -> set[str]:
-    os.lseek(lock, 0, os.SEEK_SET)
-    data = b""
-    while chunk := os.read(lock, 65536):
-        data += chunk
-    return {line.decode(errors="replace") for line in data.split(b"\n")[:-1] if line}
+    """The run ids the barrier holds: its log (``owe``) replayed, a ``+`` line adding an id and a
+    ``-`` line removing one. A last line with no newline was cut short and is not read."""
+    data, at = b"", 0
+    while chunk := os.pread(lock, 65536, at):
+        data, at = data + chunk, at + len(chunk)
+    ids: set[str] = set()
+    for line in data.split(b"\n")[:-1]:
+        text = line.decode(errors="replace")
+        if text[:1] == "+":
+            ids.add(text[1:])
+        elif text[:1] == "-":
+            ids.discard(text[1:])
+    return ids
 
 
 def owe(lock: int, run_id: str, owed: bool = True) -> None:
     """Under ``claim_lock``, record in its file (``owed``) or clear the reviewer run ``run_id``
     whose owed shadow and stop could not be written (#2634 review F4, round 6): the barrier
     ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
-    stop. Written before it is cut to length, so a crash between leaves ids, never loses one."""
-    ids = _owing(lock) | {run_id} if owed else _owing(lock) - {run_id}
-    body = "".join(f"{i}\n" for i in sorted(ids)).encode()
-    os.pwrite(lock, body, 0)
-    os.ftruncate(lock, len(body))
+    stop. Each change is a line appended to a log, written whole (a short write is finished, not
+    taken as done) and synced, so an update cut short never loses an id already marked: a cut
+    line is ended before the next, and read as an unknown or no line (round 7, F8). The log is
+    emptied only once it holds no id."""
+    if not run_id or "\n" in run_id:
+        raise ValueError("invalid run id for the claim barrier")
+    end = os.lseek(lock, 0, os.SEEK_END)
+    record = ("+" if owed else "-") + run_id + "\n"
+    data = (b"" if not end or os.pread(lock, 1, end - 1) == b"\n" else b"\n") + record.encode()
+    while data:
+        wrote = os.pwrite(lock, data, end)
+        if wrote <= 0:
+            raise OSError(errno.EIO, "the claim barrier could not be written")
+        data, end = data[wrote:], end + wrote
     os.fsync(lock)
+    if not owed and not _owing(lock):
+        os.ftruncate(lock, 0)
+        os.fsync(lock)
 
 
 def owes(lock: int, con, run_id: str) -> bool:

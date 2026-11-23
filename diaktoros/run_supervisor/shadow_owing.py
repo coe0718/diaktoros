@@ -98,8 +98,9 @@ def fails_closed(sup, con, prior, shadow, held=None):
     anything is written: a row not ended, not asked to stop, with no write-ahead record, owing
     a shadow. The lock's file (``held``) is marked first (``ledger.owe``) and cleared only once the
     stop commits, so if the stop cannot be written either the receipt stays refused until the
-    turn's shadow row is in (round 6); if neither can be written, the error says so."""
-    owed = (prior is not None and isinstance(shadow, tuple) and prior['state'] in UNENDED
+    turn's shadow row is in (round 6); if neither can be written, the error says so. A shadow
+    owed but unkept (a ``str``) is owed all the same: its stop can fail too (round 7)."""
+    owed = (prior is not None and shadow is not None and prior['state'] in UNENDED
             and prior['cancel_requested'] is None
             and run_supervisor.write_evidence(con, prior['id']) is None)
     try:
@@ -121,7 +122,8 @@ def fails_closed(sup, con, prior, shadow, held=None):
                                           "AND seat=? AND turn_key=?", (row['repo'], row['pr'],
                                           row['head'], run_supervisor.SHADOW,
                                           row['turn_key'])).fetchone()):
-                stop(fresh, row, '', unwritten(exc), time.time())
+                stop(fresh, row, '', shadow if isinstance(shadow, str) else unwritten(exc),
+                     time.time())
             fresh.execute("COMMIT")
             ledger.owe(held, prior['id'], False)    # the stop stands now and refuses the receipt
         raise
