@@ -255,14 +255,11 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
         if served is None:
             # An explicit null/blank/non-string profile is not "no profile": the gateway refuses
             # every request for the route (``_route_allows_profile``), whatever the config says.
-            fix = (f"`hermes dk apply --loop {lid}` (rebinds the route to the config)"
-                   if want[0] and route_intent.owned(entry) else
-                   f"name the {role} profile in the loop config, then `hermes dk apply "
-                   f"--loop {lid}`" if route_intent.owned(entry) else
-                   f"remove or rename that entry, then {repair if restorable else recreate_fix(loop)}")
             out[name] = (f"registry route has profile {entry.get('profile')!r}, which the gateway "
                          f"refuses (blank or not a name) — every event is turned away; loop config "
-                         f"says {_side(*want)}", fix, "mismatch")
+                         f"says {_side(*want)}",
+                         _null_profile_fix(loop, role, name, entry, intent, restorable, repair),
+                         "mismatch")
             continue
         have = (served, entry.get("script"))
         if have == want:
@@ -295,6 +292,21 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
         out[name] = (detail, _owned_fix(loop, role, name, entry, intent, restorable, repair),
                      "mismatch")
     return out
+
+
+def _null_profile_fix(loop: dict, role: str, name: str, entry: dict, intent: dict,
+                      restorable: bool, repair: str) -> str:
+    """``divergence``'s fix for a route whose profile the gateway refuses (null, blank, not a
+    name). ``apply`` is named only for a route it accepts (``route_intent.provably_ours``, #2069),
+    as in ``_owned_fix``; otherwise the repair, or the entry moves aside and is recreated."""
+    lid = loop.get("id", "?")
+    if not route_intent.owned(entry):
+        return f"remove or rename that entry, then {repair if restorable else recreate_fix(loop)}"
+    if not config.seat_profile(loop, role):
+        return f"name the {role} profile in the loop config, then `hermes dk apply --loop {lid}`"
+    if route_intent.provably_ours(loop, role, name, entry, intent):
+        return f"`hermes dk apply --loop {lid}` (rebinds the route to the config)"
+    return repair if restorable else _owned_fix(loop, role, name, entry, intent, False, repair)
 
 
 def _owned_fix(loop: dict, role: str, name: str, entry: dict, intent: dict, restorable: bool,
