@@ -241,8 +241,11 @@ def _with_turn(loop: dict, number: int, head: str, seat: str, said: str) -> str:
 
     def held():         # a maintainer's hold keeps a queued turn from starting (#477)
         return pr_hold.read(loop, number)[0] if seat in claims.PR_HOLD_SEATS else None
-    note = views.turn_note(production_ledger(), loop["repo"], number, head, seat, held)
-    return f"{said} — {note}" if note else said
+    db = production_ledger()
+    note = views.turn_note(db, loop["repo"], number, head, seat, held)
+    # A turn a failed claim read ended waits for no one: say how to re-arm it (#2608).
+    rearm = views.rearm_note(db, loop["repo"], number, head, seat, loop["id"]) if note else ""
+    return f"{said} — {note}" + (f"; {rearm}" if rearm else "") if note else said
 
 
 def _escalation(loop: dict, number: int, head: str, marker,

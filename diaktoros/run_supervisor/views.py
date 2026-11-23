@@ -70,9 +70,12 @@ def dispute_choices(loop_id: str, pr: int) -> str:
             f"escalate --loop {loop_id} --pr {pr}`, or merge on its evidence")
 
 
-def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
-    """Up to 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled runs,
-    oldest first. Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
+def runs_view(con, repo: str | None = None, pr: int | None = None,
+              head: str | None = None) -> list[dict]:
+    """The newest 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled
+    runs, oldest first, or with ``head`` all of that head's, uncapped: no other turn, at that
+    head or another, pushes a current head's turn out of its reader's list (#2613 review, F10).
+    Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
@@ -96,6 +99,9 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     if pr is not None:
         where += ' AND r.pr=?'
         args.append(pr)
+    if head is not None:
+        where += ' AND r.head=?'
+        args.append(head)
     # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
     # them; a read-only view never migrates.
     columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
@@ -105,7 +111,7 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
         "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
         f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
         "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
-        " ORDER BY r.created,r.id LIMIT 100", args)]
+        " ORDER BY r.created DESC,r.id DESC" + ("" if head else " LIMIT 100"), args)][::-1]
     for row in rows:
         row['write'] = run_supervisor.write_evidence(con, row['id'])
     return rows
@@ -167,7 +173,8 @@ def read_only_connect(db: str | Path):
     return con
 
 
-def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dict] | None:
+def read_only_view(db: str | Path, repo: str, pr: int | None = None,
+                   head: str | None = None) -> list[dict] | None:
     """``runs_view`` without writing anything — no schema migration, no WAL creation — for
     ``status``/``explain``. None when the ledger is absent or unreadable."""
     try:
@@ -175,11 +182,39 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dic
         if con is None:
             return None
         try:
-            return runs_view(con, repo, pr)
+            return runs_view(con, repo, pr, head)
         finally:
             con.close()
     except sqlite3.Error:
         return None
+
+
+def rearm_note(db: str | Path, repo: str, pr: int, head: str, seat: str, loop_id: str) -> str:
+    """The re-arm command for this head's newest ``seat`` turn when it failed on a claim-time
+    read with no write (#2608: such a turn, ended by a spent rate limit, waits for no one), as
+    ``next_step`` gives it; "" for any other turn, or an unreadable ledger. Newest: a head can
+    hold several turns of a seat, one per turn key (a reconsidered review, #1334)."""
+    # Read here, not through ``runs_view``, which lists only actionable runs: the newest turn
+    # in any state (a re-armed one is pending), and its write evidence.
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return ''
+        try:
+            found = con.execute("SELECT id, repo, pr, head, seat, state, error FROM runs WHERE "
+                                "repo=? AND pr=? AND head=? AND seat=? ORDER BY created DESC "
+                                "LIMIT 1", (repo, pr, head, seat)).fetchone()
+            row = dict(found) if found is not None else None
+            if row is not None:
+                row['write'] = run_supervisor.write_evidence(con, row['id'])
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return ''
+    if (row is None or row['state'] != 'failed' or row.get('write') is not None
+            or run_supervisor.CLAIM_READ_FAILED not in str(row['error'] or '')):
+        return ''
+    return next_step(row, loop_id)
 
 
 def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str | None:
@@ -292,6 +327,8 @@ def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str, held=lam
     error = gh.one_line(error, TURN_NOTE_MAX)
     if state == 'waiting':
         at = f", next check {pacing.when(retry_at)}" if type(retry_at) in (int, float) else ''
+        if run_supervisor.LIMIT_WAIT in error:      # #2608: not an attempt (#2613 review, F8)
+            return f"{turn} waiting for GitHub's rate limit to reset (no attempt spent{at})"
         return (f"{turn} waiting to retry (attempt {(retries or 0) + 1} of "
                 f"{run_supervisor.MAX_RETRIES}{at})" + (f": {error}" if error else ''))
     if state in ('failed', 'cancelled'):
@@ -547,6 +584,16 @@ def _held_step(row: dict, loop_id: str) -> str:
     return step
 
 
+def _limit_step(due: int, bound: bool = False) -> str:
+    """A claim read waiting for GitHub's rate limit to reset (#2608): no attempt is spent. At
+    the wait's bound, the read comes before the reset (#2613 review, F7)."""
+    when = ("at the limit wait's bound, before GitHub's rate limit resets" if bound
+            else "after GitHub's rate limit resets")
+    return (f"read again in {due}s, {when} (no attempt spent; a lingering worker starts it "
+            "when it falls due within its wait, otherwise the next event or armed watchdog "
+            "sweep does; a start still depends on host eligibility)")
+
+
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     """What moves a failed, waiting, uncertain or push-policy-cancelled ``runs_view`` row on
     (#53)."""
@@ -560,6 +607,8 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         return _held_step(row, loop_id)
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
+        if run_supervisor.LIMIT_WAIT in str(row.get('error') or ''):
+            return _limit_step(due, run_supervisor.LIMIT_BOUND in str(row.get('error') or ''))
         return (f"attempt {(row['retries'] or 0) + 1} of {run_supervisor.MAX_RETRIES} due in {due}s "
                 "(recorded earliest recheck on the next event or armed watchdog sweep; "
                 "a start still depends on host eligibility)")
