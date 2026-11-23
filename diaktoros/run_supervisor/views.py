@@ -73,8 +73,9 @@ def dispute_choices(loop_id: str, pr: int) -> str:
 def runs_view(con, repo: str | None = None, pr: int | None = None,
               head: str | None = None) -> list[dict]:
     """The newest 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled
-    runs, oldest first, or with ``head`` that head's only: newer turns at other heads cannot
-    push a current head's turn out of its reader's list (#2613 review, F10). Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
+    runs, oldest first, or with ``head`` all of that head's, uncapped: no other turn, at that
+    head or another, pushes a current head's turn out of its reader's list (#2613 review, F10).
+    Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
@@ -110,7 +111,7 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
         "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
         f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
         "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
-        " ORDER BY r.created DESC,r.id DESC LIMIT 100", args)][::-1]
+        " ORDER BY r.created DESC,r.id DESC" + ("" if head else " LIMIT 100"), args)][::-1]
     for row in rows:
         row['write'] = run_supervisor.write_evidence(con, row['id'])
     return rows

@@ -34,9 +34,9 @@ class Ledger:
         self.sup._spawn = lambda: None
 
     def add(self, seat, state="pending", error=None, retries=0, retry_at=None, pr=7, head=HEAD,
-            created=None):
-        delivery = f"acme/widgets:{pr}:{head}:{seat}:{state}:{created}"
-        self.sup.enqueue(delivery, "acme/widgets", pr, head, seat)
+            created=None, turn_key=""):
+        delivery = f"acme/widgets:{pr}:{head}:{seat}:{state}:{created}:{turn_key}"
+        self.sup.enqueue(delivery, "acme/widgets", pr, head, seat, turn_key=turn_key)
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET state=?, error=?, retries=?, retry_at=?, created=? "
                         "WHERE delivery=?", (state, error, retries, retry_at,
@@ -275,19 +275,29 @@ class Explain(Ledger, unittest.TestCase):
         self.assertIn("next:       the report's own step", said)
         self.assertNotIn("--seat reviewer", said)
 
-    def test_the_current_failed_claim_read_is_the_blocker_behind_100_newer_runs(self):
-        # Review of #2613 round 2, F10: the branch came back to a head after turns on others,
-        # so the current head's failed read is older than 100 actionable rows; explain reads it.
+    def test_the_current_failed_claim_read_is_the_blocker_whatever_comes_before_or_after(self):
+        # Review of #2613 rounds 2 and 3, F10 and F11: the current head's failed read is kept
+        # whatever the PR's history: 100 older and 100 newer turns at other heads, and 100 newer
+        # fixer turns at this same head. The base kept the oldest 100, the first fix the newest
+        # 100, and a capped read of this head its newest 100: each loses the reviewer's turn.
         now = time.time()
-        self.add("reviewer", "failed", self.READ_FAILED, created=now - 1000)
         for n in range(100):
             self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
-                     created=now + n)
+                     created=now - 1000 + n)
+        self.add("reviewer", "failed", self.READ_FAILED, created=now)
+        for n in range(100):
+            self.add("fixer", "failed", "turn exited with status 3", head=f"{n + 100:040x}",
+                     created=now + 1 + n)
+            self.add("fixer", "failed", "turn exited with status 3", created=now + 200 + n,
+                     turn_key=f"conflict:{n}")      # distinct turns at this head
+        with closing(sqlite3.connect(self.db)) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM runs WHERE head=?",
+                                         (HEAD,)).fetchone()[0], 101)
         said = self.explain()
         self.assertIn("blocked:    isolated reviewer turn failed at this head — retry limit", said)
         self.assertIn("next:       no external write — re-arm: hermes dk retry --loop w --pr 7 "
                       "--seat reviewer", said)
-
+        self.assertIn("--seat fixer", said)             # the fixer's own step, alongside
 
 class Refresh(Ledger, unittest.TestCase):
     """The worker refreshes the check when a PR turn launches and when it ends with news."""

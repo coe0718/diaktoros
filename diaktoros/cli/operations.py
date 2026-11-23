@@ -349,6 +349,31 @@ def _head_runs(loop: dict, pr: int, head: str | None) -> list[dict]:
     return views.split_history(rows, loop)[0]
 
 
+def _print_held(loop: dict, pr: int, report: dict) -> None:
+    """``explain``'s blocked: and next: lines, from the report's guards and the current head's
+    ledgered turns (``_head_runs``)."""
+    from ..run_supervisor import views
+
+    # A ledgered turn at the current head that waits to retry, failed before any write, or
+    # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
+    # its step is next. A failed turn that did write is final; GitHub shows where it left off.
+    held = [row for row in _head_runs(loop, pr, report.get("head"))
+            if row["state"] != "failed" or row["write"] is None]
+    blockers = list(report["blockers"]) + [
+        f"isolated {row['seat']} turn {row['state']} at this head — "
+        f"{row['error'] or 'no reason recorded'}" for row in held]
+    for text in blockers:
+        print(f"  {'blocked:':<12}{text}")
+    if not blockers:
+        print(f"  {'blocked:':<12}nothing — no guard is holding this PR back")
+    # Each seat's newest held turn names its own step: a seat's re-arm is never hidden behind
+    # another seat's newer turns at this head (#2613 review, F10).
+    newest = {row["seat"]: row for row in held}
+    for row in sorted(newest.values(), key=held.index) or [None]:
+        print(f"  {'next:':<12}" + (views.next_step(row, loop["id"]) if row
+                                    else report['next']['action']))
+
+
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
@@ -803,7 +828,6 @@ def cmd_explain(args) -> int:
     retry.
     """
     from .. import state as state_mod
-    from ..run_supervisor import views
 
     if args.loop:
         try:
@@ -878,20 +902,7 @@ def cmd_explain(args) -> int:
         _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
         _print_shadows(loop, args.pr, f"  {'shadow:':<12}")
         _print_shadow_note(report, f"  {'shadow:':<12}")
-        # A ledgered turn at the current head that waits to retry, failed before any write, or
-        # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
-        # its step is next. A failed turn that did write is final; GitHub shows where it left off.
-        held = [row for row in _head_runs(loop, args.pr, report.get("head"))
-                if row["state"] != "failed" or row["write"] is None]
-        blockers = list(report["blockers"]) + [
-            f"isolated {row['seat']} turn {row['state']} at this head — "
-            f"{row['error'] or 'no reason recorded'}" for row in held]
-        for text in blockers:
-            print(f"  {'blocked:':<12}{text}")
-        if not blockers:
-            print(f"  {'blocked:':<12}nothing — no guard is holding this PR back")
-        print(f"  {'next:':<12}"
-              + (views.next_step(held[-1], loop["id"]) if held else report['next']['action']))
+        _print_held(loop, args.pr, report)
     return 0
 
 
