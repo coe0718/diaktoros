@@ -125,21 +125,25 @@ def breach_at_cap(loop: dict, st, number: int, head: str, rounds: int) -> None:
 
 
 def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews: list,
-                    action: str, sender: str) -> None:
+                    action: str, sender: str, pr: dict | None = None) -> None:
     """A review-only author's PR (#191) has its own verdict cap (review_only_cap, default `cap`).
     At the cap the gate declines with nothing spent, whoever asks: the author re-requesting their
     own PR is no bypass, so this ends the gate with ``silence``. Only a maintainer's
     --another-round (one verdict, this head) lifts it, or, with review_only_rerequest_grants on
     (#2496), a maintainer's GitHub re-request of a head with no verdict yet, which grants the same
-    one verdict once its urgent ``granted`` notice is delivered, and only where one can be sent."""
+    one verdict once its urgent ``granted`` notice is delivered, and only where one can be sent.
+    At the cap the reviewer's pending request (``pr``, the live PR) is removed (#2620): GitHub
+    sends nothing for a re-request of a pending reviewer, so without that the button grants none."""
     ro_cap = config.review_only_cap(loop)
     waits = ""
     if rounds >= ro_cap and not gate.reviewed_at_head(reviews, loop, head):
         waits = review_asks.grant_by_rerequest(
             loop, st, number, head, rounds, sender if action == "review_requested" else "")
     if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
-        ask = (" or re-request the reviewer on GitHub" if review_asks.rerequest_can_grant(loop)
-               else "")
+        if review_asks.clear_pending_request(loop, st, number, head, rounds, pr):
+            pr = {**pr, "requested_reviewers": []}
+        hint = review_asks.rerequest_hint(loop, pr)
+        ask = f", or {hint}" if hint else ""
         if st.review_cap_notice_once(number, head):
             observer.notify(
                 loop, st, "held", number, head, identity=f"review-cap:{head}",
@@ -310,7 +314,7 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
     # A review-only author's PR (#191) spends no fixer rounds and is never adjudicated: the author
     # answers each verdict by pushing and asking again, up to its own verdict cap (review_only_cap).
     if author in config.review_only(loop):
-        review_only_cap(loop, st, number, head, rounds, reviews, action, sender)
+        review_only_cap(loop, st, number, head, rounds, reviews, action, sender, current)
     elif rounds >= loop["cap"]:
         breach_at_cap(loop, st, number, head, rounds)
 

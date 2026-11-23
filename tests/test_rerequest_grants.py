@@ -21,6 +21,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -368,8 +369,8 @@ class Gate(fg.Base):
         self.ask(OWNER, notes=notes)
         held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
         self.assertEqual(len(held), 1, notes)
-        self.assertIn("--another-round` or re-request the reviewer on GitHub", held[0])
-        self.assertIn("re-requests the reviewer on GitHub", self.explain()["next"]["action"])
+        self.assertIn("--another-round`, or re-request the reviewer on GitHub", held[0])
+        self.assertIn("re-request the reviewer on GitHub", self.explain()["next"]["action"])
         self.assertIn("(or their re-request on GitHub)",
                       self.explain(self.cap - 1)["next"]["action"])
         self.write(**{KEY: False})
@@ -387,6 +388,249 @@ class Gate(fg.Base):
         held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
         self.assertEqual(len(held), 1, notes)
         self.assertNotIn("re-request", held[0])
+
+    # #2620: GitHub sends nothing for a re-request of a reviewer still pending, and the author's
+    # and the fixer's pushes request the reviewer again, so at the cap the host removes that
+    # pending request: the reviewer's last review then shows GitHub's re-request button, whose
+    # click reaches the gate as the maintainer's grant.
+
+    def pending(self):
+        """The reviewer still requested on the live PR (as a push's request leaves it); GitHub's
+        removal answered by ``remove``."""
+        self.live = {**self.live, "requested_reviewers": [{"login": "reviewer"}]}
+        if hasattr(self, "removed"):
+            return
+        self.removed, self.audited = [], []
+        for patch in (mock.patch("diaktoros.broker._write", side_effect=self.remove),
+                      mock.patch("diaktoros.broker._audit",
+                                 side_effect=lambda *a: self.audited.append(a))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.answer = None
+
+    def remove(self, loop, path, method, body, login):
+        """GitHub's DELETE of the request: on success the live PR no longer lists the reviewer."""
+        self.removed.append((path, method, body, login))
+        if self.answer is not None:
+            return self.answer
+        self.live = {**self.live, "requested_reviewers": []}
+        return self.live, ""
+
+    def click(self, sender, **kw):
+        """A re-request on GitHub's page: while the reviewer is still pending, GitHub sends no
+        event at all, so the gate never runs (#2620)."""
+        if review_asks.reviewer_pending(self.loop, self.live):
+            return None
+        return self.ask(sender, **kw)
+
+    def capped_notice(self, notes) -> str:
+        [held] = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
+        return held
+
+    def test_at_the_cap_the_pending_request_is_removed_as_the_fixer_seat(self):
+        self.pending()
+        notes = []
+        self.ask(OWNER, notes=notes)                      # the author asks again after a push
+        self.assertEqual(self.removed, [("/repos/owner/one/pulls/7/requested_reviewers", "DELETE",
+                                         {"reviewers": ["reviewer"]},
+                                         config.seat_login(self.loop, "fixer"))])
+        [audit] = self.audited
+        self.assertEqual(audit[5:], ("fixer", "remove_review_request",
+                                     config.seat_login(self.loop, "fixer")))
+        self.assertIn("--another-round`, or re-request the reviewer on GitHub "
+                      "(`review_only_rerequest_grants`)", self.capped_notice(notes))
+        # A push requests the reviewer again: the next capped request removes it again.
+        self.pending()
+        self.ask(OWNER)
+        self.assertEqual(len(self.removed), 2)
+
+    def test_then_the_maintainers_rerequest_grants_the_round(self):
+        self.pending()
+        self.ask(OWNER)                       # the author's request at the cap: removed
+        fire = self.feed()
+        block = self.click(MAINT, notes=False)
+        self.assertIsNotNone(block, "GitHub sent nothing: the reviewer is still pending")
+        block.assert_called_once()
+        self.assertEqual(self.events(fire, "granted"), ["granted"])
+
+    def test_a_removal_github_refuses_says_how_to_make_the_button_work(self):
+        self.pending()
+        self.answer = (None, "HTTP 403 Resource not accessible")
+        notes = []
+        self.ask(OWNER, notes=notes)
+        self.assertEqual(self.audited, [])
+        hint = "remove the reviewer's pending request on GitHub and request them again"
+        self.assertIn(hint, self.capped_notice(notes))
+        self.assertIn(hint, self.explain()["next"]["action"])
+        self.assertNotIn("re-request the reviewer on GitHub (", self.explain()["next"]["action"])
+
+    sweep = tro.Gates.sweep
+
+    def test_the_sweep_removes_a_pending_request_no_capped_event_brought(self):
+        # Review of #2622, F1: a push sends no event, a stranger's request and a request at the
+        # head the reviewer just reviewed are declined before the cap: every sweep reconciles.
+        self.sweep(self.verdicts(self.cap, OLD))          # the first sweep arms and baselines
+        self.pending()
+        self.sweep(self.verdicts(self.cap, OLD))
+        self.assertEqual([call[1] for call in self.removed], ["DELETE"])
+        self.assertEqual(len(self.audited), 1)
+        self.assertFalse(review_asks.reviewer_pending(self.loop, self.live))
+        self.sweep(self.verdicts(self.cap, OLD))          # nothing pending: nothing more
+        self.assertEqual(len(self.removed), 1)
+        for case, reviews, granted in (("below the cap", self.verdicts(self.cap - 1, OLD), False),
+                                       ("a round granted", self.verdicts(self.cap, OLD), True)):
+            with self.subTest(case=case):
+                self.pending()
+                self.removed.clear()
+                if granted:
+                    self.st.review_cap_grant(7, HEAD, self.cap)
+                self.sweep(reviews)
+                self.assertEqual(self.removed, [])
+
+    def test_a_grant_made_while_the_removal_decides_is_never_followed_by_it(self):
+        # Review of #2622 round 2, F4: the sweep (or the gate) has found the PR capped with no
+        # grant; a maintainer's grant lands before its DELETE. The DELETE must not follow it.
+        real = review_asks.clear_pending_request
+
+        def granted_first(*args):
+            self.st.review_cap_grant(7, HEAD, self.cap)
+            return real(*args)
+        self.sweep(self.verdicts(self.cap, OLD))          # the first sweep arms and baselines
+        for path, run in (("the sweep", lambda: self.sweep(self.verdicts(self.cap, OLD))),
+                          ("the gate", lambda: self.ask(OWNER))):
+            with self.subTest(path=path):
+                self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})  # no grant yet
+                self.pending()
+                self.removed.clear()
+                with mock.patch.object(review_asks, "clear_pending_request",
+                                       side_effect=granted_first):
+                    run()
+                self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+                self.assertEqual(self.removed, [])
+        # A grant sent while the DELETE is in flight waits for it, so it lands after.
+        self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
+        self.pending()
+        self.removed.clear()
+        granting = []
+        first = self.remove
+
+        def during(*args):
+            thread = threading.Thread(target=self.st.review_cap_grant, args=(7, HEAD, self.cap))
+            thread.start()
+            thread.join(0.5)
+            granting.append(thread)
+            self.assertTrue(thread.is_alive(), "a grant landed while the DELETE was in flight")
+            return first(*args)
+        with mock.patch("diaktoros.broker._write", side_effect=during):
+            self.sweep(self.verdicts(self.cap, OLD))
+        granting[0].join()
+        self.assertEqual(len(self.removed), 1)
+        self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+
+    def test_a_push_a_retarget_or_a_grant_since_the_decision_is_never_followed_by_the_removal(self):
+        # Review of #2622 round 3, F4: the sweep (or the gate) decided on the head it listed; a
+        # push and a maintainer's grant at the new head land before its removal. The DELETE acts
+        # on the PR as it is now, so the removal reads the live PR under the lock and leaves it.
+        from diaktoros import gh
+        new = "e" * 40
+        real = review_asks.clear_pending_request
+
+        def then(live):
+            def moved_first(*args):
+                gh.pr.return_value = live
+                if live and live["head"]["sha"] == new:
+                    self.st.review_cap_grant(7, new, self.cap)
+                return real(*args)
+            return moved_first
+        self.sweep(self.verdicts(self.cap, OLD))          # the first sweep arms and baselines
+        pushed = {"head": {**self.live["head"], "sha": new},
+                  "requested_reviewers": [{"login": "reviewer"}]}
+        for path, run in (("the sweep", lambda: self.sweep(self.verdicts(self.cap, OLD))),
+                          ("the gate", lambda: self.ask(OWNER))):
+            for case, live in (("a push and a grant at its head", pushed),
+                               ("the PR unreadable", None),
+                               ("the reviewer no longer pending",
+                                {"head": self.live["head"], "requested_reviewers": []}),
+                               # Review of #2622 round 4, F5: the same head, no longer this loop's.
+                               ("retargeted to another base",
+                                {"base": {**self.live["base"], "ref": "other-branch"},
+                                 "requested_reviewers": [{"login": "reviewer"}]}),
+                               ("closed", {"state": "closed",
+                                           "requested_reviewers": [{"login": "reviewer"}]}),
+                               ("made a draft", {"draft": True,
+                                                 "requested_reviewers": [{"login": "reviewer"}]})):
+                with self.subTest(path=path, case=case):
+                    self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
+                    self.pending()
+                    self.removed.clear()
+                    self.audited.clear()
+                    with mock.patch.object(review_asks, "clear_pending_request",
+                                           side_effect=then(live and {**self.live, **live})):
+                        run()
+                    self.assertEqual(self.removed, [])
+                    self.assertEqual(self.audited, [])
+                    if live is pushed:
+                        self.assertTrue(self.st.review_cap_granted(7, new, self.cap))
+        # The live PR at the head the caller decided on, its reviewer pending: removed.
+        self.st.kv_set_strict(self.st.dir / "review-only-caps.json", {})
+        self.pending()
+        self.removed.clear()
+        self.sweep(self.verdicts(self.cap, OLD))
+        self.assertEqual(len(self.removed), 1)
+
+    def test_ready_names_the_grant_and_how_the_button_works(self):
+        # Review of #2622, F2: the merge check's words say how to grant a round, and offer the
+        # re-request only once the reviewer is no longer pending.
+        from diaktoros import ci, ready
+        def said():
+            kinds = ready.assess_kinds(self.loop, self.st, self.live, self.verdicts(self.cap, OLD),
+                                       ci.CIState(passed=["tests"]), self.live)
+            return " ".join(text for _, text in kinds)
+        self.pending()
+        text = said()
+        self.assertIn("review cap reached; a maintainer grants another round: `hermes dk review "
+                      "--loop one --pr 7 --another-round`", text)
+        self.assertIn("remove the reviewer's pending request on GitHub and request them again",
+                      text)
+        self.live = {**self.live, "requested_reviewers": []}
+        self.assertIn("--another-round`, or re-request the reviewer on GitHub", said())
+
+    def test_ready_at_the_head_its_cap_reaching_verdict_names_the_push_first(self):
+        # Review of #2622 round 2, F2: right after the verdict that spends the cap, the head has
+        # its change request; the merge check says the author pushes first, then the grant.
+        from diaktoros import ci, merge_check, ready
+        reviews = self.verdicts(self.cap)
+        kinds = ready.assess_kinds(self.loop, self.st, self.live, reviews,
+                                   ci.CIState(passed=["tests"]), self.live)
+        said = [text for _, text in kinds if text.startswith("changes requested at head")]
+        self.assertEqual(len(said), 1, kinds)
+        self.assertIn(f"({self.cap} of ", said[0])
+        self.assertIn("review cap reached; the author pushes a new head first (this head already "
+                      "has a verdict), then a maintainer grants another round: `hermes dk "
+                      "review --loop one --pr 7 --another-round`, or re-request the reviewer on "
+                      "GitHub", said[0])
+        self.assertIn("the author pushes a new head first", merge_check.decide(kinds)[1])
+        # Below the cap the change request is the author's to answer, with no grant to name.
+        kinds = ready.assess_kinds(self.loop, self.st, self.live, self.verdicts(self.cap - 1),
+                                   ci.CIState(passed=["tests"]), self.live)
+        self.assertNotIn("review cap reached", " ".join(text for _, text in kinds))
+
+    def test_nothing_is_removed_below_the_cap_off_or_where_no_rerequest_can_grant(self):
+        self.pending()
+        self.ask(OWNER)                       # the positive control: at the cap, removed
+        self.assertEqual(len(self.removed), 1)
+        self.removed.clear()
+        self.audited.clear()
+        self.pending()
+        self.ask(OWNER, reviews=self.verdicts(self.cap - 1, OLD), ends=SystemExit)
+        self.write(**{KEY: False})
+        self.ask(OWNER)
+        self.write(**{KEY: True})
+        with mock.patch.object(config, "reviewer_is_app", return_value=True):
+            self.ask(OWNER)
+        self.live = {**self.live, "requested_reviewers": [{"login": "someone-else"}]}
+        self.ask(OWNER)
+        self.assertEqual((self.removed, self.audited), ([], []))
 
 
 def routed(case: unittest.TestCase, loop: dict) -> dict:

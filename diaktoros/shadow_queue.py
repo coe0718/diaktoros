@@ -107,8 +107,8 @@ def _reviewer_run(con, row):
 
 def _may_be_rearmed(con, reviewer) -> bool:
     """Whether a reviewer turn that ended can still be re-armed, so its shadow waits for it: the
-    line ``retry`` draws. A failed turn, or one an operator or the push policy cancelled, re-arms
-    if it never wrote. Any other cancellation was superseded (a review at its head already
+    line ``retry`` draws. A failed turn, or one an operator or the push policy cancelled, or one
+    stopped for the shadow it owes (#2634), re-arms if it never wrote. Any other cancellation was superseded (a review at its head already
     answers it, the head moved, the PR closed): ``retry`` refuses it, and a redelivery re-arms it
     only for the claim to cancel it again (review of #1656, F15)."""
     from . import run_supervisor
@@ -116,6 +116,7 @@ def _may_be_rearmed(con, reviewer) -> bool:
     if state not in run_supervisor.REARMABLE:
         return False
     if state == "cancelled" and not (run_supervisor.policy_cancelled(error)
-                                     or run_supervisor.operator_cancelled(error)):
+                                     or run_supervisor.operator_cancelled(error)
+                                     or run_supervisor.intake.shadow_owed_stop(error)):
         return False
     return run_supervisor.write_evidence(con, reviewer[0]) is None

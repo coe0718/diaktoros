@@ -29,6 +29,12 @@ from diaktoros.run_supervisor import Supervisor  # noqa: E402
 REPO, HEAD = "acme/widgets", "a" * 40
 
 
+def rows_of(sup):
+    """A mock supervisor's shadow rows, ``(pr, head)``, as its ledger would hold them (#2634)."""
+    return {(c.args[2], c.args[3]) for c in sup.submit.call_args_list
+            if c.args[4] == "shadow" or isinstance(c.kwargs.get("shadow"), tuple)}
+
+
 class Ledger(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -197,6 +203,8 @@ class SnapshotFirst(Ledger):
             return "enqueued"
         sup.submit.side_effect = submit
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(gate.shadows, "shadow_row_exists",
+                                  side_effect=lambda _r, n, h, *_a: (n, h) in rows_of(sup)), \
                 mock.patch.object(gate.shadows, "shadow_open_heads", return_value=set()):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
         self.assertEqual(st.shadow_findings_get(7, HEAD), {})
@@ -204,7 +212,8 @@ class SnapshotFirst(Ledger):
 
     def test_a_failed_first_snapshot_queues_no_shadow(self):
         # Review of #1656, F6: fail closed. A snapshot taken after the reviewer is queued could
-        # hold the review's own findings, so none is taken then and no shadow is queued.
+        # hold the review's own findings, so none is taken then and no shadow is queued. Nor is
+        # the reviewer (#2634 F3): its submit gets the reason, and writes no row (test_shadow_owed).
         loop = {"id": "w", "repo": REPO, "state_dir": str(self.tmp / "state"),
                 "shadow": {"profile": "shadow", "every": 1}}
         sup = mock.Mock()
@@ -212,8 +221,9 @@ class SnapshotFirst(Ledger):
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
                 mock.patch.object(state_mod.LoopState, "shadow_findings_put",
                                   side_effect=[OSError("disk full"), None]):   # then it works
-            self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
+            gate.enqueue_isolated(loop, "reviewer", 7, HEAD)
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer"])
+        self.assertIsInstance(sup.submit.call_args.kwargs["shadow"], str)
         self.assertIsNone(state_mod.state_for(loop).shadow_findings_get(7, HEAD))
 
     def test_another_enqueue_cannot_evict_the_snapshot_before_the_shadows_row_exists(self):
@@ -236,6 +246,8 @@ class SnapshotFirst(Ledger):
             return {(c.args[2], c.args[3]) for c in sup.submit.call_args_list
                     if c.args[4] == "shadow"}
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(gate.shadows, "shadow_row_exists",
+                                  side_effect=lambda _r, n, h, *_a: (n, h) in rows_of(sup)), \
                 mock.patch.object(gate.shadows, "shadow_open_heads", side_effect=opened), \
                 mock.patch.object(state_mod.LoopState, "SHADOW_FINDINGS_KEPT", 1):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
