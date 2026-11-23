@@ -1,4 +1,4 @@
-"""Twenty-first, twenty-second and twenty-third reviews on #2573, beside ``tests/test_issue_facts_fences.py``:
+"""Twenty-first to twenty-fourth reviews on #2573, beside ``tests/test_issue_facts_fences.py``:
 an HTML tag's attributes are never shown text, whether the tag is inline in a Markdown item or
 split across lines in an HTML list item, so a status in one marks nothing. GitHub is mocked."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
@@ -35,6 +35,13 @@ class Tags(Mocked):
                 self.assertIn('"- second: export flag" has no status',
                               check(f'<ul>\n<li><span {split}>second: export flag</span></li>\n</ul>\n'))
                 self.assertEqual(check(f'<ul>\n<li><span {split}>second: met</span></li>\n</ul>\n'), "")
+
+    def test_a_tag_left_open_in_a_quoted_value_hides_the_tags_in_it(self):
+        # Round 24: an apparent `<li>` inside a quoted value still open at the line's end is part
+        # of that value, never an item of its own; a marked item split the same way passes.
+        self.assertIn('"- second: export flag" has no status',
+                      check('<ul>\n<li><span title="<li>\nmet">second: export flag</span></li>\n</ul>\n'))
+        self.assertEqual(check('<ul>\n<li><span title="<li>\nx">second: met</span></li>\n</ul>\n'), "")
 
 
 if __name__ == "__main__":
