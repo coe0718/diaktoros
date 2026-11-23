@@ -185,6 +185,18 @@ class FailedRestoreKeepsTheRightPause(Fixture):
         with mock.patch.object(os, "link", side_effect=OSError(1, "Operation not permitted")):
             self.restore_on_a_full_disk()
 
+    def test_a_marker_that_cannot_be_kept_refuses_before_replacing_it(self):
+        # Review round 4 on #2630: neither a link nor a copy, so ``hold`` writes nothing.
+        self.plant()
+        with mock.patch.object(os, "link", side_effect=OSError(1, "Operation not permitted")), \
+                mock.patch.object(migrate, "atomic_write",
+                                  side_effect=OSError(28, "No space left on device")), \
+                mock.patch.object(backup, "_stage") as stage:
+            code, text = self.restore(force=True)
+        self.assert_refused_and_still_paused(code, text, "No space left on device")
+        stage.assert_not_called()
+        self.assertFalse(migrate._kept_path().exists())
+
     def test_a_full_disk_while_staging_with_no_interrupted_run_leaves_no_pause(self):
         with self.staging_fails():
             code, text = self.restore(force=True)
