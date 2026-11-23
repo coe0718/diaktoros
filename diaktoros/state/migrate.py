@@ -175,6 +175,14 @@ def keep_paused(info: dict) -> None:
                                             "restored": time.time()})
 
 
+def keep_left(left: dict | None) -> None:
+    """Keep the pause after a run that picked up an interrupted one (``hold`` yielded ``left``)
+    and then refused before any move (#2323): the interrupted run's records may still be half
+    moved, so its marker is put back, and ``hold`` leaves a marker it did not write."""
+    if left is not None:
+        state_mod._atomic_write(marker_path(), left)
+
+
 def _hermes_config() -> dict:
     """Hermes's own config, read-only (in-process: the plugin runs inside Hermes)."""
     from hermes_cli.config import load_config_readonly  # noqa: PLC0415 - Hermes-only import
@@ -321,8 +329,23 @@ def _move_ledger(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tupl
         return 0, ""
     try:
         return _move_ledger_rows(db, old, new, dry_run=dry_run)
+    except _LedgerWriteFailed as exc:
+        return 0, (f"the run ledger {db} could not be written ({exc.__cause__}); no row was "
+                   "moved — fix what SQLite names (permissions, free space, a trigger), then "
+                   "run migrate again")
     except sqlite3.Error as exc:
         return 0, _unreadable(db, exc)
+
+
+class _LedgerWriteFailed(Exception):
+    """A ledger write or COMMIT failed (#2426): the ledger was read, so it is not unreadable."""
+
+
+def _write(con, sql: str, args: tuple = ()) -> None:
+    try:
+        con.execute(sql, args)
+    except sqlite3.Error as exc:
+        raise _LedgerWriteFailed from exc
 
 
 def _move_ledger_rows(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tuple[int, str]:
@@ -341,11 +364,15 @@ def _move_ledger_rows(db: pathlib.Path, old: str, new: str, *, dry_run: bool) ->
                 moved += con.execute(f'SELECT COUNT(*) FROM "{table}" WHERE repo=?',
                                      (old,)).fetchone()[0]
                 if not dry_run:
-                    con.execute(f'UPDATE "{table}" SET repo=? WHERE repo=?', (new, old))
-            con.execute("ROLLBACK" if dry_run else "COMMIT")
+                    _write(con, f'UPDATE "{table}" SET repo=? WHERE repo=?', (new, old))
+            if dry_run:
+                con.execute("ROLLBACK")
+            else:
+                _write(con, "COMMIT")
             return moved, ""
         except BaseException:
-            con.execute("ROLLBACK")
+            if con.in_transaction:        # a failed write or COMMIT may have ended it
+                con.execute("ROLLBACK")
             raise
     finally:
         con.close()
