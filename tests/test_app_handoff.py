@@ -402,7 +402,7 @@ class WatchdogBackstop(__import__("test_fixer_gating").Base):
         path.write_text('{"9": ["%s"]}' % ("c" * 40))
         calls = []
 
-        def listing(loop, errors=None):
+        def listing(loop, errors=None, **_k):
             calls.append(1)
             if len(calls) == 2:                               # the second (pruning) sweep
                 review_kick._record_handoff(self.loop, 8, "d" * 40, 99.0)   # before the listing

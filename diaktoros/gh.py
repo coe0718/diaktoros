@@ -86,9 +86,8 @@ class GateBudgetExceeded(BaseException):
     ``[SILENT]`` again."""
 
 
-# Set only while a gate runs under ``gate_failures.run`` (or the watchdog under its sweep
-# budget): the monotonic deadline, the per-call cap, and every call that failed, so a silence
-# that followed a failed read is told apart from a chosen one.
+# Set only while a gate runs under ``gate_failures.run`` (or the watchdog under its sweep budget): the
+# deadline, the per-call cap and every failed call, so a silence after a failed read is told from a chosen one.
 _GATE: dict = {"deadline": None, "errors": None, "per_call": 30.0}
 # A gate run in-process (#1046) has its own budget and failure flag for the call, never the
 # process's: two calls on two threads each see only theirs (``gate_scope``).
@@ -199,8 +198,7 @@ def _stub(path: str, method: str, body, login: str = "", timeout: float = 30.0) 
     if not stub:
         return Response(None, "")
     argv = [stub, path] if not body else [stub, path, json.dumps(body)]
-    # GH_LOGIN names the token login the call would use (never the token), so a stub can play
-    # a read token that GitHub refuses a hook write.
+    # GH_LOGIN names the token login the call would use (never the token): a stub plays a refused read token.
     env = {**os.environ, "GH_METHOD": method, "GH_LOGIN": str(login or "")}
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
@@ -249,8 +247,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
              timeout: float) -> Response:
     _LAST.unsent = False
     if envnames.get("GH_STUB"):
-        # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
-        # token GitHub refuses a hook write.
+        # The login travels to the stub (as GH_LOGIN, never a token): a test plays a refused read token.
         return _stub(path, method, body, login or loop.get("read_token") or "", timeout)
     from . import gh_cache, gh_calls
     who = str(login or loop.get("read_token") or "")
@@ -485,8 +482,7 @@ def last_unsent() -> bool:
 
 # -- convenience --------------------------------------------------------------
 #
-# The paths live in one place each: a second copy of "/repos/{repo}/pulls/{n}" is exactly the
-# kind of thing that drifts between a gate and the command that explains the gate.
+# The paths live in one place each: a second "/repos/{repo}/pulls/{n}" drifts between a gate and its explain.
 
 
 def pr_path(loop: dict, number: int) -> str:
@@ -571,7 +567,8 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     read "the first N items" as "all of them". With ``keep_partial``, a listing past the page
     bound, or one the budget cannot finish (#1870, ``gh_paging``), returns the pages read *and*
     the reason, which the caller must report; a failed or malformed page is still unknown. Read
-    from page ``start``; a cut sets ``progress['next']`` to the page not read.
+    from page ``start``; a cut sets ``progress['next']`` to the page not read, and each page read
+    appends ``(items so far, when it came back)`` to ``progress['pages']`` (#2626).
 
     Exactly ``max_pages`` full pages is told from more by one probe page past the bound (#1146),
     read only when every page was full: empty means whole, an item means past the bound. A failed
@@ -581,8 +578,6 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     is older than it ends the listing as whole; an item with no readable ``created_at`` never does.
     """
     result: list[dict] = []
-    # One page past the bound is a probe: a full last page does not prove another exists, so a
-    # listing of exactly ``max_pages`` full pages is whole when the next page is empty.
     for page in range(start, max_pages + 2):
         page_path = path if page == 1 else f"{path}&page={page}"
         def read():
@@ -607,6 +602,8 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
         if error:
             return None, f"{what} page {page}: {error}"
         result.extend(items)
+        if progress is not None:
+            progress.setdefault("pages", []).append((len(result), time.time()))
         if len(items) < REVIEW_PAGE_SIZE or _older_than(items[-1], created_floor):
             return result, ""
     raise AssertionError("unreachable: the probe page always returns")
@@ -655,8 +652,7 @@ def reviews(loop: dict, number: int, errors: list | None = None):
     return result
 
 
-# GitHub answered, and the answer is no: retrying will not change it (#110). A 403 that is a rate
-# limit is the exception — that one passes.
+# GitHub answered no: retrying will not change it (#110). A 403 that is a rate limit passes.
 _PERSISTENT_HTTP = (403, 404, 410)
 
 
@@ -693,24 +689,28 @@ def pr_commits_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
                        MAX_PR_COMMIT_PAGES)
 
 
-def open_prs_read(loop: dict) -> tuple[list[dict] | None, str]:
+def open_prs_read(loop: dict, progress: dict | None = None) -> tuple[list[dict] | None, str]:
     """Complete bounded listing: a full last page cannot authorize a partial chain."""
     path = f"/repos/{loop['repo']}/pulls?state=open&per_page=100"
-    return _read_pages(loop, path, "open PR", MAX_PR_PAGES)
+    return _read_pages(loop, path, "open PR", MAX_PR_PAGES, progress=progress)
 
 
-def open_prs(loop: dict, errors: list | None = None):
+def open_prs(loop: dict, errors: list | None = None, read_at: dict | None = None):
     """Every open PR, or ``None`` (unknown) when any page could not be read.
 
     The watchdog treats this as its scheduling view; a repository with more than 100 open PRs
     read as "the first 100" would silently never scan or drain the rest. Pass ``errors`` to
-    receive why (the watchdog alerts on a failed listing like on any failed read).
+    receive why (the watchdog alerts on a failed listing like on any failed read), and
+    ``read_at`` to receive when each PR's page came back, by number (#2626).
     """
-    result, error = open_prs_read(loop)
+    pages: dict = {}
+    result, error = open_prs_read(loop, pages)
     if error:
         log(f"gh open PR list failed: {one_line(error)}")
         if errors is not None:
             errors.append(error)
+    for i, pr in enumerate((result or []) if read_at is not None else []):
+        read_at[pr.get("number")] = next(t for n, t in pages["pages"] if i < n)
     return result
 
 

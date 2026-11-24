@@ -53,24 +53,26 @@ class HeadMovedIsNotAStall(fg.Base):
                         (f"r{self.n}", f"d{self.n}", fg.REPO, 7, head, seat, state, error,
                          when, when, f"k{self.n}"))
 
-    def sweep(self, *after, inflight=(), before=()):
+    def sweep(self, *after, inflight=(), before=(), pages=None):
         """One sweep; turns ``(state, error)`` the worker ends once its listing came back
         (``after``), while that listing is being read (``inflight``), or once the sweep began but
-        before the read (``before``, #2694 review F1)."""
+        before the read (``before``, #2694 review F1). ``pages``: the real two-page listing, PR 7
+        on its first, with turns ended while page 1 or 2 is fetched (#2694 review F5)."""
         def ending(turns, step):
             def run(*args, **kw):
                 for state, error in turns:
                     self.turn(state, error, now=True)
                 return step(*args, **kw)
             return run
-        with mock.patch.object(watch_mode, "TEST", True), \
+        listing = (mock.patch.object(gh, "open_prs", side_effect=ending(inflight, lambda *_a, **_k: [fg.LIVE]))
+                   if pages is None else self.paged(pages))
+        with mock.patch.object(watch_mode, "TEST", True), listing, \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
                 mock.patch.object(watchdog, "_hooks_armed", side_effect=ending(
                     before, watchdog._hooks_armed)), \
                 mock.patch.object(watchdog, "_heal_and_redrive", side_effect=ending(
                     after, watchdog._heal_and_redrive)), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
-                mock.patch.object(gh, "open_prs", side_effect=ending(inflight, lambda *_a, **_k: [fg.LIVE])), \
                 mock.patch.object(gh, "reviews", return_value=[]), \
                 mock.patch.object(watchdog.review_kick, "kick", return_value=False), \
                 mock.patch.object(watchdog, "retry_pending_breaches"), \
@@ -79,6 +81,23 @@ class HeadMovedIsNotAStall(fg.Base):
                 mock.patch.object(watchdog.observer, "retry", return_value=0), \
                 mock.patch.object(watchdog.observer, "flush"):
             return "\n".join(watchdog.sweep_loop(self.loop, self.st))
+
+    @contextlib.contextmanager
+    def paged(self, pages):
+        """The real ``gh.open_prs`` over two pages (one PR a page here), PR 7 on the first; the
+        turns in ``pages[n]`` end while page ``n`` is being fetched, before it comes back."""
+        real = gh.fetch
+
+        def fetch(loop, path, *a, **k):
+            if "/pulls?state=open" not in path:
+                return real(loop, path, *a, **k)
+            page = 2 if "&page=2" in path else 1
+            for state, error in pages.get(page, ()):
+                self.turn(state, error, now=True)
+            return ([fg.LIVE] if page == 1 else []), ""
+        with mock.patch.object(gh, "REVIEW_PAGE_SIZE", 1), \
+                mock.patch.object(gh, "fetch", side_effect=fetch):
+            yield
 
     def arm_long_ago(self):
         self.sweep()
@@ -99,6 +118,15 @@ class HeadMovedIsNotAStall(fg.Base):
         for when in ("before", "inflight"):
             with self.subTest(when):
                 self.assertIn(STALL, self.sweep(**{when: [("cancelled", MOVED)]}))
+
+    def test_a_head_move_after_its_page_came_back_hides_the_stall_mid_listing(self):
+        # #2694 review F5: the page listing PR 7 came back, then its turn was cancelled while a
+        # later page was read: that page is stale, though the whole listing ended after.
+        self.arm_long_ago()
+        self.assertNotIn(STALL, self.sweep(pages={2: [("cancelled", MOVED)]}))
+        # Cancelled while its own page was being fetched: the head may have come back first.
+        self.turn("failed", "reviewer crashed", head="c" * 40)
+        self.assertIn(STALL, self.sweep(pages={1: [("cancelled", MOVED)]}))
 
     def test_no_turn_or_another_ending_still_stalls(self):
         self.arm_long_ago()
