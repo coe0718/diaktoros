@@ -4,7 +4,8 @@ The review a ruling answers is the active reviewer turn's (#1683). A newer revie
 same head (``review --reconsider`` queues one) leaves the ledger readable but with no review for
 that turn yet. The launch waits for it within the retry backoff, saying what it waits on rather
 than "shadow review unreadable", so the turn's own review, landing minutes later, is still ruled
-on with nobody involved (#2688). An unreadable ledger still waits as before (#1145).
+on with nobody involved (#2688); one that agrees is not ruled on, as the gate would not escalate
+it. An unreadable ledger still waits as before (#1145).
 Driven through the real launch (``_prepare_launch``) on a real run ledger.
 """
 from __future__ import annotations
@@ -68,11 +69,26 @@ class Superseded(ser.Base):
                 self.claim()
         self.assertEqual(str(caught.exception), "shadow review unreadable before launch")
 
-    def test_the_active_turns_own_review_launches_as_before(self):
-        self.superseded()
-        self.shadow("REQUEST_CHANGES", body="F2: the new turn's review", at=time.time())
+    def own_review(self, verdict, body):
+        """The active (reconsider:1) turn's own shadow review, landing during the wait."""
+        self.shadow(verdict, body=body, at=time.time())
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET turn_key='reconsider:1' WHERE id=?", (f"s{self.n}",))
+
+    def test_an_agreeing_review_during_the_wait_is_not_ruled_on(self):
+        self.superseded()
+        self.own_review("APPROVE", "agrees now")
+        with mock.patch.object(type(self.st), "breach_start") as start:
+            with self.assertRaises(ValueError) as caught:
+                self.claim()
+        self.assertEqual(str(caught.exception), "adjudication no longer current")
+        self.assertFalse(run_supervisor.retryable(caught.exception))   # failed, not waited on
+        start.assert_not_called()                  # the breach was never claimed for a ruling
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")  # as the gate
+
+    def test_the_active_turns_own_review_launches_as_before(self):
+        self.superseded()
+        self.own_review("REQUEST_CHANGES", "F2: the new turn's review")
         launch, _row = self.claim()
         self.assertIn("F2: the new turn's review", launch.prompt)
         self.assertNotIn("F1: the first review", launch.prompt)

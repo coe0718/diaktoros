@@ -1148,8 +1148,7 @@ class ClaimAndLaunch:
             if self._policy_hold(turn):
                 return None
         elif row['seat'] == 'adjudicator':
-            # Same live checks as the claim, repeated right before launch: the claim's
-            # reads may be minutes old, and a ruling on a moved or approved head is noise.
+            # Again before launch: the claim's reads may be minutes old; a moved or approved head's ruling is noise.
             status, facts = pr_facts.adjudication_state(loop, row, self.db)
             if status in ('retry', 'wait'):
                 raise run_supervisor.RetryableError('adjudication facts unreadable before launch')
@@ -1201,9 +1200,8 @@ class ClaimAndLaunch:
             final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
             change = (pr_facts.pr_change(loop, prompt_row, final=final)
                       if prompt_row['seat'] in ('reviewer', 'fixer') else None)
-            # A shadow escalation's ruling answers the shadow review read HERE (#1112): the
-            # prompt shows it and the scope records its run id, from one read, so a later
-            # review landing during the turn is never taken as shown.
+            # A shadow escalation's ruling answers the shadow review read HERE (#1112): the prompt
+            # shows it and the scope records its run id, from one read, so a later one is never shown.
             shadow, extra = None, {}
             if (row['seat'] == 'adjudicator'
                     and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
@@ -1212,6 +1210,8 @@ class ClaimAndLaunch:
                     raise run_supervisor.RetryableError("waiting on the active reviewer turn's shadow review")
                 if shadow is None:      # #1145: a ruling on none records '': wait for a read
                     raise run_supervisor.RetryableError('shadow review unreadable before launch')
+                if str(shadow[2]) != 'REQUEST_CHANGES':  # it agrees now: as the gate, no ruling
+                    raise ValueError('adjudication no longer current')
                 extra = {'shadow': shadow}
             if row['seat'] == 'adjudicator':
                 extra['seen'] = seen
