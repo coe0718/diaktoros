@@ -159,56 +159,92 @@ def claim_lock(db) -> Iterator[int]:
         os.close(lock)                    # frees the flock too
 
 
-def _owing(lock: int) -> set[str]:
-    """The run ids the barrier holds: its log (``owe``) replayed, a ``+`` line adding an id and a
-    ``-`` line removing one. A last line with no newline was cut short: an add is read as the
-    next ``owe`` ends it, and a clear is not read, so either way the id stays held (round 8)."""
+class BarrierCut(OSError):
+    """``owe`` cut its own add short: the cut add's line starts at byte ``at`` (#2643)."""
+
+    def __init__(self, at: int):
+        super().__init__(errno.EIO, "the claim barrier could not be written")
+        self.at = at
+
+
+def _owing(lock: int) -> tuple[set[str], list[str]]:
+    """What the barrier holds: its log (``owe``) replayed into ids, each ``+`` line adding one and
+    each ``-`` line removing one, and cut adds. An add cut short (a last line with no newline, or
+    one ``owe`` ended with ``~``) may have stopped inside its id, so it holds every id it begins
+    (#2643; ``+`` alone, all) until a ``*@<offset>`` line lifts the one starting at that byte,
+    which only the writer that cut it writes (``owe``'s ``mine``; #2645). A clear or lift cut
+    short is not read, so the barrier fails closed (#2634 review F8)."""
     data, at = b"", 0
     while chunk := os.pread(lock, 65536, at):
         data, at = data + chunk, at + len(chunk)
-    *lines, cut = data.split(b"\n")
     ids: set[str] = set()
-    for line in [*lines, cut] if cut[:1] == b"+" else lines:
-        text = line.decode(errors="replace")
-        if text[:1] == "+":
-            ids.add(text[1:])
-        elif text[:1] == "-":
-            ids.discard(text[1:])
-    return ids
+    cuts: dict[int, str] = {}
+    start = 0
+    for raw in data.split(b"\n"):
+        text, at, start = raw.decode(errors="replace"), start, start + len(raw) + 1
+        mark, rest = text[:1], text[1:]
+        if start > len(data):                   # the last line, with no newline
+            rest += "~" if mark == "+" else ""
+            mark = mark if mark == "+" else ""
+        if mark == "+" and rest.endswith("~"):
+            cuts[at] = rest.rstrip("~")
+        elif mark == "+":
+            ids.add(rest)
+        elif mark == "-" and not rest.endswith("~"):
+            ids.discard(rest)
+        elif mark == "*" and rest[:1] == "@" and rest[1:].isdigit():
+            cuts.pop(int(rest[1:]), None)
+    return ids, list(cuts.values())
 
 
-def owe(lock: int, run_id: str, owed: bool = True) -> None:
+def owe(lock: int, run_id: str, owed: bool = True, mine=()) -> None:
     """Under ``claim_lock``, record in its file (``owed``) or clear the reviewer run ``run_id``
     whose owed shadow and stop could not be written (#2634 review F4, round 6): the barrier
     ``owes`` refuses its receipt by, held outside SQLite so it stands when the ledger refuses the
     stop. Each change is a line appended to a log, written whole (a short write is finished, not
-    taken as done) and synced, so an update cut short never loses an id already marked: a cut
-    line is ended before the next (round 7, F8), and read as ``_owing`` says. The log is emptied
-    only once it holds no id."""
-    if not run_id or "\n" in run_id:
+    taken as done) and synced, so an update cut short never loses an id already marked; a cut
+    line is ended with ``~`` first, and stays a cut add (``_owing``). An add this call cuts (a
+    write in it fails or makes no progress) raises ``BarrierCut`` with its offset. ``mine`` are
+    such offsets of the caller's own earlier adds of ``run_id`` under this same lock: each is
+    lifted (after the add, before the clear; #2643, #2645). The log is emptied only once it holds
+    no id and no cut add."""
+    if not run_id or "\n" in run_id or "~" in run_id:
         raise ValueError("invalid run id for the claim barrier")
     end = os.lseek(lock, 0, os.SEEK_END)
-    record = ("+" if owed else "-") + run_id + "\n"
-    data = (b"" if not end or os.pread(lock, 1, end - 1) == b"\n" else b"\n") + record.encode()
-    while data:
-        wrote = os.pwrite(lock, data, end)
+    term = b"" if not end or os.pread(lock, 1, end - 1) == b"\n" else b"~\n"
+    record = (("+" if owed else "-") + run_id + "\n").encode()
+    lifts = "".join(f"*@{at}\n" for at in mine).encode()
+    data = term + (record + lifts if owed else lifts + record)
+    cut = (end + len(term), end + len(term) + len(record)) if owed else (0, 0)
+    done = 0
+    while done < len(data):
+        try:
+            wrote = os.pwrite(lock, data[done:], end + done)
+        except OSError as exc:          # inside the add, a cut, as no progress is (#2644 F3)
+            if cut[0] < end + done < cut[1]:
+                raise BarrierCut(cut[0]) from exc
+            raise
         if wrote <= 0:
-            raise OSError(errno.EIO, "the claim barrier could not be written")
-        data, end = data[wrote:], end + wrote
+            raise BarrierCut(cut[0]) if cut[0] < end + done < cut[1] else OSError(
+                errno.EIO, "the claim barrier could not be written")
+        done += wrote
     os.fsync(lock)
-    if not owed and not _owing(lock):
+    if not owed and _owing(lock) == (set(), []):
         os.ftruncate(lock, 0)
         os.fsync(lock)
 
 
 def owes(lock: int, con, run_id: str) -> bool:
     """Whether the barrier (``owe``) still holds ``run_id``'s receipt: it does until the shadow
-    row for its turn is in the ledger, and is cleared once it is."""
-    if run_id not in _owing(lock):
+    row for its turn is in the ledger, and is cleared once it is. A cut add (``_owing``) holds
+    every run whose id it begins, until that run's shadow row is in (#2643)."""
+    ids, cuts = _owing(lock)
+    if run_id not in ids and not any(run_id.startswith(cut) for cut in cuts):
         return False
     if con.execute("SELECT 1 FROM runs AS r JOIN runs AS s ON s.repo=r.repo AND s.pr=r.pr AND "
                    "s.head=r.head AND s.turn_key=r.turn_key AND s.seat='shadow' WHERE r.id=?",
                    (run_id,)).fetchone() is None:
         return True
-    owe(lock, run_id, False)
+    if run_id in ids:
+        owe(lock, run_id, False)
     return False

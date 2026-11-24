@@ -16,6 +16,8 @@ from ..state import ledger
 
 # The reviewer row states a redelivery may still give the shadow its turn owes.
 UNENDED = ('pending', 'waiting', 'claimed', 'launching', 'running')
+# The waits between tries of the barrier lift that ends a redelivery (``lift``; #2644 review F2).
+LIFT_WAITS = (0.05, 0.2, 0.75)
 
 
 def beside(sup, con, prior, outcome: str, shadow, unkept: str, now: float) -> str:
@@ -103,16 +105,19 @@ def fails_closed(sup, con, prior, shadow, held=None):
     the receipt stays refused until the turn's shadow row is in (round 6) if neither commits,
     or if the process dies before either does (round 8). A barrier that cannot be written then
     is tried again after a failure; if the barrier, the shadow row and the stop all refuse every
-    write, nothing durable is left to hold, and the error says so."""
+    write, nothing durable is left to hold, and the error says so. A barrier add cut short
+    holds every id it begins (``ledger._owing``) until this writer lifts it by the offset it
+    cut at (``mine``, ``lift``; #2643, #2645): never another writer's cut."""
     owed = (prior is not None and shadow is not None and prior['state'] in UNENDED
             and prior['cancel_requested'] is None
             and run_supervisor.write_evidence(con, prior['id']) is None)
-    barred = None
+    barred, mine = None, []
     if owed:
         try:
             ledger.owe(held, prior['id'])
         except Exception as exc:
             barred = exc
+            mine += cuts(exc)
     try:
         yield
     except Exception as exc:
@@ -122,8 +127,10 @@ def fails_closed(sup, con, prior, shadow, held=None):
             con.execute("ROLLBACK")
         if barred is not None:
             try:
-                ledger.owe(held, prior['id'])
+                ledger.owe(held, prior['id'], mine=mine)
+                barred, mine[:] = None, []
             except Exception as again:
+                mine += cuts(again)
                 exc.add_note(f"its receipt barrier could not be written either: {barred!r}, "
                              f"then {again!r}")
         with contextlib.suppress(Exception), sup._connect() as fresh:
@@ -137,8 +144,29 @@ def fails_closed(sup, con, prior, shadow, held=None):
                 stop(fresh, row, '', shadow if isinstance(shadow, str) else unwritten(exc),
                      time.time())
             fresh.execute("COMMIT")
-            ledger.owe(held, prior['id'], False)    # the stop stands now and refuses the receipt
+            lift(held, prior['id'], mine)           # the stop stands now and refuses the receipt
         raise
     if owed:
         with contextlib.suppress(Exception):    # its shadow row, or its stop, is in now
-            ledger.owe(held, prior['id'], False)
+            lift(held, prior['id'], mine)
+
+
+def cuts(exc: BaseException) -> list[int]:
+    """Where a barrier add that raised ``exc`` cut its own line, if it wrote any of it."""
+    return [exc.at] if isinstance(exc, ledger.BarrierCut) else []
+
+
+def lift(held, run_id: str, mine) -> None:
+    """Clear ``run_id`` from the barrier once its shadow row or its stop is in, lifting the cut
+    adds this writer made (``mine``, their offsets) first (#2643, #2645). Only this writer can
+    lift them, so a write that fails is tried again (``LIFT_WAITS``) while it still holds the
+    lock and ``mine`` (#2644 review F2). If it never lands, the last error is raised and they
+    stay, failing closed as a dead writer's cut does: nothing records them by offset, as the log
+    is emptied once it holds nothing and a later cut may start at the same byte (review F4)."""
+    for wait in (*LIFT_WAITS, None):
+        try:
+            return ledger.owe(held, run_id, False, mine=mine)
+        except OSError:
+            if wait is None:
+                raise
+            time.sleep(wait)
