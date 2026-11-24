@@ -109,12 +109,13 @@ class Snapshot(unittest.TestCase):
         real_write = fs.write
         # write() binds its default path at definition: redirect it too, so no run of main()
         # (with or without the fix) can touch the real baseline.
-        with mock.patch.object(fs, "measure", return_value=self.MEASURED), \
+        with mock.patch.object(fs, "measure", return_value=self.MEASURED) as measure, \
                 mock.patch.object(fs, "BASELINE", baseline), \
                 mock.patch.object(fs, "write", lambda data, path=None: real_write(data, baseline)), \
                 contextlib.redirect_stdout(io.StringIO()) as out, \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             code = fs.main(argv)
+        self.measure = measure  # kept so a test can assert whether main() measured at all
         return code, out.getvalue(), err.getvalue()
 
     def test_snapshot_refuses_to_overwrite_an_existing_baseline(self):
@@ -156,6 +157,8 @@ class Snapshot(unittest.TestCase):
                     self.assertIn("usage:", err)
                     self.assertNotIn("within the ratchet", out)
                     self.assertEqual(baseline.read_text(), before)
+                    # Refused before measuring, not after: nothing is checked (review F1).
+                    self.measure.assert_not_called()
 
 
 class Measuring(unittest.TestCase):
