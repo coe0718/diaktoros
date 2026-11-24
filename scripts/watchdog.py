@@ -349,8 +349,12 @@ def _read_listing(c: _Sweep) -> None:
     # that works must not announce "reads work again" while the listing is still refused).
     c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
     if not watch_mode.TEST:
+        # The listed heads let a gate's failed PR read that a live turn covers stay quiet (#1959).
+        heads = {p["number"]: (p.get("head") or {}).get("sha") for p in c.prs or []
+                 if isinstance(p, dict) and isinstance(p.get("number"), int)}
         c.health = watch_health.read_health(c.loop, c.st, c.watch, c.now, c.armed, c.armed_error,
-                                            c.listing_errors[0] if c.listing_errors else "")
+                                            c.listing_errors[0] if c.listing_errors else "",
+                                            heads)
         c.lines.extend(c.health.lines)
 
 
