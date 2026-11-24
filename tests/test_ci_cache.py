@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import ci, ci_cache, ci_fix, gh  # noqa: E402
+from diaktoros import ci, ci_cache, ci_fix, gh, gh_text  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 RED = ci.CIState(failed=["tests"], ids={"tests": 41}, urls={"tests": "https://example.invalid/41"})
@@ -43,7 +43,7 @@ class JobLogs(Base):
         row = {"seat": "fixer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
         with mock.patch.object(ci, "read", return_value=RED), \
                 mock.patch.object(gh, "api", return_value=reply) as api, \
-                mock.patch.object(gh, "read_text", return_value=text) as read:
+                mock.patch.object(gh_text, "read_text", return_value=text) as read:
             out = turn_prompts.ci_sections(self.loop, row, "fixer")
         return out, api.call_count, read.call_count
 
@@ -72,7 +72,7 @@ class JobLogs(Base):
         self.fixer_prompt(job())
         other = {**self.loop, "repo": "acme/other"}
         with mock.patch.object(gh, "api", return_value=job()) as api, \
-                mock.patch.object(gh, "read_text", return_value=LOG):
+                mock.patch.object(gh_text, "read_text", return_value=LOG):
             ci_fix.section(other, RED, ["tests"])
             ci_fix.section(self.loop, ci.CIState(failed=["tests"], ids={"tests": 42}), ["tests"])
         self.assertEqual(api.call_count, 2)
