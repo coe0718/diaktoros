@@ -1,12 +1,18 @@
 """`hermes dk show` (#555): every setting, its value and where it came from."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
+import pathlib
+import sys
 import unittest
 
 from diaktoros import config, observer, show
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from test_token_file_settings import TokenFileSettingsTests as _Base, SENTINEL
+
+# The hint scan lives in tools/hint_spelling.py, outside tests/, so the host's base-failure proof
+# runs the tests below against the base's scan, not this PR's (#1973, #2662 review F3).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
 
 
 class ShowTests(_Base):
@@ -246,123 +252,12 @@ class ShowTests(_Base):
         self.assertNotIn("inert", rows["fixer_scope_lock"]["note"])
 
     @staticmethod
-    def string_names(tree) -> dict[str, str]:
-        """The names ``tree`` binds exactly once, by a plain module-level ``name = "<string>"``,
-        each with its string: only these can be read as that string everywhere (#2662 review).
-
-        Every other binding of a name counts against it, so a name also bound as a parameter, by
-        ``+=``, ``for``, ``with``, ``except``, ``import``, a walrus, a ``match`` capture, ``del``,
-        or a declaration ``global``/``nonlocal``, is unknown and stays a marker: it may hold
-        ``dk`` where it is read."""
-        import ast
-        bindings: dict[str, int] = {}
-
-        def bind(name: str) -> None:
-            bindings[name] = bindings.get(name, 0) + 1
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
-                bind(node.id)
-            elif isinstance(node, ast.arg):
-                bind(node.arg)
-            elif isinstance(node, ast.alias):
-                bind((node.asname or node.name).split(".")[0])
-            elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar) and node.name:
-                bind(node.name)
-            elif isinstance(node, ast.MatchMapping) and node.rest:
-                bind(node.rest)
-            elif isinstance(node, ast.Global | ast.Nonlocal):
-                for name in node.names:
-                    bind(name)
-            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-                bind(node.name)
-        return {node.targets[0].id: node.value.value for node in tree.body
-                if isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name) and bindings[node.targets[0].id] == 1
-                and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
-
-    @staticmethod
     def hand_spelled(source: str) -> list[int]:
-        """Lines of strings in ``source`` naming ``dk fixer-push``, docstrings aside: a hint the
-        operator would type, which must come from ``config.fixer_push_enable_command``.
-
-        Besides each string constant, the text of every ``+`` chain and every f-string is
-        joined before matching (#1480), and so is every ``%``-format of a string and every
-        ``str.join`` of a literal list or tuple (#2039), a ``*`` width or precision taking an
-        argument of its own. A name that ``source`` binds exactly once, by a plain module-level
-        assignment of a string constant, stands for that string (``string_names``). Any other part that is not a string (a
-        placeholder, a call, a name assigned elsewhere) becomes a marker, which stands in for
-        ``dk`` only right after ``hermes``: ``f"hermes {cmd} " f"fixer-push"`` counts as
-        hand-spelled, ``cmd + " fixer-push"`` with ``cmd`` unknown or ``"run"`` does not (#2039)."""
-        import ast
-        import re
-        marker = "\x00"
-        tree = ast.parse(source)
-        names = ShowTests.string_names(tree)
-
-        def is_str(node) -> bool:
-            return isinstance(node, ast.Constant) and isinstance(node.value, str)
-
-        def is_format(node) -> bool:
-            """Whether ``node`` is ``<string> % <args>``."""
-            return isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and built(node.left)
-
-        def is_join(node) -> bool:
-            """Whether ``node`` is ``<string>.join(<one argument>)``."""
-            return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "join" and built(node.func.value)
-                    and len(node.args) == 1 and not node.keywords)
-
-        def formatted(node) -> str:
-            """The text of ``<string> % <args>``, each conversion replaced by its argument."""
-            args = list(node.right.elts) if isinstance(node.right, ast.Tuple) else [node.right]
-
-            def conversion(match) -> str:
-                if match.group(0) == "%%":
-                    return "%"
-                if match.group(1):              # %(key)s: the argument is a mapping
-                    return marker
-                # A `*` width or precision takes an argument of its own, before the value
-                # (#2662 review): `"%*s" % (2, "dk")` formats "dk", not 2.
-                for _ in range(match.group(0).count("*") + 1):
-                    if not args:
-                        return marker
-                    value = args.pop(0)
-                return text(value)
-            spec = r"%%|%(\([^)]*\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[a-zA-Z]"
-            return re.sub(spec, conversion, text(node.left))
-
-        def text(node) -> str:
-            """The string ``node`` builds, with a marker for each part not known here."""
-            if is_str(node):
-                return node.value
-            if isinstance(node, ast.Name) and node.id in names:
-                return names[node.id]
-            if isinstance(node, ast.JoinedStr):
-                return "".join(text(part) for part in node.values)
-            if isinstance(node, ast.FormattedValue):
-                return text(node.value)
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-                return text(node.left) + text(node.right)
-            if is_format(node):
-                return formatted(node)
-            if is_join(node) and isinstance(node.args[0], ast.List | ast.Tuple):
-                return text(node.func.value).join(text(item) for item in node.args[0].elts)
-            return marker
-
-        def built(node) -> bool:
-            """Whether ``node`` builds a string: a constant, an f-string, a ``+`` chain, a
-            ``%``-format or a ``str.join``."""
-            return (is_str(node) or isinstance(node, ast.JoinedStr)
-                    or isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
-                    or is_format(node) or is_join(node))
-
-        docs = {id(node.body[0].value) for node in ast.walk(tree)
-                if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-                and node.body and isinstance(node.body[0], ast.Expr)}
-        gap = f"[\\s{marker}]*"
-        pattern = re.compile(f"(?:dk|hermes{gap}{marker}){gap}fixer-push")
-        return sorted({node.lineno for node in ast.walk(tree)
-                       if built(node) and id(node) not in docs and pattern.search(text(node))})
+        """Lines of strings in ``source`` naming ``dk fixer-push``: ``tools/hint_spelling.py``,
+        outside ``tests/`` so the host's base-failure proof runs these tests against the base's
+        scan (#1973, #2662 review F3)."""
+        import hint_spelling
+        return hint_spelling.hand_spelled(source)
 
     def test_no_hint_spells_the_fixer_push_command_by_hand(self):
         import pathlib
@@ -415,6 +310,38 @@ class ShowTests(_Base):
             with self.subTest(source):
                 lines = [n for n, line in enumerate(source.splitlines(), 1) if "fixer-push" in line]
                 self.assertEqual(self.hand_spelled(source), lines)
+
+    def test_hint_guard_applies_the_format(self):
+        # #2662 review F4/F5: a known string was substituted unformatted, so a precision that
+        # cuts "dkjunk" to "dk" went unflagged. A format is applied as Python applies it, and an
+        # unknown value or spec stays the marker.
+        flagged = ('cmd = "dkjunk"\nnote = f"hermes {cmd:.2} fixer-push"\n',
+                   'cmd = "dkjunk"\nnote = f"hermes {cmd!s:.2} fixer-push"\n',
+                   'cmd = "dk"\nnote = f"hermes {cmd:<4} fixer-push"\n',
+                   'cmd = "dkjunk"\nnote = f"hermes {cmd:{w}} fixer-push"\n',
+                   'note = f"hermes {arg:.2} fixer-push"\n',
+                   'note = "hermes %.2s %s" % ("dkjunk", "fixer-push")\n',
+                   'note = "hermes %-4s fixer-push" % "dk"\n',
+                   'note = "hermes %.*s %s" % (2, "dkjunk", "fixer-push")\n',
+                   'note = "hermes %.*s %s" % (n, "dkjunk", "fixer-push")\n',
+                   'note = "hermes %.2s fixer-push" % arg\n')
+        clean = ('cmd = "rundk"\nnote = f"hermes {cmd:.2} fixer-push"\n',
+                 'cmd = "dk"\nnote = f"hermes {cmd!r} fixer-push"\n',
+                 'note = "hermes %.2s %s" % ("rundk", "fixer-push")\n',
+                 'note = "hermes %r %s" % ("dk", "fixer-push")\n',
+                 'note = "hermes %3d fixer-push" % 7\n')
+        for source, flags in [*((s, True) for s in flagged), *((s, False) for s in clean)]:
+            with self.subTest(source):
+                lines = [len(source.splitlines())] if flags else []
+                self.assertEqual(self.hand_spelled(source), lines)
+
+    def test_a_base_proof_tests_the_base_hint_scan(self):
+        # #2662 review F3: the scan lives off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs the tests above against the base's scan. It fails if
+        # the scan goes back into this module, where it was.
+        import _base_proof
+        import hint_spelling
+        _base_proof.assert_taken_from_the_base(self, hint_spelling.__file__)
 
     @staticmethod
     def inline_fixer_push(text: str) -> list[str]:
