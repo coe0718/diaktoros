@@ -580,14 +580,14 @@ class TrustedFetchTests(unittest.TestCase):
         from _tarball_redirect_fixture import ApiServer, CodeloadServer
         from unittest import mock
 
-        # The allowed origin is 127.0.0.1; the API redirects to a DIFFERENT loopback
-        # host, 127.0.0.2. Distinct IPs so the host check has something to catch —
-        # a single 127.0.0.1 stand-in would match the allowed origin and pass.
+        # Keep distinct loopback IPs on Linux; macOS needs an explicitly configured
+        # alias for 127.0.0.2, so only Darwin uses a different hostname instead.
         allowed = CodeloadServer(body=self.tarball, host="127.0.0.1")   # never contacted
         self.addCleanup(allowed.close)
-        other = CodeloadServer(body=b"stolen", host="127.0.0.2")        # the disallowed target
+        other = CodeloadServer(body=b"stolen", host="127.0.0.1" if sys.platform == 'darwin' else "127.0.0.2")
         self.addCleanup(other.close)
-        api = ApiServer(location=f"{other.base}/steal.tar.gz")
+        target = f"http://localhost:{other.port}" if sys.platform == 'darwin' else other.base
+        api = ApiServer(location=f"{target}/steal.tar.gz")
         self.addCleanup(api.close)
 
         with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
@@ -596,7 +596,7 @@ class TrustedFetchTests(unittest.TestCase):
             with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
                 trusted_fetch._fetch_tarball(
                     self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
-        # Neither server was contacted, and nothing was extracted.
+        # Neither codeload server was contacted, and nothing was extracted.
         self.assertEqual(allowed.recorder.requests, [])
         self.assertEqual(other.recorder.requests, [])
         self.assertFalse((self.root / "sandbox").exists())

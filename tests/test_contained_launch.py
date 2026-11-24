@@ -101,6 +101,9 @@ REAL_UNAVAILABLE = contained.unavailable
 
 class Base(unittest.TestCase):
     def setUp(self):
+        # These are Linux argv contracts, even when their spies run on a Mac.
+        self.enterContext(mock.patch.object(sys, 'platform', 'linux'))
+        self.enterContext(mock.patch.object(tempfile, 'gettempdir', return_value='/tmp'))
         # These pin the argv and env our code builds, so they run on a host with no bubblewrap
         # too: its presence check is answered here, and pinned on its own below.
         present = mock.patch.object(contained, "unavailable", return_value="")
@@ -715,6 +718,17 @@ class EnvironmentScrub(Base):
                 self.assertNotIn(name, env)
                 self.assertFalse([v for v in env.values() if value in v], env)
                 self.assertFalse([arg for arg in argv if value in arg or name in arg], argv)
+
+
+class CaptureContracts(unittest.TestCase):
+    def test_timeout_after_pipe_eof_keeps_captured_output(self):
+        source = ('import os,time; os.write(1,b"before timeout"); '
+                  'os.write(2,b"before error"); os.close(1); os.close(2); time.sleep(30)')
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            contained.capture([sys.executable, '-c', source],
+                              env={'PATH': '/usr/bin:/bin'}, timeout=3)
+        self.assertEqual(caught.exception.output, b'before timeout')
+        self.assertEqual(caught.exception.stderr, b'before error')
 
 
 if __name__ == "__main__":

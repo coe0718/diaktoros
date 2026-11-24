@@ -398,8 +398,19 @@ class WorkerLifecycle:
         except OSError:
             return None
 
+    def _turn_gone(self, row) -> bool:
+        """Worker absence proves Linux namespace exit, not native descendant exit."""
+        # shortcut: no durable run/workspace binding yet; native crash quarantine
+        # stays occupied until exact per-attempt drained evidence is implemented.
+        return (sys.platform != 'darwin' or self.fixture_mode) and _worker_gone(row)
+
+    def _recover_native_storage(self):
+        from . import recovery
+        recovery.sweep_native(self)
+
     def recover(self) -> str:
         """Sweep lost claims and ambiguous launches; schedule waiting work."""
+        self._recover_native_storage()
         now = time.time()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -421,7 +432,8 @@ class WorkerLifecycle:
                 # worker, and the sandbox's PID namespace with bwrap. Drop either flag, or put
                 # a process between the worker and bwrap, and this ends a run whose sandbox
                 # still runs.
-                if process_state(lost['pid'], lost['launch_intent']) != 'gone':
+                if ((sys.platform == 'darwin' and not self.fixture_mode)
+                        or process_state(lost['pid'], lost['launch_intent']) != 'gone'):
                     continue
                 wrote = run_supervisor.write_records(con, lost['id'])
                 if wrote is None:
@@ -591,41 +603,16 @@ class WorkerLifecycle:
         with self._connect() as con:
             row = con.execute("SELECT pid,launch_intent FROM runs WHERE id=?",
                               (run_id,)).fetchone()
-        return row is not None and _worker_gone(row)
+        return row is not None and self._turn_gone(row)
 
     def reconcile_uncertain(self, run_id: str, *, reason: str,
-                            acknowledge_no_live_worker: bool = False) -> bool:
-        """Operator-only release after inspecting the turn's external writes.
-
-        A present or inaccessible PID conservatively blocks release. A missing
-        PID still requires acknowledgement: absence alone cannot prove that
-        a GitHub write did not happen before the worker died.
-        """
-        if not acknowledge_no_live_worker or not reason or len(reason) > 512:
-            raise ValueError('explicit reconciliation acknowledgement and reason required')
-        with self._connect() as con:
-            con.execute('BEGIN IMMEDIATE')
-            row = con.execute("SELECT pid,state,launch_intent,repo,pr,head,seat FROM runs WHERE id=?",
-                              (run_id,)).fetchone()
-            if row is None or row['state'] != 'uncertain':
-                con.execute('COMMIT')
-                return False
-            if row['pid'] is not None:
-                found = process_state(row['pid'], row['launch_intent'])
-                if found == 'unknown':
-                    raise ValueError('cannot establish worker is absent')
-                if found == 'alive':
-                    raise ValueError('worker PID exists; cannot release uncertain run')
-            if row['launch_intent'] is None:
-                raise ValueError('missing launch intent; cannot establish worker identity')
-            con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, "
-                        "push_intent=NULL,updated=? "
-                        "WHERE id=? AND state='uncertain'",
-                        ('operator reconciliation: ' + reason, time.time(), run_id))
-            con.execute('COMMIT')
-        # The operator's reconciliation is what ends it, so it frees its claim too.
-        _release_claim(row, run_id)
-        return True
+                            acknowledge_no_live_worker: bool = False,
+                            acknowledge_native_descendants_stopped: bool = False) -> bool:
+        """Operator-only release after inspecting the turn's external writes."""
+        from . import recovery
+        return recovery.reconcile(self, run_id, reason=reason,
+                                  acknowledge_no_live_worker=acknowledge_no_live_worker,
+                                  acknowledge_native_descendants_stopped=acknowledge_native_descendants_stopped)
 
     def settle_push_quarantine(self, run_id: str, *, evidence: str) -> bool:
         """End a fixer push quarantine the host proved wrote nothing (#1763): ``failed``, its
@@ -644,7 +631,7 @@ class WorkerLifecycle:
             if (row is None or row['state'] != 'uncertain' or row['seat'] != 'fixer'
                     or not error.startswith(run_supervisor.PUSH_QUARANTINE)
                     or error.startswith(run_supervisor.PUSH_QUARANTINE + 'published')
-                    or row['push_confirmed'] is not None or not _worker_gone(row)):
+                    or row['push_confirmed'] is not None or not self._turn_gone(row)):
                 con.execute('COMMIT')
                 return False
             con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, push_intent=NULL, "

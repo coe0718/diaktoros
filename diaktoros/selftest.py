@@ -233,7 +233,7 @@ def _interpreter_outside(link: Path, runtime: Path) -> str:
         return ""
     target = Path(os.path.normpath(link.parent / os.readlink(link)))
     root = Path(os.path.normpath(runtime.absolute()))
-    if root != target and root not in target.parents:
+    if sys.platform != "darwin" and root != target and root not in target.parents:
         return str(target)
     resolved, real_root = Path(os.path.realpath(target)), Path(os.path.realpath(root))
     if real_root != resolved and real_root not in resolved.parents:
@@ -293,6 +293,26 @@ def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool
     else:
         report.add(step, prefix + "key_file", PASS, detail + ", non-empty")
     return ok
+
+
+def _check_node_runtime(report: Report, settings: dict) -> None:
+    from . import runtime_detect
+    step = "runtime"
+    # The Node seats get, as the worker reads it from this file (#1149); optional, so a warning.
+    state, detail, fix = runtime_detect.node_report(settings)
+    if state == "ok":
+        report.add(step, "runtime:node", PASS, detail)
+    else:
+        report.add(step, "runtime:node", WARN, f"{detail} (optional)", fix)
+
+
+def check_native_runtime(report: Report, settings: dict) -> bool:
+    from . import runtime_detect
+    problems = runtime_detect.native_problems(settings)
+    for key, why in problems.items():
+        report.add("runtime", f"runtime:{key}:native", FAIL, why,
+                   f"choose a dedicated {key} path with `hermes dk setup --{key} PATH`")
+    return not problems
 
 
 def check_runtime(report: Report, path: Path) -> dict | None:
@@ -386,15 +406,12 @@ def check_runtime(report: Report, path: Path) -> dict | None:
         usable = False
         report.add(step, "runtime:rust", FAIL, f"{rust}/bin/cargo does not exist",
                    "point rust at a toolchain directory, e.g. "
-                   "~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu")
+                   "~/.rustup/toolchains/stable-<host-target>")
     else:
         report.add(step, "runtime:rust", PASS, f"{rust} (bin/cargo)")
-    # The Node seats get, as the worker reads it from this file (#1149); optional, so a warning.
-    state, detail, fix = runtime_detect.node_report(settings)
-    if state == "ok":
-        report.add(step, "runtime:node", PASS, detail)
-    else:
-        report.add(step, "runtime:node", WARN, f"{detail} (optional)", fix)
+    if sys.platform == "darwin":
+        usable = check_native_runtime(report, settings) and usable
+    _check_node_runtime(report, settings)
     return settings if usable else None
 
 
@@ -424,7 +441,7 @@ try:
 except OSError:
     dns = False
 try:
-    cargo = subprocess.run(["/opt/rust/bin/cargo", "--version"], capture_output=True,
+    cargo = subprocess.run([sys.argv[2] if len(sys.argv) > 2 else "/opt/rust/bin/cargo", "--version"], capture_output=True,
                            timeout=60).returncode == 0
 except Exception:
     cargo = False
@@ -432,8 +449,25 @@ import re
 leaked = sorted(k for k in os.environ if re.search(
     r"TOKEN|SECRET|PASSWORD|API_?KEY|_KEY$|^KEY$|(^|_)PAT$|^GH_|^GITHUB_|^OPENAI|^ANTHROPIC",
     k.upper()))
+process_denied = []
+if sys.platform == "darwin":
+    import ctypes, errno
+    libc = ctypes.CDLL(None, use_errno=True)
+    for number in (147, 82):  # setsid/setpgid: probe each in a fresh, always-reaped child.
+        read, write = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(read)
+            result = libc.syscall(number, 0, 0)
+            os.write(write, b"1" if result == -1 and ctypes.get_errno() == errno.EPERM else b"0")
+            os._exit(0)
+        os.close(write)
+        process_denied.append(os.read(read, 1) == b"1")
+        os.close(read)
+        os.waitpid(pid, 0)
 print(json.dumps({"readable": readable, "network": network, "dns": dns, "cargo": cargo,
-                  "hermes": os.path.exists("/opt/venv/bin/hermes"), "env": leaked}))
+                  "hermes": os.path.exists(sys.argv[3] if len(sys.argv) > 3 else "/opt/venv/bin/hermes"),
+                  "process_denied": process_denied, "env": leaked}))
 '''
 
 _USERNS_FIX = ("enable unprivileged user namespaces: `sudo sysctl -w kernel.unprivileged_userns_clone=1` "
@@ -474,38 +508,56 @@ def host_secret_paths(loop: dict, settings: dict, runtime_file: Path) -> list[st
     return list(dict.fromkeys(paths))
 
 
+def _sandbox_prerequisites(report: Report, native: bool) -> bool:
+    from . import contained, runtime_detect
+    step = "native" if native else "bubblewrap"
+    if native:
+        reason = contained.unavailable()
+        tools, tool_problem = runtime_detect.native_tools()
+        if reason or tool_problem:
+            report.add(step, "native:prerequisites", FAIL, reason or tool_problem,
+                       "install Apple Command Line Tools and re-run selftest; no unsandboxed fallback")
+            return False
+        report.add(step, "native:prerequisites", PASS, f"Seatbelt/APFS; SDK {tools['sdk']}")
+    else:
+        # The launcher starts the child with LAUNCH_PATH only, so that is where bwrap must be found,
+        # not on the operator's PATH (a bwrap in /usr/local/bin would pass here and fail every turn).
+        bwrap = shutil.which("bwrap", path=contained.LAUNCH_PATH)
+        if not bwrap:
+            report.add(step, "bwrap:installed", FAIL,
+                       f"bwrap is not in {contained.LAUNCH_PATH}, the only PATH the launcher uses "
+                       "(the operator's PATH does not count)",
+                       "install bubblewrap (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`) "
+                       f"so that bwrap is in {contained.LAUNCH_PATH}")
+            return False
+        report.add(step, "bwrap:installed", PASS, bwrap)
+        probe = [bwrap, "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
+                 "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
+                 "--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+                 "--", "/usr/bin/true"]
+        try:
+            result = subprocess.run(probe, capture_output=True, text=True, timeout=30,
+                                    env={"PATH": contained.LAUNCH_PATH})
+        except Exception as exc:
+            report.add(step, "bwrap:userns", FAIL, f"bwrap did not run ({type(exc).__name__})",
+                       _USERNS_FIX)
+            return False
+        if result.returncode != 0:
+            report.add(step, "bwrap:userns", FAIL,
+                       "unprivileged namespace refused: " + (result.stderr.strip()[:160] or
+                                                             f"rc={result.returncode}"), _USERNS_FIX)
+            return False
+        report.add(step, "bwrap:userns", PASS, "unprivileged user/net/pid namespaces work")
+    return True
+
+
 def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file: Path) -> None:
     """Step 2."""
-    from . import contained, trusted_turn
-    step = "bubblewrap"
-    # The launcher starts the child with LAUNCH_PATH only, so that is where bwrap must be found,
-    # not on the operator's PATH (a bwrap in /usr/local/bin would pass here and fail every turn).
-    bwrap = shutil.which("bwrap", path=contained.LAUNCH_PATH)
-    if not bwrap:
-        report.add(step, "bwrap:installed", FAIL,
-                   f"bwrap is not in {contained.LAUNCH_PATH}, the only PATH the launcher uses "
-                   "(the operator's PATH does not count)",
-                   "install bubblewrap (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`) "
-                   f"so that bwrap is in {contained.LAUNCH_PATH}")
+    from . import contained, runtime_detect, trusted_turn
+    native = sys.platform == "darwin"
+    step = "native" if native else "bubblewrap"
+    if not _sandbox_prerequisites(report, native):
         return
-    report.add(step, "bwrap:installed", PASS, bwrap)
-    probe = [bwrap, "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
-             "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
-             "--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
-             "--", "/usr/bin/true"]
-    try:
-        result = subprocess.run(probe, capture_output=True, text=True, timeout=30,
-                                env={"PATH": contained.LAUNCH_PATH})
-    except Exception as exc:
-        report.add(step, "bwrap:userns", FAIL, f"bwrap did not run ({type(exc).__name__})",
-                   _USERNS_FIX)
-        return
-    if result.returncode != 0:
-        report.add(step, "bwrap:userns", FAIL,
-                   "unprivileged namespace refused: " + (result.stderr.strip()[:160] or
-                                                         f"rc={result.returncode}"), _USERNS_FIX)
-        return
-    report.add(step, "bwrap:userns", PASS, "unprivileged user/net/pid namespaces work")
     if settings is None:
         report.add(step, "sandbox:containment", SKIP, "needs a usable runtime config (step 1)")
         return
@@ -561,6 +613,11 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
         report.redact.add(marker)
         paths = [str(dummy)] + host_secret_paths(loop, settings, runtime_file)
         entry = ["/opt/venv/bin/python", "-c", _SANDBOX_PROBE, json.dumps(paths)]
+        if native:
+            entry = [str(runtime_detect.native_python(Path(settings["venv"]))), "-c",
+                     _SANDBOX_PROBE, json.dumps(paths),
+                     str(Path(settings["rust"]).resolve() / "bin/cargo"),
+                     str(Path(settings["venv"]).resolve() / "bin/hermes")]
         try:
             result = contained.run(code=code, venv=Path(settings["venv"]),
                                    runtime=Path(settings["runtime"]), home=home, checkout=work,
@@ -583,7 +640,16 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
                        "the venv's python must run inside the sandbox: set runtime to the "
                        "Python installation that venv/bin/python resolves into")
             return
-        report.add(step, "sandbox:start", PASS, "venv python runs inside bwrap with the configured mounts")
+        if result.returncode != 0:
+            report.add(step, "sandbox:start", FAIL, f"probe exited {result.returncode}")
+            return
+        report.add(step, "sandbox:start", PASS,
+                   "venv python runs inside " + ("Seatbelt/APFS" if native else "bwrap") + " with the configured roots")
+        if native:
+            denied = facts.get("process_denied") == [True, True]
+            report.add(step, "sandbox:process", PASS if denied else FAIL,
+                       "raw setsid/setpgid denied" if denied else "native process escape restriction failed",
+                       "do not arm: restore native kernel process restrictions" if not denied else "")
         leaked = marker in (result.stdout + result.stderr)
         readable = facts.get("readable") or []
         if readable or leaked:
@@ -599,6 +665,7 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
                        ".env, loop config)")
         if facts.get("network") or facts.get("dns"):
             report.add(step, "sandbox:network", FAIL, "the sandbox reached the network",
+                       "native policy must deny external network" if native else
                        "bwrap must run with --unshare-all; check for a wrapper replacing bwrap")
         else:
             report.add(step, "sandbox:network", PASS, "no network, no DNS inside the sandbox")
@@ -1196,7 +1263,7 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
                 if block:
                     redact.add_file(Path(block["key_file"]).expanduser())
         seats = selftest_inference.check_seats(report, loop, settings, resolver)
-        report.step("2. Bubblewrap containment")
+        report.step("2. Containment")
         check_bwrap(report, loop, settings, runtime_file)
         report.step("3. Inference proxy (once per distinct seat model)")
         if model:

@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import signal
+import subprocess
+import sys
 import tempfile
 import time
 from unittest import mock
@@ -25,12 +27,21 @@ WORKER_EXIT_TIMEOUT = 30
 def processes_naming(marker: str) -> dict[int, str]:
     """Live processes (other than this one) whose command line names ``marker``.
 
-    Off-Linux (where ``/proc`` does not exist) this degrades to "no live workers" rather than
-    raising: the deleted test_run_supervisor copy carried exactly this guard, and the dedupe
-    (#145) must not lose it even though CI is ubuntu-only.
+    macOS has no /proc; use its complete process arguments rather than declaring
+    cleanup complete while detached fixture workers can still write.
     """
     found = {}
     proc = Path('/proc')
+    if sys.platform == 'darwin':
+        rows = subprocess.run(['/bin/ps', '-axww', '-o', 'pid=,command='],
+                              check=True, capture_output=True, text=True, timeout=5).stdout
+        for line in rows.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                pid, command = int(parts[0]), parts[1]
+                if pid != os.getpid() and marker in command:
+                    found[pid] = command
+        return found
     if not proc.is_dir():
         return found
     for entry in proc.iterdir():

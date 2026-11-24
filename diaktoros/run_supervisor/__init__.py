@@ -1176,7 +1176,7 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.Shado
                 self.recover()
 
 
-def main():
+def _arguments():
     p = argparse.ArgumentParser()
     p.add_argument("operation", choices=["_fixture-worker", "_production-worker",
                                          "status", "sweep", "reconcile", "rulings", "retry"])
@@ -1187,7 +1187,17 @@ def main():
     p.add_argument("timeout", type=float, nargs='?')
     p.add_argument('--reason')
     p.add_argument('--acknowledge-no-live-worker', action='store_true')
+    p.add_argument('--acknowledge-native-descendants-stopped', action='store_true',
+                   help='attest all native descendants were stopped or the host rebooted; '
+                        'required for native reconciliation, not automatic exit proof')
     a = p.parse_args()
+    if a.acknowledge_native_descendants_stopped and a.operation != 'reconcile':
+        p.error('--acknowledge-native-descendants-stopped is only valid for reconcile')
+    return p, a
+
+
+def main():
+    p, a = _arguments()
     if a.operation in ('status', 'sweep', 'reconcile', 'rulings', 'retry'):
         # Reading a ledger never creates one (#798): status, rulings and reconcile open an
         # existing ledger only, so a mistyped path is an error, not an empty ledger plus a
@@ -1240,7 +1250,8 @@ def main():
             if not a.command or not a.reason or not a.acknowledge_no_live_worker:
                 p.error('reconcile requires run ID, reason and explicit acknowledgement')
             changed = sup.reconcile_uncertain(a.command, reason=a.reason,
-                        acknowledge_no_live_worker=True)
+                        acknowledge_no_live_worker=True,
+                        acknowledge_native_descendants_stopped=a.acknowledge_native_descendants_stopped)
             print('reconciled' if changed else 'unchanged')
         return
     if a.command is None or a.capacity is None or a.lease is None or a.timeout is None:

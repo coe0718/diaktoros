@@ -407,13 +407,9 @@ class PushHelper(unittest.TestCase):
                          (safe_push.MAX_FILES, safe_push.MAX_FILE, safe_push.MAX_CONTENT,
                           safe_push.MAX_MESSAGE, safe_push.MAX_PATCH, safe_push.MAX_PATCH_PATHS,
                           broker_ipc.MAX_PUSH_REQUEST))
-        # The export a diff is taken against is where contained mounts it (the fixture patches
-        # the client's constant, so read the shipped one from its source).
-        import re
+        # The fixture patches EXPORT, not the shipped Linux default.
         from diaktoros import contained
-        source = (ROOT / "diaktoros" / "broker_client.py").read_text()
-        self.assertEqual(re.search(r"^EXPORT = '([^']+)'", source, re.M).group(1),
-                         contained.EXPORT_DIR)
+        self.assertEqual(self.client.DEFAULT_EXPORT, contained.EXPORT_DIR)
         self.assertEqual(self.client._CONTROL_FILES, safe_push.CONTROL_FILES)
         self.assertEqual(self.client._CONTROL_PATHS, safe_push.CONTROL_PATHS)
 
@@ -541,6 +537,7 @@ class FixerInstructions(unittest.TestCase):
 
             scope = broker_ipc.RunScope(REPO, 7, HEAD, role, "fix-7", "rid", str(root / "db"))
             with self.subTest(role), \
+                 mock.patch.object(trusted_turn.sys, 'platform', 'linux'), \
                  mock.patch.object(trusted_turn, "_safe_code_snapshot",
                                    side_effect=lambda src, dst: dst.mkdir()), \
                  mock.patch.object(trusted_turn.trusted_fetch, "stage", side_effect=stage), \

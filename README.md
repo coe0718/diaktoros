@@ -96,7 +96,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 
 ## Before you start
 
-- Linux with working bubblewrap (`bwrap`) and unprivileged user namespaces. Native macOS turns are not supported; run Hermes and the plugin inside Linux instead.
+- Linux with working bubblewrap (`bwrap`) and unprivileged user namespaces. Native macOS is experimental and disabled by default; it is not advertised as a supported catalog platform. See [the explicit opt-in guide](docs/native-macos.md).
 - Hermes **>=0.21.5** (manifest requirement), a Hermes Git checkout and working virtualenv, Python runtime and Rust toolchain for the isolated runtime. A version number alone does not prove sandbox/provider compatibility: run `selftest`.
 - Your own HTTPS-reachable Hermes gateway, and a repository whose hooks you can administer.
 - Separate reviewer and fixer Hermes profiles; three distinct GitHub accounts and token files: reader, reviewer and fixer. An adjudicator comment account is optional and must be distinct too. Or run each role as a GitHub App, with no personal account or PAT: see [Getting started with GitHub Apps](docs/github-apps.md).

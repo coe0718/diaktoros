@@ -99,7 +99,7 @@ class ThePinIsWhatMakesThatHostTheOneUnderTest(InstallTheFixture):
             self.install()
             root, version = runtime_detect.node_version()
         self.assertEqual((str(root) if root else None, version),
-                         (str(harness_doctor.OPERATOR_HOME / ".hermes" / "node"), "v22.0.0"))
+                         (str((harness_doctor.OPERATOR_HOME / ".hermes" / "node").resolve()), "v22.0.0"))
 
     def test_the_pin_restores_the_variable(self):
         before = os.environ.get("HERMES_REAL_HOME")
