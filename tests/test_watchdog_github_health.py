@@ -227,6 +227,67 @@ class Health(unittest.TestCase):
             self.assertNotIn("unknown", said)
 
 
+class CoveredRead(Health):
+    """#1959: a reviewer gate's failed PR read is quiet while a reviewer turn at the head is
+    live, alerts when it is not (or the event was not a review trigger), and explain agrees."""
+    HEAD = "c" * 40
+
+    def ledger(self, head=HEAD, state="pending"):
+        import sqlite3
+        from diaktoros import config, run_supervisor
+        db = config.host_path("ledger")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        run_supervisor.Supervisor(db)
+        with sqlite3.connect(db) as con:
+            con.execute("DELETE FROM runs")
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, created, "
+                        "updated) VALUES ('r', 'd', 'acme/widgets', 7, ?, 'reviewer', ?, 1, 1)",
+                        (head, state))
+        con.close()
+
+    def lines(self, event="review_requested", where="gate_reviewer.py", method="GET"):
+        self.st.github_failure_record({"at": self.now - 60, "where": where, "method": method,
+                                       "path": "/repos/acme/widgets/pulls/7", "status": 422,
+                                       "error": "HTTP 422 too many files", "event": event})
+        with mock.patch.object(watch_mode, "TEST", False):
+            got = watch_health.github_health(self.loop, self.st, self.st.watch(), self.now, True,
+                                             "", "", {7: self.HEAD})
+        return [x for x in got if "could not" in x]
+
+    def explain(self):
+        return explain._explain_state(self.loop, self.st, "acme/widgets#7", 7, self.HEAD,
+                                      self.now)["github"]
+
+    def test_a_live_reviewer_turn_at_the_head_covers_a_review_trigger(self):
+        self.ledger()
+        self.assertEqual(self.lines(), [])
+        self.assertIn("harmless", self.explain())
+        self.assertNotIn("started nothing", self.explain())
+
+    def test_controls_still_alert(self):
+        self.ledger()
+        self.assertEqual(len(self.lines(event="edited")), 1, "a retarget is not covered")
+        self.assertIn("started nothing", self.explain())
+        self.assertEqual(len(self.lines(event="")), 1, "unknown event is not covered")
+        self.assertEqual(len(self.lines(where="gate_app.py")), 1)
+        self.ledger(head="d" * 40)
+        self.assertEqual(len(self.lines()), 1, "a turn at an older head")
+        self.ledger(state="failed")
+        self.assertEqual(len(self.lines()), 1, "no live turn")
+
+    def test_an_absent_ledger_alerts(self):
+        self.assertEqual(len(self.lines()), 1)
+
+    def test_a_covered_failure_alerts_once_its_turn_fails(self):
+        self.ledger()
+        self.assertEqual(self.lines(), [])
+        self.ledger(state="failed")
+        with mock.patch.object(watch_mode, "TEST", False):
+            got = watch_health.github_health(self.loop, self.st, self.st.watch(), self.now, True,
+                                             "", "", {7: self.HEAD})
+        self.assertEqual(len([x for x in got if "could not" in x]), 1, got)
+
+
 class ReviewProbeHealth(unittest.TestCase):
     """#1727: a failed review probe page (past the page bound) reaches the watchdog's health
     check as the failed read it is, through ``gh.reviews`` and ``finish_reads``."""

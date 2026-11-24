@@ -39,7 +39,7 @@ from diaktoros import (  # noqa: E402
 )
 from diaktoros.util import log, silence  # noqa: E402
 
-ACTIONS = {"opened", "ready_for_review", "reopened", "review_requested"}
+ACTIONS = gate.REVIEW_ACTIONS     # one list, shared with the watchdog's failed-read cover (#1959)
 
 
 def refreshes_declined_head(decide_fn):

@@ -73,17 +73,24 @@ def live_turn(loop: dict, number: int, head: str, seat: str) -> bool:
 # A read failed under an App-ingress loop is recorded as ``gate_app.py``, which does not say
 # which gate it ran, so it is always alerted.
 COVERED_GATE, COVERED_SEAT = "gate_reviewer.py", "reviewer"
+# Where the sweep keeps the failure a live turn covered, so a later sweep can tell a covering
+# turn that then succeeded (the review was given: stay quiet) from one that did not (alert).
+COVERED_KEY = "gate_failure_covered"
 
 
 def covered_read(loop: dict, failure: dict, heads: dict | None) -> tuple[int, str] | None:
     """``(pr, head)`` when a gate's failed read cost nothing (#1959): a GET of ``/pulls/N`` by
-    the reviewer gate while a reviewer turn is queued or running in the run ledger at PR N's
-    current head (``heads``: PR number -> head SHA), so the event it dropped would only have
-    found that turn. None otherwise — a write, another gate, a path that names no PR, a head
-    that is not known, no live turn, a turn at an older head, or a ledger that cannot be read
-    (unknown is never covered): those are alerted as before."""
+    the reviewer gate, for an event that only asks for a review (``gate.REVIEW_ACTIONS``), while
+    a reviewer turn is queued or running in the run ledger at PR N's current head (``heads``:
+    PR number -> head SHA), so the event it dropped would only have found that turn. None
+    otherwise — a write, another gate, an event that does something else or is not recorded
+    (``edited`` records a base retarget and starts its own fresh review; ``closed`` cleans up),
+    a path that names no PR, a head that is not known, no live turn, a turn at an older head,
+    or a ledger that cannot be read (unknown is never covered): those are alerted as before."""
+    from diaktoros import gate
     if ((failure.get("method") or "GET") != "GET" or not heads
-            or failure.get("where") != COVERED_GATE):
+            or failure.get("where") != COVERED_GATE
+            or failure.get("event") not in gate.REVIEW_ACTIONS):
         return None
     number = re.search(r"/pulls/(\d+)$", str(failure.get("path") or ""))
     head = heads.get(int(number.group(1))) if number else None
@@ -92,8 +99,37 @@ def covered_read(loop: dict, failure: dict, heads: dict | None) -> tuple[int, st
     return int(number.group(1)), head
 
 
-def covered_note(covered: tuple[int, str]) -> str:
+def covered_done(loop: dict, failure: dict, watch: dict) -> tuple[int, str] | None:
+    """``(pr, head)`` when an earlier sweep found this failure covered (:data:`COVERED_KEY`)
+    and that turn has since succeeded: the review the dropped event asked for was given. None
+    when it failed, was cancelled, is uncertain, or the ledger cannot be read."""
+    from diaktoros.run_supervisor import views
+    kept = watch.get(COVERED_KEY)
+    if (not isinstance(kept, dict) or kept.get("at") != failure.get("at")
+            or type(kept.get("pr")) is not int or not isinstance(kept.get("head"), str)):
+        return None
+    state = views.turn_state(config.host_path("ledger"), loop["repo"], kept["pr"],
+                             kept["head"], COVERED_SEAT)
+    return (kept["pr"], kept["head"]) if state == "succeeded" else None
+
+
+def read_cover(loop: dict, failure: dict, heads: dict | None,
+               watch: dict) -> tuple[str, tuple[int, str]] | None:
+    """The one rule the sweep and ``explain`` share (#1959): ``("live", (pr, head))`` while a
+    reviewer turn at the head covers the failed read, ``("done", (pr, head))`` once the turn
+    an earlier sweep saw covering it has succeeded, else None (alert)."""
+    if (cover := covered_read(loop, failure, heads)):
+        return "live", cover
+    if (done := covered_done(loop, failure, watch)):
+        return "done", done
+    return None
+
+
+def covered_note(kind: str, covered: tuple[int, str]) -> str:
     """What a covered failed read cost: nothing. ``explain`` says it; the sweep stays quiet."""
+    if kind == "done":
+        return (f"harmless: a later event's read failed; the {COVERED_SEAT} turn at "
+                f"{covered[1][:7]} that covered it has succeeded")
     return (f"harmless: a later event's read failed; the {COVERED_SEAT} turn queued at "
             f"{covered[1][:7]} is unaffected")
 
@@ -252,9 +288,9 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
 def _gate_failure_lines(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
                         configured: str, heads: dict | None) -> list[str]:
     """The alert for a gate's last failed call, once per failure and cooldown: nothing when its
-    gate-failure entry owns it, or when a live turn at the PR's head covers it (#1959, marked
-    seen all the same: :func:`covered_read`)."""
-    header = f"[{loop['id']}] {loop['repo']}"
+    gate-failure entry owns it, or when a reviewer turn at the PR's head covers it (#1959,
+    :func:`read_cover`): left unseen while that turn is live, so it is alerted after all if
+    the turn ends without succeeding."""
     cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
     lines: list[str] = []
     failure = st.github_failure()
@@ -270,28 +306,42 @@ def _gate_failure_lines(loop: dict, st: state_mod.LoopState, watch: dict, now: f
     if at is not None and at > seen and done:
         watch["gate_failure_seen"] = at      # its gate-failure entry said it, and it resolved
     if at is not None and at > seen and not settled:
-        watch["gate_failure_seen"] = at
         status = failure.get("status") if type(failure.get("status")) is int else None
-        if covered_read(loop, failure, heads):
-            return lines                     # a turn at the PR's head already covers it
+        cover = read_cover(loop, failure, heads, watch)
+        if cover and cover[0] == "live":
+            # Not marked seen: a later sweep alerts it after all if this turn ends without
+            # succeeding (failed, cancelled, uncertain) or its ledger can no longer be read.
+            watch[COVERED_KEY] = {"at": failure.get("at"), "pr": cover[1][0], "head": cover[1][1]}
+            return lines
+        watch["gate_failure_seen"] = at
+        watch.pop(COVERED_KEY, None)
+        if cover:
+            return lines                     # the turn that covered it gave its review
         if watch_mode.alert_due(watch, f"gate:{failure.get('where')}:{status or 'none'}", now,
                                 cooldown):
-            hint = gh.failure_hint(status)
-            number = re.search(r"/pulls/(\d+)", str(failure.get("path") or ""))
-            lines.append(
-                f"⚠️ Diaktoros {header}: {failure.get('where') or 'a gate'} could not "
-                f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
-                f"{failure.get('login') or configured} at "
-                f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
-                f"{gh.one_line(failure.get('error') or 'unknown error', 300)}"
-                f"{f' — {hint}' if hint else ''}; "
-                + ("it treated the PR as unavailable and started nothing"
-                   if (failure.get("method") or "GET") == "GET" else
-                   gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
-                                    status))
-                + (f" — `hermes dk explain --loop {loop['id']} --pr {number.group(1)}`"
-                   " shows it" if number else ""))
+            lines.append(_gate_failure_alert(loop, failure, at, status, configured))
     return lines
+
+
+def _gate_failure_alert(loop: dict, failure: dict, at: float, status: int | None,
+                        configured: str) -> str:
+    """The alert line for a gate's failed call that nothing covered: who could not do what,
+    when, why, and what that cost (a GET: the PR treated as unavailable)."""
+    header = f"[{loop['id']}] {loop['repo']}"
+    hint = gh.failure_hint(status)
+    number = re.search(r"/pulls/(\d+)", str(failure.get("path") or ""))
+    return (f"⚠️ Diaktoros {header}: {failure.get('where') or 'a gate'} could not "
+            f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
+            f"{failure.get('login') or configured} at "
+            f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
+            f"{gh.one_line(failure.get('error') or 'unknown error', 300)}"
+            f"{f' — {hint}' if hint else ''}; "
+            + ("it treated the PR as unavailable and started nothing"
+               if (failure.get("method") or "GET") == "GET" else
+               gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
+                                status))
+            + (f" — `hermes dk explain --loop {loop['id']} --pr {number.group(1)}`"
+               " shows it" if number else ""))
 
 
 def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
