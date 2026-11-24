@@ -214,6 +214,9 @@ class Reports(unittest.TestCase):
     def test_the_ci_fix_prompt_says_how_to_decline_and_no_longer_to_just_say_so(self):
         text = prompts.ISOLATED_CI_FIX
         for kind in ci_decline.KINDS:
+            if kind in ci_decline.CONFLICT_KINDS:     # a conflict turn's only (#2034)
+                self.assertNotIn(f"--decline {kind}`", " ".join(text.split()))
+                continue
             self.assertIn(f"--decline {kind}`", " ".join(text.split()))
         self.assertNotIn("do not push: say so in your summary", text)
         self.assertNotIn("do not push: say in your summary", " ".join(text.split()))

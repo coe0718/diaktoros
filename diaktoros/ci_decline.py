@@ -63,7 +63,8 @@ def comment(name: str, body: str) -> str:
     """The text posted as the fixer's answers: the decline, its reason, and whose move is next."""
     again = ("A new head (the base merged in) ends it." if name in CONFLICT_KINDS
              else "A new head gets a CI fix again.")
-    return (f"**{_what(name).capitalize()} declined ({name}): no push.**\n\n{body.strip()}\n\n"
+    what = _what(name)                 # not str.capitalize(): it would lowercase "CI"
+    return (f"**{what[:1].upper()}{what[1:]} declined ({name}): no push.**\n\n{body.strip()}\n\n"
             f"Next, for a maintainer: {KINDS[name]}. {again}")
 
 
