@@ -220,12 +220,16 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
     return row[0] if row else None
 
 
-def moved_on(db: str | Path, repo: str, pr: int, head: str, seat: str) -> bool:
+def moved_on(db: str | Path, repo: str, pr: int, head: str, seat: str, since: float) -> bool:
     """Whether ``seat``'s newest turn at this PR head (the row ``turn_state`` reports) was cancelled
-    because the head moved before it started (``run_supervisor.REVIEW_HEAD_MOVED``): proof the head
-    is no longer current (#2626). False with no such turn, or a ledger absent or unreadable."""
-    row = _one(db, NEWEST_TURN, (repo, pr, head, seat))
-    return bool(row) and row[0] == "cancelled" and row[2] == run_supervisor.REVIEW_HEAD_MOVED
+    because the head moved before it started (``run_supervisor.REVIEW_HEAD_MOVED``) at or after
+    ``since`` (the listing's read): proof a listing read before it is stale (#2626). One older than
+    the listing says nothing, since the head can return to that SHA. False with no such turn, or a
+    ledger absent or unreadable."""
+    row = _one(db, "SELECT state, turn_key, error, updated FROM runs WHERE repo=? AND pr=? AND "
+               "head=? AND seat=? ORDER BY updated DESC, created DESC LIMIT 1", (repo, pr, head, seat))
+    return (bool(row) and row[0] == "cancelled" and row[2] == run_supervisor.REVIEW_HEAD_MOVED
+            and float(row[3] or 0) >= since)
 
 
 # ``(state, turn_key, error)`` of a seat's newest row at a PR head by ``updated``.

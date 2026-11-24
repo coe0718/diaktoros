@@ -799,10 +799,10 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                 f"the review queued at {moved[:7]} was cancelled when the head moved — delivered "
                 "it for this head" if moved else "a pending review request had started no review "
                 "— delivered it to the reviewer gate"))
-    # #2626: a turn cancelled for a head move proves the (seconds-old) listed head is gone.
+    # #2626: a turn cancelled for a head move since this sweep began proves its listing is stale.
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
             and not watch_health.live_turn(loop, number, head, "reviewer")
-            and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer")):
+            and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer", c.now)):
         return (f"reviewer never posted a verdict — head {head[:7]} observed {mins / 60:.1f}h ago, "
                 f"0 verdicts at this head (`hermes dk review --loop {loop['id']} --pr {number}` "
                 "asks for one)")

@@ -11,6 +11,19 @@ import json
 from diaktoros import gh, observer, situation, transition, watch_mode
 from diaktoros import state as state_mod
 
+def _retarget_notice(loop: dict, st, number: int, head: str, status: str, next_turn: str) -> None:
+    """The one notice of a same-head retarget: routine once its fresh review is queued, else an
+    urgent stall (#2153). One per retarget whichever event a replayed sweep picks: the observer's
+    key includes the event, so a notice under either one already recorded stands."""
+    ident = f"retarget:{head}"
+    if any(observer.recorded(st, observer.key_for(loop, number, head, event, ident))
+           for event in ("stall", "retargeted")):
+        return
+    observer.notify(loop, st, "retargeted" if status == "enqueued" else "stall", number, head,
+                    identity=ident, next_turn=next_turn,
+                    outcome=f"old same-head reviews quarantined; fresh review {status}")
+
+
 def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
                       prs: list[dict], lines: list[str]) -> None:
     """Separate visibility queue; never a seat authorization or drain input."""
@@ -51,8 +64,7 @@ def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
                                               base, watch=watch)
                     if entry:
                         # Owner policy (#23): the parent merged, the child is on trunk: one
-                        # fresh isolated reviewer turn, nothing older carried over. Queued is
-                        # routine; else a stall (#2153).
+                        # fresh isolated reviewer turn, nothing older carried over.
                         status, detail = transition.start_fresh_review(loop, st, number, live=live)
                         next_turn = {"enqueued": "reviewer queued (fresh review)",
                                      "retry": "fresh reviewer enqueue retries next sweep"}.get(
@@ -60,11 +72,7 @@ def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
                         lines.append(f"#{number} retargeted to {base} at the same head — old "
                                      "reviews, rounds and queued work quarantined; fresh review: "
                                      f"{status} ({detail})")
-                        observer.notify(loop, st, "retargeted" if status == "enqueued"
-                                        else "stall", number, entry["head"],
-                                        identity=f"retarget:{entry['head']}",
-                                        outcome="old same-head reviews quarantined; fresh review "
-                                        f"{status}", next_turn=next_turn)
+                        _retarget_notice(loop, st, number, entry["head"], status, next_turn)
                 # A retarget is not permission to reinterpret a previous seat request
                 # for the same child SHA as a trunk request.
                 for seat in ("reviewer", "fixer"):
