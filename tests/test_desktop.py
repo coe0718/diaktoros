@@ -819,6 +819,39 @@ class Package(unittest.TestCase):
                 case.run(result)
                 self.assertFalse(result.wasSuccessful())
 
+    def test_comment_stripper_reads_a_keyword_property_or_contextual_name_as_no_regex_1974(self):
+        # After `obj.return`, `obj.in` or `obj?.typeof` the word is a property name, so the `/`
+        # divides: the block comment after it is stripped and the code backtick is kept.
+        for prop in ("obj.return", "obj.in", "obj?.typeof", "obj . return"):
+            src = f"const x = {prop} / a; /* it's // prose */ const t = `backtick`;\n"
+            with self.subTest(src=src):
+                self.assertEqual(strip_js_comments(src),
+                                 f"const x = {prop} / a;  const t = `backtick`;\n")
+        # `of`, `yield` and `await` may be plain names: where the readings differ, fail closed.
+        for word in ("of", "yield", "await"):
+            src = f"let {word} = 4; x = {word} / a; /* it's // prose */ const t = `b`;\n"
+            with self.subTest(src=src), self.assertRaises(AmbiguousSlash):
+                strip_js_comments(src)
+        # A keyword that is not a property still opens a regex, after a spread (`...`) too.
+        self.assertEqual(strip_js_comments("return /'/.test(s); /* it's // p */ const t = `b`;\n"),
+                         "return /'/.test(s);  const t = `b`;\n")
+        self.assertEqual(strip_js_comments("f(...typeof /'/); // it's\n"), "f(...typeof /'/); \n")
+
+    def test_guards_see_code_after_a_division_by_a_keyword_property_1974(self):
+        # Through the guards: `obj.return / a` is a division, so the code after the comment
+        # (a backtick and `document.`) is seen and both guards fail.
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        plugin = pathlib.Path(temp.name) / "plugin.js"
+        plugin.write_text("const x = obj.return / a; /* it's // prose */ document.title = `x`;\n"
+                          "// otherStates(s) 'other' cleanLine(counts, checks.length)\n")
+        for case in (Package("test_first_render_findings_641"),
+                     Surface("test_stays_inside_the_sdk_surface")):
+            with self.subTest(case=case.id()), mock.patch(f"{__name__}.PLUGIN_JS", plugin):
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertFalse(result.wasSuccessful())
+
     def test_a_base_proof_reads_plugin_js_through_the_base_stripper_1973(self):
         # The stripper these guards use lives off the test paths, so the host's base-failure
         # proof (change_proof.apply_tests) runs the head's guards with the base's stripper. It
