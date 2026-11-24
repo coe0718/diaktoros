@@ -19,6 +19,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_answers as base  # noqa: E402
 from diaktoros import broker_client, ci_decline, explain, observer, prompts  # noqa: E402
+from diaktoros import conflict_person, watch_conflicts  # noqa: E402
+from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 from diaktoros import run_supervisor  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -146,6 +148,61 @@ class ConflictDecline(Decline):
                 self.assertIn("only a conflict-resolution turn", refused["error"])
         self.assertEqual((self.fake.posts(), self.declines(), self.notices), ([], [], []))
 
+    def person(self, head=HEAD):
+        return conflict_person.get(state_mod.state_for(self.loop), 7, head)
+
+    def sweep(self, tip):
+        """The watchdog's conflict pass for #7 at HEAD against base tip ``tip``: the enqueue mock."""
+        with mock.patch.object(watch_conflicts, "base_tip", return_value=tip), \
+                mock.patch.object(watch_conflicts.config, "unattended_fixer_push_enabled",
+                                  return_value=True), \
+                mock.patch.object(watch_conflicts, "fix_owed", return_value=""), \
+                mock.patch.object(watch_conflicts.gate, "enqueue_isolated",
+                                  return_value="enqueued") as enqueue:
+            watch_conflicts.act_on_conflicts(self.loop, state_mod.state_for(self.loop),
+                                             [(7, HEAD, "b" * 40, "fixer")], {})
+        return enqueue
+
+    def test_a_declined_conflict_is_a_persons_until_it_lapses_or_a_new_head(self):
+        self.sweep("e" * 40).assert_called_once()            # nothing declined yet: queued
+        with self.serving() as server:
+            self.assertTrue(self.decline(server, "needs-a-person", CONFLICT_WHY)["ok"])
+        self.assertIn("the fixer declined to resolve it", self.person())
+        self.sweep("f" * 40).assert_not_called()             # a later base tip: not requeued
+        self.assertEqual(self.person("b" * 40), "")          # a new head is not held
+        later = conflict_person.time.time() + conflict_person.WHOLE_FILE_RETRY_S + 1
+        with mock.patch.object(conflict_person.time, "time", return_value=later):
+            self.assertEqual(self.person(), "")              # lapses after a day (#1271)
+            self.sweep("f" * 40).assert_called_once()
+
+    def test_a_denied_conflict_decline_hands_nothing_to_a_person(self):
+        with mock.patch.object(base.broker_ipc.broker, "authorize",
+                               side_effect=base.broker_ipc.broker.BrokerDenied("not the fixer")), \
+                self.serving() as server:
+            refused = self.decline(server, "needs-a-person", CONFLICT_WHY)
+            self.assertFalse(refused["ok"])
+            self.assertIn("answers comment denied", refused["error"])
+            self.assertFalse(server.completed)
+        self.assertEqual(self.fake.posts(), [])
+        self.assertEqual(self.person(), "")                  # the next sweep may queue a turn
+        self.sweep("f" * 40).assert_called_once()
+
+    def test_a_ci_decline_records_no_conflict(self):
+        ci_fix = dataclasses.replace(self.scope, ci_fix=True, merge=None)
+        with mock.patch.object(self, "scope", ci_fix), self.serving() as server:
+            self.assertTrue(self.decline(server, "size-limit")["ok"])
+        self.assertEqual(self.person(), "")
+
+    def test_a_conflict_decline_after_a_push_is_refused(self):
+        with self.serving() as server:
+            self.assertTrue(self.send(server, {"operation": "push",
+                                               "manifest": base.manifest()})["ok"])
+            refused = self.decline(server, "needs-a-person", CONFLICT_WHY)
+            self.assertFalse(refused["ok"])
+            self.assertIn("only a turn that pushed nothing may decline", refused["error"])
+        self.assertEqual((self.declines(), self.notices), ([], []))
+        self.assertEqual(self.person(), "")
+
     def test_the_conflict_prompt_says_to_decline_not_just_summarize(self):
         text = " ".join(prompts.ISOLATED_CONFLICT.split())
         self.assertIn("--decline needs-a-person`", text)
@@ -204,6 +261,27 @@ class Reports(unittest.TestCase):
                 explain._blockers(c)
                 self.assertEqual(c.blockers, [])
         self.assertIsNone(ci_decline.at_head(Path(tmp) / "gone.sqlite", REPO, 7, HEAD))
+
+    def test_explain_names_a_conflict_decline_at_its_head_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            sup = Supervisor(db)
+            sup.enqueue("fix", REPO, 7, HEAD, "fixer")
+            ci_decline.record(db, sup.get("fix")["id"], REPO, 7, HEAD, "needs-a-person", WHY)
+            c = types.SimpleNamespace(pr={}, state="open", repo=REPO, number=7, head=HEAD,
+                                      short=HEAD[:7], blockers=[])
+            with mock.patch.object(explain.config, "host_path", return_value=db), \
+                    mock.patch.multiple(explain, _read_blockers=mock.DEFAULT,
+                                        _gate_blockers=mock.DEFAULT, _run_blockers=mock.DEFAULT):
+                explain._blockers(c)
+                [line] = c.blockers
+                self.assertIn(f"the conflict resolution at head {HEAD[:7]} was declined "
+                              "(needs-a-person)", line)
+                self.assertIn(ci_decline.KINDS["needs-a-person"], line)
+                self.assertIn("waits for a person to merge the base", line)
+                c.head, c.blockers = "b" * 40, []
+                explain._blockers(c)
+                self.assertEqual(c.blockers, [])
 
     def test_the_notice_is_urgent_and_labelled(self):
         self.assertIn("ci_declined", observer.EVENTS)

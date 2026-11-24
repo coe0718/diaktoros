@@ -883,8 +883,12 @@ class RunBroker(broker_issues.IssueWrites):
                 pass  # stays 'posting'; a finished run's notice then says uncertain
         if decline:
             ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
-            ci_decline.remember(self._loop, self.scope.number, head, decline, body)   # #2034
-        if self.answers_outcome not in ("posted", "uncertain"):
+        delivered = self.answers_outcome in ("posted", "uncertain")
+        if decline and delivered:
+            # #2034: only a reason that reached (or may have reached) the PR hands the conflict
+            # to a person; a denied or unrecorded comment leaves the run failed and requeueable.
+            ci_decline.remember(self._loop, self.scope.number, head, decline, body)
+        if not delivered:
             raise ProtocolError(f"answers comment {self.answers_outcome}")
         self.completed = True
         return {"answers": self.answers_outcome}
