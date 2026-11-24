@@ -15,12 +15,19 @@ HEADING = {"reviewer": "the reviewer", "fixer": "the fixer", "adjudicator": "the
            "triage": "triage", "issue_fixer": "the issue fixer", "shadow": "the shadow"}
 
 
-def section(seat: str) -> str:
-    match = re.search(rf"^## If you are {HEADING[seat]}\n(.*?)(?=^## )", SKILL, re.S | re.M)
+def section(seat: str, text: str = SKILL) -> str:
+    """The body of ``seat``'s "If you are" section in ``text``: up to the next ``## `` heading,
+    or to the end of the text when it is the last one (#1698)."""
+    match = re.search(rf"^## If you are {HEADING[seat]}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     return match.group(1) if match else ""
 
 
 class SeatSections(unittest.TestCase):
+    def test_a_section_at_the_end_of_the_text_is_found(self):
+        text = "## If you are the reviewer\nreview it\n## If you are the shadow\nlast one\n"
+        self.assertEqual(section("reviewer", text), "review it\n")
+        self.assertEqual(section("shadow", text), "last one\n")
+
     def test_every_seat_has_a_section(self):
         self.assertEqual(set(HEADING), set(run_supervisor.SEATS), "a seat was added or removed")
         for seat in run_supervisor.SEATS:

@@ -283,9 +283,6 @@ def _report_written(loop: dict, updated: dict, path, rebound: list, repairs: dic
     _app_revert_notes(loop, updated, dry_run=False)
 
 
-
-
-
 def _verify_write(loop: dict, updated: dict, rebinding: set) -> tuple:
     """Raise ``ConfigError`` unless what this apply would write can run; the gate shims' pairs
     and the lines a dry install of them prints."""
@@ -321,6 +318,7 @@ def _busy_refusal(args, loop: dict, rebinding: set) -> bool:
     for line in busy:
         print(f"  {line}  (--while-busy: that run keeps the identity it started with)")
     return False
+
 
 def _stale_pat_notes(updated: dict) -> None:
     """A note for each form token file this apply leaves unapplied: its login is an App identity."""
@@ -386,6 +384,7 @@ def _check_readback(updated: dict, rebound: list) -> None:
             raise config.ConfigError(f"route {name} readback still differs from what the "
                                      "plugin writes: "
                                      + ", ".join(gate_shims.contract_drift(updated, role, entry)))
+
 
 def _identity_refusal(args, loop: dict, updated: dict) -> bool:
     """Print why ``updated`` may not be applied for its identities, and say so (True): a seat the
@@ -558,6 +557,7 @@ def _rollback(args, loop: dict, exc: Exception, attempted_hooks: list, previous:
     else:
         print("  prior routes and hook URLs restored")
     return 2
+
 
 def add_apply(sub) -> None:  # noqa: ANN001
     """The ``apply`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
