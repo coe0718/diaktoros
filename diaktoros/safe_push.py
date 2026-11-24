@@ -648,10 +648,9 @@ def _check_resolution(run, bare: str, conflicted: list[str], start: str) -> None
 
 def _catch_up(git: "_Isolated", loop: dict, fix: str, tip: str, base_ref: str, branch: str) -> str:
     """An issue fix built on the base its turn started from, merged with the base's ``tip`` when
-    the base moved meanwhile (#2591), so its PR opens up to date instead of behind. Only under
-    ``update_behind``'s rules: a clean merge that brings no workflow change. Otherwise, or when
-    the merge cannot be computed, ``fix`` alone, as before, and review and ``update_behind`` take
-    it from there: the merge is optional, a valid fix is never stranded for want of it."""
+    the base moved meanwhile (#2591), so its PR opens up to date. On every loop, ``update_behind``
+    or not, but only a clean merge that brings no workflow change; otherwise, or when it cannot be
+    computed, ``fix`` alone, which opens behind (#2606): a valid fix is never stranded for want of it."""
     try:
         merged = _dry(git, fix, tip)
     except broker.BrokerDenied:
@@ -851,7 +850,8 @@ def _absent_branch(loop: dict, ref_path: str, branch: str, login: str) -> None:
 
 def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                 manifest: object) -> dict:
-    """Push an issue fix (#214) as one commit on ``base`` to the new branch ``branch``.
+    """Push an issue fix (#214) to the new branch ``branch``: one commit on ``base``, topped by
+    ``_catch_up``'s merge of the base's tip when the base moved during the turn (#2591, #2606).
 
     Authorized against the live issue (``broker.authorize_issue_fix``) before construction and
     again just before the push. An existing branch (a second fix for the same issue) is refused,

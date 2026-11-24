@@ -438,12 +438,11 @@ def check_main_flake_rerun(loop: dict, offline: bool = False) -> doctor.Check | 
 
 
 def check_update_behind(loop: dict, offline: bool = False) -> doctor.Check | None:
-    """The host's base merges into behind loop PRs (#1785, ``update_behind``); ``None`` when the
-    setting is off. On, the fixer seat must push, and GitHub must report a PR ``behind``."""
+    """The host's base merges into behind loop PRs (#1785, ``update_behind``); ``None`` when off.
+    On, the fixer must push and GitHub must report ``behind`` (an issue fix's catch-up needn't: #2602)."""
     if not config.update_behind(loop):
         return None
-    lid = str(loop.get("id") or "<id>")
-    off = f"`hermes dk set --loop {lid} --update-behind off`"
+    off = f"`hermes dk set --loop {loop.get('id') or '<id>'} --update-behind off`"
     if not config.unattended_fixer_push_enabled(loop):
         return doctor.Check("update-behind", doctor.MISMATCH,
                             "on, but unattended fixer pushes are off, so the host pushes nothing",
@@ -464,9 +463,10 @@ def check_update_behind(loop: dict, offline: bool = False) -> doctor.Check | Non
     if strict is not True:
         why = (f"{loop['base']} does not require branches to be up to date" if strict is False
                else f"could not read whether {loop['base']} requires up-to-date branches ({unread})")
+        fixes = "; a new issue-fix branch still gets a clean base merge" if config.issue_fixes_enabled(loop) else ""
         return doctor.Check("update-behind", doctor.UNKNOWN,
                             f"on — {login} can push, but {why}: GitHub then never reports a PR "
-                            "`behind`, so the host merges nothing",
+                            f"`behind`, so the host merges nothing into an open loop PR{fixes}",
                             f"require branches to be up to date before merging on {loop['base']} "
                             "(branch protection or a ruleset: 'strict required status checks')")
     return doctor.Check("update-behind", doctor.VERIFIED,
