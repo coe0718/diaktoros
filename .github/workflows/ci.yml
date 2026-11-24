@@ -45,7 +45,12 @@ jobs:
       # complete installation needs bubblewrap, as any host that runs turns does.
       - name: Install bubblewrap
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          # A mirror can fail a single update or install (apt exit 100): retry before failing the job.
+          for attempt in 1 2 3; do
+            sudo apt-get update -q && sudo apt-get install -yq bubblewrap && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt attempt $attempt failed; retrying in 15s"; sleep 15
+          done
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # No dependencies to install: the plugin is stdlib-only on purpose, and so are its tests.
       - name: Compile every file
@@ -99,7 +104,12 @@ jobs:
       # restricts unprivileged user namespaces by default, which bwrap needs.
       - name: Install bubblewrap
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          # A mirror can fail a single update or install (apt exit 100): retry before failing the job.
+          for attempt in 1 2 3; do
+            sudo apt-get update -q && sudo apt-get install -yq bubblewrap && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt attempt $attempt failed; retrying in 15s"; sleep 15
+          done
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # Through tests/leakguard.py: an unclosed database, file or socket, or a child left
       # running, fails the run (a ResourceWarning from a finalizer would otherwise only print).
@@ -227,7 +237,12 @@ jobs:
       - name: Install bubblewrap
         if: matrix.part == 'harness'
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          # A mirror can fail a single update or install (apt exit 100): retry before failing the job.
+          for attempt in 1 2 3; do
+            sudo apt-get update -q && sudo apt-get install -yq bubblewrap && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt attempt $attempt failed; retrying in 15s"; sleep 15
+          done
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Loop tests (installed mode)
         if: matrix.part == 'harness'
@@ -291,7 +306,12 @@ jobs:
       # Ubuntu 24.04 denies unprivileged user namespaces through AppArmor; bwrap needs them.
       - name: Install bubblewrap and allow unprivileged user namespaces
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          # A mirror can fail a single update or install (apt exit 100): retry before failing the job.
+          for attempt in 1 2 3; do
+            sudo apt-get update -q && sudo apt-get install -yq bubblewrap && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt attempt $attempt failed; retrying in 15s"; sleep 15
+          done
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
