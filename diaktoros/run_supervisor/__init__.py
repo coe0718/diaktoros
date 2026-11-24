@@ -102,7 +102,8 @@ LIMIT_WAIT_MAX = 6 * 3600.0
 # notice prints only the last ``DETAIL_SHOWN_BYTES`` of it, and ``explain`` its last 6 lines,
 # each cut to 200 characters. The fixture's file tail and the production capture hand
 # ``output_detail`` ``DETAIL_MARGIN`` times what it stores of each stream, so its redaction sees a
-# token split by the final cut whole (#2083); one split by that window's own edge is dropped (#2176).
+# token split by the final cut whole (#2083); ``_CUT_EDGE`` drops what the window's edge cut (#2176).
+_CUT_EDGE = re.compile(r'\A\s*(?:(?:earer|arer|rer|er|r|oken|ken|en|n)\s+\S+|\S+(?=\s))')
 DETAIL_STDOUT_BYTES = 8192
 DETAIL_STDERR_BYTES = 2048
 DETAIL_BYTES = DETAIL_STDOUT_BYTES + DETAIL_STDERR_BYTES
@@ -369,18 +370,17 @@ def tail(text: object, limit: int = DETAIL_BYTES) -> str:
 
 
 def output_detail(stdout: object, stderr: object) -> str | None:
-    """What ``runs.detail`` stores of a turn's output: the last ``DETAIL_STDERR_BYTES`` of stderr
-    and ``DETAIL_STDOUT_BYTES`` of stdout, redacted (``selftest.Redactor``) before the final cut,
-    so a token is matched whole. A run of token characters the margin window's edge starts with is
-    dropped, a prefix-less fragment no pattern matches, unless it is all of the window (#2176)."""
+    """The last ``DETAIL_STDERR_BYTES`` of stderr and ``DETAIL_STDOUT_BYTES`` of stdout, redacted
+    (``selftest.Redactor``) before the final cut, so a token is matched whole. Then a cut window drops
+    its edge's first word (a cut ``Bearer``/``token``: with its value), a rest no pattern matches (#2176)."""
     from .. import selftest
     redact, parts = selftest.Redactor(), []
     for name, value, limit in (('stderr', stderr, DETAIL_STDERR_BYTES),
                                ('stdout', stdout, DETAIL_STDOUT_BYTES)):
-        window = tail(value, DETAIL_MARGIN * limit)      # not empty: value is str or bytes
+        window = redact(tail(value, DETAIL_MARGIN * limit))     # whole credentials masked first
         if window and len(value.encode() if isinstance(value, str) else value) >= DETAIL_MARGIN * limit:
-            window = '[…]' + re.sub(r'\A[\w.~+/=-]+(?=[^\w.~+/=-])', '', window.removeprefix('[…]'))
-        text = tail(redact(window), limit)
+            window = '[…]' + _CUT_EDGE.sub('', window.removeprefix('[…]'), count=1)
+        text = tail(window, limit)
         parts += [f'{name}: {text}'] if text else []
     return '\n'.join(parts) or None
 
