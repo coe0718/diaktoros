@@ -5,7 +5,7 @@ progress; the COMMIT fails, and so does the stop. The cut add holds every id it 
 running reviewer's receipt is still refused. A cut that the same redelivery can end whole is
 lifted once its shadow row is in, so it holds nothing after: also when the write fails, rather
 than making no progress, and when the lift that ends it fails before it lands (#2644 review F2,
-F3). A lift that never lands is named to the operator.
+F3). A lift that never lands leaves the cut to fail closed, with no record of its offset.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
@@ -113,19 +113,18 @@ class ABarrierCutInsideTheId(race._Race):
         self.assertEqual(self.holds_another(), (False, (set(), [])))
         self.claim()
 
-    def test_a_lift_that_never_lands_fails_closed_and_is_named_to_the_operator(self):
+    def test_a_lift_that_never_lands_fails_closed_and_names_no_offset(self):
+        # #2644 review F4: an offset named anywhere could later be another writer's cut, once the
+        # log is emptied, so no record of it is kept: the cut holds as a dead writer's does.
         loop = self.queued_unsampled()
         with self.race("running"), self.cut_after(1), \
                 mock.patch.object(shadow_owing, "LIFT_WAITS", (0, 0)):
             self.assertEqual(self.enqueue(loop), "duplicate running")
-        run_id = self.sup().get(REVIEWER)["id"]
         self.assertEqual(self.lock_bytes(), b"+")
         self.assertEqual(self.holds_another(), (True, (set(), [""])))
         with contextlib.closing(sqlite3.connect(self.sup().db)) as con:
-            (message,), = con.execute("SELECT message FROM ledger_events").fetchall()
-        self.assertIn(f"run {run_id} could not lift the add it cut at byte 0", message)
+            self.assertEqual(con.execute("SELECT count(*) FROM ledger_events").fetchone(), (0,))
         self.claim()                            # this turn's own shadow row is in
-
 
 if __name__ == "__main__":
     unittest.main()

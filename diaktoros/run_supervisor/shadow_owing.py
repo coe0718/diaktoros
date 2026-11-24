@@ -144,10 +144,11 @@ def fails_closed(sup, con, prior, shadow, held=None):
                 stop(fresh, row, '', shadow if isinstance(shadow, str) else unwritten(exc),
                      time.time())
             fresh.execute("COMMIT")
-            lift(sup, held, prior['id'], mine)      # the stop stands now and refuses the receipt
+            lift(held, prior['id'], mine)           # the stop stands now and refuses the receipt
         raise
     if owed:
-        lift(sup, held, prior['id'], mine)      # its shadow row, or its stop, is in now
+        with contextlib.suppress(Exception):    # its shadow row, or its stop, is in now
+            lift(held, prior['id'], mine)
 
 
 def cuts(exc: BaseException) -> list[int]:
@@ -155,25 +156,17 @@ def cuts(exc: BaseException) -> list[int]:
     return [exc.at] if isinstance(exc, ledger.BarrierCut) else []
 
 
-def lift(sup, held, run_id: str, mine) -> None:
+def lift(held, run_id: str, mine) -> None:
     """Clear ``run_id`` from the barrier once its shadow row or its stop is in, lifting the cut
     adds this writer made (``mine``, their offsets) first (#2643, #2645). Only this writer can
     lift them, so a write that fails is tried again (``LIFT_WAITS``) while it still holds the
-    lock and ``mine`` (#2644 review F2). If it never lands, they hold every reviewer turn whose
-    id they begin and that has no shadow row, failing closed, so they are named to the operator
-    (``ledger_events``) for a person to remove."""
+    lock and ``mine`` (#2644 review F2). If it never lands, the last error is raised and they
+    stay, failing closed as a dead writer's cut does: nothing records them by offset, as the log
+    is emptied once it holds nothing and a later cut may start at the same byte (review F4)."""
     for wait in (*LIFT_WAITS, None):
         try:
             return ledger.owe(held, run_id, False, mine=mine)
-        except OSError as exc:
+        except OSError:
             if wait is None:
-                failed = exc
-            else:
-                time.sleep(wait)
-    if mine:
-        with contextlib.suppress(Exception), sup._connect() as con:
-            con.execute("INSERT INTO ledger_events(message,created) VALUES(?,?)", (
-                f"⚠️ Diaktoros claim barrier: run {run_id} could not lift the add it cut at byte "
-                f"{', '.join(map(str, mine))} of {sup.db}.claims.lock ({failed!r}). Until a "
-                f"\"*@<byte>\" line lifts it, every reviewer turn whose id it begins and that has "
-                f"no shadow row is refused its receipt.", time.time()))
+                raise
+            time.sleep(wait)
