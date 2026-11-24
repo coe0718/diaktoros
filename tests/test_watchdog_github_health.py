@@ -318,6 +318,17 @@ class CoveredReadSweep(Health):
     HEAD = CoveredRead.HEAD
     ledger, explain = CoveredRead.ledger, CoveredRead.explain
 
+    def setUp(self):
+        super().setUp()
+        # The sweep runs in the watchdog's process, which never opts in to recording failed
+        # reads (only a gate does, inside its own ``gate_scope`` here). An earlier test's gate run
+        # can leave this process opted in, and the sweep's own unstubbed reads would then be
+        # recorded as gate failures and alerted.
+        for name, value in (("_RECORD_FAILURES", False), ("_RECORD_EVENT", "")):
+            pinned = mock.patch.object(gh, name, value)
+            pinned.start()
+            self.addCleanup(pinned.stop)
+
     def gate_read_fails(self, action="review_requested"):
         """The reviewer gate's ``gate.context`` for an event, then its PR read refused (422)."""
         from diaktoros import app_ingress
