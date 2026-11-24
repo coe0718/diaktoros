@@ -219,8 +219,11 @@ def _findings_entry(entry) -> dict | None:
 # the code against this). A stamp is kept as stored, junk too: the watchdog validates its own (a
 # junk ``armed_since`` re-arms), and a sweep whose listing fails saves the file back unchanged.
 WATCH_KEYS = {"last_run": str, "armed_since": float, "gate_failure_seen": float,
-              **dict.fromkeys(("alerts", "github_alerts", "github_read", "head_history", "heads",
-                               "open_prs", "review_kicks", "stacked_wait", "stale_approvals"),
+              # ``gate_failure_covered``: the failed gate read a live reviewer turn covered, kept
+              # so a later sweep can tell that turn succeeding from it failing (#1959).
+              **dict.fromkeys(("alerts", "gate_failure_covered", "github_alerts", "github_read",
+                               "head_history", "heads", "open_prs", "review_kicks",
+                               "stacked_wait", "stale_approvals"),
                               dict)}
 
 

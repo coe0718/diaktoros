@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import time
 
-from diaktoros import gh, watch_mode
+from diaktoros import config, gh, run_supervisor, watch_mode
 from diaktoros.gate import failures as gate_failures
 from diaktoros import state as state_mod
 
@@ -56,6 +56,99 @@ def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
     st.watch_save(watch)
     st.note(f"run: stopped — the sweep ran out of its {budget:g}s budget ({sweeps} sweep(s))")
     return lines
+
+
+def live_turn(loop: dict, number: int, head: str, seat: str) -> bool:
+    """Whether ``seat``'s turn on this PR head is queued or running in the run ledger: one of
+    ``run_supervisor.NOT_ENDED``. An ``uncertain`` turn is not one, nor is a ledger that is
+    absent or cannot be read (unknown is never live). The sweep's stall scan and its
+    failed-read alert both ask this (#1503, #1959)."""
+    from diaktoros.run_supervisor import views
+    state = views.turn_state(config.host_path("ledger"), loop["repo"], number, head, seat)
+    return state in run_supervisor.NOT_ENDED
+
+
+# The gate whose failed PR read a queued turn can cover (#1959), and that turn's seat. Only the
+# reviewer gate: its event asks for the one review a live reviewer turn at the head will give.
+# A read failed under an App-ingress loop is recorded as ``gate_app.py``, which does not say
+# which gate it ran, so it is always alerted.
+COVERED_GATE, COVERED_SEAT = "gate_reviewer.py", "reviewer"
+# Where the sweep keeps the failure a live turn covered, so a later sweep can tell a covering
+# turn that then succeeded (the review was given: stay quiet) from one that did not (alert).
+COVERED_KEY = "gate_failure_covered"
+
+
+def covered_read(loop: dict, failure: dict, heads: dict | None) -> tuple[int, str] | None:
+    """``(pr, head)`` when a gate's failed read cost nothing (#1959): a GET of ``/pulls/N`` by
+    the reviewer gate, for an event that only asks for a review (``gate.REVIEW_ACTIONS``), while
+    a reviewer turn is queued or running in the run ledger at PR N's current head (``heads``:
+    PR number -> head SHA), so the event it dropped would only have found that turn. None
+    otherwise — a write, another gate, an event that does something else or is not recorded
+    (``edited`` records a base retarget and starts its own fresh review; ``closed`` cleans up),
+    a path that names no PR, a head that is not known, no live turn, a turn at an older head,
+    or a ledger that cannot be read (unknown is never covered): those are alerted as before.
+    Nor while the fixer's seat still holds PR N (:func:`fixer_holds`): a ``review_requested``
+    from the fixer side is also the handoff that frees that seat (``scripts/gate_reviewer.py``),
+    and the dropped event did not free it, so the queued reviewer turn may be waiting on the
+    very release that was lost."""
+    from diaktoros import gate
+    if ((failure.get("method") or "GET") != "GET" or not heads
+            or failure.get("where") != COVERED_GATE
+            or failure.get("event") not in gate.REVIEW_ACTIONS):
+        return None
+    number = re.search(r"/pulls/(\d+)$", str(failure.get("path") or ""))
+    head = heads.get(int(number.group(1))) if number else None
+    if (not head or fixer_holds(loop, int(number.group(1)))
+            or not live_turn(loop, int(number.group(1)), head, COVERED_SEAT)):
+        return None
+    return int(number.group(1)), head
+
+
+def fixer_holds(loop: dict, number: int) -> bool:
+    """Whether the fixer's seat holds PR ``number`` (an unexpired claim in the lock ledger), or
+    that cannot be read: unknown counts as held, so it never covers a failed read (#1959). Read
+    with ``live_locks``, which writes nothing, because ``explain`` asks it too."""
+    from diaktoros import gate
+    try:
+        held = state_mod.state_for(loop).live_locks("fixer")
+    except Exception:
+        return True
+    return gate.seat_key(loop, number) in held
+
+
+def covered_done(loop: dict, failure: dict, watch: dict) -> tuple[int, str] | None:
+    """``(pr, head)`` when an earlier sweep found this failure covered (:data:`COVERED_KEY`)
+    and that turn has since succeeded: the review the dropped event asked for was given. None
+    when it failed, was cancelled, is uncertain, or the ledger cannot be read."""
+    from diaktoros.run_supervisor import views
+    kept = watch.get(COVERED_KEY)
+    if (not isinstance(kept, dict) or kept.get("at") != failure.get("at")
+            or type(kept.get("pr")) is not int or not isinstance(kept.get("head"), str)):
+        return None
+    state = views.turn_state(config.host_path("ledger"), loop["repo"], kept["pr"],
+                             kept["head"], COVERED_SEAT)
+    return (kept["pr"], kept["head"]) if state == "succeeded" else None
+
+
+def read_cover(loop: dict, failure: dict, heads: dict | None,
+               watch: dict) -> tuple[str, tuple[int, str]] | None:
+    """The one rule the sweep and ``explain`` share (#1959): ``("live", (pr, head))`` while a
+    reviewer turn at the head covers the failed read, ``("done", (pr, head))`` once the turn
+    an earlier sweep saw covering it has succeeded, else None (alert)."""
+    if (cover := covered_read(loop, failure, heads)):
+        return "live", cover
+    if (done := covered_done(loop, failure, watch)):
+        return "done", done
+    return None
+
+
+def covered_note(kind: str, covered: tuple[int, str]) -> str:
+    """What a covered failed read cost: nothing. ``explain`` says it; the sweep stays quiet."""
+    if kind == "done":
+        return (f"harmless: a later event's read failed; the {COVERED_SEAT} turn at "
+                f"{covered[1][:7]} that covered it has succeeded")
+    return (f"harmless: a later event's read failed; the {COVERED_SEAT} turn queued at "
+            f"{covered[1][:7]} is unaffected")
 
 
 def parse_expiry(value: str) -> float | None:
@@ -151,14 +244,16 @@ def settle_health(loop: dict, watch: dict, now: float, health: Health,
 
 
 def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
-                  armed: bool | None, armed_error: str, listing_error: str = "") -> list[str]:
+                  armed: bool | None, armed_error: str, listing_error: str = "",
+                  heads: dict | None = None) -> list[str]:
     """The health check with nothing else read this sweep (see :func:`read_health`)."""
-    health = read_health(loop, st, watch, now, armed, armed_error, listing_error)
+    health = read_health(loop, st, watch, now, armed, armed_error, listing_error, heads)
     return health.lines + settle_health(loop, watch, now, health, [])[0]
 
 
 def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
-                armed: bool | None, armed_error: str, listing_error: str = "") -> Health:
+                armed: bool | None, armed_error: str, listing_error: str = "",
+                heads: dict | None = None) -> Health:
     """Can this sweep read GitHub at all, as whom, and for how much longer?
 
     Runs every armed-or-unknown sweep, before anything that needs GitHub. Blindness is said out
@@ -169,7 +264,6 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     """
     lines: list[str] = []
     header = f"[{loop['id']}] {loop['repo']}"
-    cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
     configured = str(loop.get("read_token") or "the read token")
     probe = gh.auth_probe(loop)
     who = (probe.data.get("login") if isinstance(probe.data, dict) else None) or configured
@@ -204,6 +298,18 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
                             "this loop goes blind" if days > 0 else
                             f"expired {when}; rotate it now"))
 
+    lines.extend(_gate_failure_lines(loop, st, watch, now, configured, heads))
+    return Health(lines, who, alerted, bool(error))
+
+
+def _gate_failure_lines(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
+                        configured: str, heads: dict | None) -> list[str]:
+    """The alert for a gate's last failed call, once per failure and cooldown: nothing when its
+    gate-failure entry owns it, or when a reviewer turn at the PR's head covers it (#1959,
+    :func:`read_cover`): left unseen while that turn is live, so it is alerted after all if
+    the turn ends without succeeding."""
+    cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
+    lines: list[str] = []
     failure = st.github_failure()
     at = watch_mode.valid_clock(failure.get("at"), now)
     seen = watch_mode.valid_clock(watch.get("gate_failure_seen"), now) or 0.0
@@ -217,26 +323,44 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     if at is not None and at > seen and done:
         watch["gate_failure_seen"] = at      # its gate-failure entry said it, and it resolved
     if at is not None and at > seen and not settled:
-        watch["gate_failure_seen"] = at
         status = failure.get("status") if type(failure.get("status")) is int else None
+        cover = read_cover(loop, failure, heads, watch)
+        if cover and cover[0] == "live":
+            # Not marked seen: a later sweep alerts it after all if this turn ends without
+            # succeeding (failed, cancelled, uncertain) or its ledger can no longer be read.
+            watch[COVERED_KEY] = {"at": failure.get("at"), "pr": cover[1][0], "head": cover[1][1]}
+            return lines
+        watch["gate_failure_seen"] = at
+        if cover:
+            # Kept (keyed by this failure's ``at``) so ``explain`` still says the turn that
+            # covered it succeeded, as the sweep decided; a later failure never matches it.
+            return lines                     # the turn that covered it gave its review
+        watch.pop(COVERED_KEY, None)
         if watch_mode.alert_due(watch, f"gate:{failure.get('where')}:{status or 'none'}", now,
                                 cooldown):
-            hint = gh.failure_hint(status)
-            number = re.search(r"/pulls/(\d+)", str(failure.get("path") or ""))
-            lines.append(
-                f"⚠️ Diaktoros {header}: {failure.get('where') or 'a gate'} could not "
-                f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
-                f"{failure.get('login') or configured} at "
-                f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
-                f"{gh.one_line(failure.get('error') or 'unknown error', 300)}"
-                f"{f' — {hint}' if hint else ''}; "
-                + ("it treated the PR as unavailable and started nothing"
-                   if (failure.get("method") or "GET") == "GET" else
-                   gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
-                                    status))
-                + (f" — `hermes dk explain --loop {loop['id']} --pr {number.group(1)}`"
-                   " shows it" if number else ""))
-    return Health(lines, who, alerted, bool(error))
+            lines.append(_gate_failure_alert(loop, failure, at, status, configured))
+    return lines
+
+
+def _gate_failure_alert(loop: dict, failure: dict, at: float, status: int | None,
+                        configured: str) -> str:
+    """The alert line for a gate's failed call that nothing covered: who could not do what,
+    when, why, and what that cost (a GET: the PR treated as unavailable)."""
+    header = f"[{loop['id']}] {loop['repo']}"
+    hint = gh.failure_hint(status)
+    number = re.search(r"/pulls/(\d+)", str(failure.get("path") or ""))
+    return (f"⚠️ Diaktoros {header}: {failure.get('where') or 'a gate'} could not "
+            f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
+            f"{failure.get('login') or configured} at "
+            f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
+            f"{gh.one_line(failure.get('error') or 'unknown error', 300)}"
+            f"{f' — {hint}' if hint else ''}; "
+            + ("it treated the PR as unavailable and started nothing"
+               if (failure.get("method") or "GET") == "GET" else
+               gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
+                                status))
+            + (f" — `hermes dk explain --loop {loop['id']} --pr {number.group(1)}`"
+               " shows it" if number else ""))
 
 
 def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
