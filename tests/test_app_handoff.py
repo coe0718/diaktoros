@@ -255,6 +255,23 @@ class ExplainPendingHandoff(AppSeat):
             self.assertTrue(review_kick.kick(self.loop, live, "e" * 40, "fix", "sweep-review-7"))
         self.assertTrue(self.report()["request_pending"])
 
+    def test_a_handoff_list_from_the_previous_format_reads_and_keeps_its_order(self):
+        """Vex F2 on #2654: a record written as a list of heads (the format before #1946)
+        still counts for explain, and the next delivery keeps every listed head, in its order,
+        ahead of the newly requested one."""
+        self.fake.pr_head = fa.NEW_HEAD
+        legacy = ["1" * 40, "2" * 40, fa.NEW_HEAD]
+        (Path(self.loop["state_dir"])).mkdir(parents=True, exist_ok=True)
+        (Path(self.loop["state_dir"]) / review_kick.HANDOFFS).write_text(
+            '{"7": ["%s", "%s", "%s"]}' % tuple(legacy))
+        self.assertTrue(self.report()["request_pending"])
+        live = self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7")
+        with mock.patch.object(routes, "fire", return_value=True):
+            self.assertTrue(review_kick.kick(self.loop, live, "e" * 40, "fix", "sweep-review-7"))
+        self.assertTrue(self.report()["request_pending"])
+        record = state_mod.read_record(state_mod.state_for(self.loop), review_kick.HANDOFFS)
+        self.assertEqual(review_kick._acknowledged_heads(record["7"]), legacy + ["e" * 40])
+
     def test_an_unreadable_record_is_no_request(self):
         self.hand_off()
         (Path(self.loop["state_dir"]) / review_kick.HANDOFFS).write_text('{"7": ')   # torn
@@ -322,14 +339,15 @@ class WatchdogBackstop(__import__("test_fixer_gating").Base):
     """The sweep delivers a quiet head's review to the gate in App mode: an App reviewer never
     shows as a pending requested reviewer, so #532's condition alone would never fire."""
 
-    def sweep(self):
+    def sweep(self, listing=None):
         import test_fixer_gating as fg
         from diaktoros import gh, pr_hold
         from scripts import watchdog
+        open_prs = {"side_effect": listing} if listing else {"return_value": [fg.LIVE]}
         with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
-             mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
+             mock.patch.object(gh, "open_prs", **open_prs), \
              mock.patch.object(gh, "pr", return_value=fg.LIVE), \
              mock.patch.object(gh, "reviews", return_value=[]), \
              mock.patch.object(pr_hold, "read", return_value=(None, "")), \
@@ -364,6 +382,28 @@ class WatchdogBackstop(__import__("test_fixer_gating").Base):
         self.sweep()
         record = state_mod.read_record(self.st, review_kick.HANDOFFS)
         self.assertEqual(record, {"7": {"a" * 40: 5.0}})
+
+    def test_a_handoff_recorded_after_the_listing_survives_the_stale_prune(self):
+        """Vex F1 on #2654: PR #8 is opened and handed off while the sweep's listing (which
+        does not name it) is in flight. The prune that follows must keep #8's entry, and still
+        drop the closed #9's, whose heads were all requested before the listing."""
+        import test_fixer_gating as fg
+        path = self.st.dir / review_kick.HANDOFFS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"9": ["%s"]}' % ("c" * 40))         # earlier (list) format, closed
+        calls = []
+
+        def listing(loop, errors=None):
+            calls.append(1)
+            if len(calls) == 2:                               # the second (pruning) sweep
+                review_kick._record_handoff(self.loop, 8, "d" * 40, watch_mode.now())
+            return [fg.LIVE]
+
+        self.sweep(listing)
+        self.assertEqual(len(calls), 2)
+        record = state_mod.read_record(self.st, review_kick.HANDOFFS)
+        self.assertEqual(list(record), ["8"])
+        self.assertEqual(review_kick._acknowledged_heads(record["8"]), ["d" * 40])
 
 
 if __name__ == "__main__":

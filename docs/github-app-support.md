@@ -193,7 +193,9 @@ loop depends on for safety:
   once the reviewer's gateway acknowledged it: `review_kick.kick` records the head in the
   loop's `review-handoffs.json` after a 2xx (every acknowledged head of the PR, the 16 most
   recently *requested*, so late acknowledgements for older heads never erase the current one's,
-  #1946; the watchdog's sweep drops a PR's entry once the PR is no longer open), whether the fixer's `request_review`, the sweep or
+  #1946; the watchdog's sweep drops a PR's entry once the PR is no longer open, except one
+  holding a head requested after that sweep began its open-PR listing, which the next sweep
+  decides), whether the fixer's `request_review`, the sweep or
   `hermes dk continue` delivered it, and the request stays pending until a verdict lands at that
   head. A request the broker audited but could not deliver is not counted, so `explain` keeps
   saying no request exists until a retry lands. A `hermes dk review`, the watchdog's queue

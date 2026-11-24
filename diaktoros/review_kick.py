@@ -95,18 +95,28 @@ def _record_handoff(loop: dict, number: object, head: str, requested_at: float) 
         st.kv_set(path, record)
 
 
-def prune(st, open_numbers) -> None:
+def prune(st, open_numbers, listed_at: float) -> None:
     """Drop the handoff record of every PR no longer open (#1946), as ``conflict_person.prune``
-    does; the watchdog's sweep passes the open PR numbers its listing already read."""
+    does; the watchdog's sweep passes the open PR numbers its listing already read, and
+    ``listed_at``, the time it started reading that listing.
+
+    The listing is older than the prune, so a PR opened or reopened since is missing from it
+    (Vex F1 on #2654). An entry holding a head whose delivery was requested at or after
+    ``listed_at`` is kept whatever the listing says; a later sweep's listing decides it. An
+    entry in an earlier format has no request times and goes when its PR is not listed."""
     from . import state as state_mod
     keep = {str(n) for n in open_numbers}
-    if not any(k not in keep for k in state_mod.read_record(st, HANDOFFS)):
+
+    def stays(number: str, entry: object) -> bool:
+        return number in keep or any(t >= listed_at for t in _requested_at(entry).values())
+
+    if all(stays(k, v) for k, v in state_mod.read_record(st, HANDOFFS).items()):
         return
     path = st.dir / HANDOFFS
     with st.locked():
         record = st.kv_get(path, {})
         if isinstance(record, dict):
-            st.kv_set(path, {k: v for k, v in record.items() if k in keep})
+            st.kv_set(path, {k: v for k, v in record.items() if stays(k, v)})
 
 
 def app_handoff_delivered(loop: dict, number: int, head: str) -> bool:
