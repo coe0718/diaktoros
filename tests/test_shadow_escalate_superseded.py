@@ -5,8 +5,8 @@ same head (``review --reconsider`` queues one) leaves the ledger readable but wi
 that turn yet. The launch waits for it within the retry backoff, saying what it waits on rather
 than "shadow review unreadable", so the turn's own review, landing minutes later, is still ruled
 on with nobody involved (#2688); one that agrees is not ruled on, as the gate would not escalate
-it, and its escalation is cleared, so a later dissent escalates anew. An unreadable ledger still
-waits as before (#1145).
+it, and its escalation is cleared once that run has failed, so a later dissent escalates anew and
+re-arms it (#2688 review F1). An unreadable ledger still waits as before (#1145).
 Driven through the real launch (``_prepare_launch``) on a real run ledger.
 """
 from __future__ import annotations
@@ -78,22 +78,83 @@ class Superseded(ser.Base):
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET turn_key=? WHERE id=?", (key, f"s{self.n}"))
 
+    def run_turn(self, during):
+        """The ruling's whole worker turn (``_run_production``) over the real launch, its failure
+        recorded by the real finish; ``during()`` runs while the ledger still shows it running."""
+        from diaktoros import observer
+        sup, seen = run_supervisor.Supervisor(self.db), {}
+
+        def turn(t):
+            try:
+                self.claim()
+            finally:
+                t.row, t.loop = self.adjudicator_row(), self.loop
+                seen["during"] = during()
+        with mock.patch.object(run_supervisor.Supervisor, "_production_turn", side_effect=turn), \
+                mock.patch.object(run_supervisor.Supervisor, "_refresh_check"), \
+                mock.patch.object(observer, "notify", return_value=True):
+            sup._run_production(self.claim_id(), "w")
+        return seen
+
+    def claim_id(self):
+        self.mark_escalated(status="awaiting-adjudication")
+        sup = run_supervisor.Supervisor(self.db)
+        sup.enqueue(f"{fg.REPO}:7:{fg.HEAD}:adjudicator:breach:1", fg.REPO, 7, fg.HEAD,
+                    "adjudicator", turn_key="breach:1")
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='running', owner='w', launch_intent=? "
+                        "WHERE seat='adjudicator'", (time.time(),))
+        return self.adjudicator_row()["id"]
+
+    def adjudicator_row(self):
+        with closing(sqlite3.connect(self.db)) as con:
+            con.row_factory = sqlite3.Row
+            return con.execute("SELECT * FROM runs WHERE seat='adjudicator'").fetchone()
+
+    def escalate_for_real(self):
+        """A later dissent's escalation through the real breach delivery and ledger enqueue."""
+        from diaktoros import gate, gh, observer
+        sup = run_supervisor.Supervisor(self.db, fixture_mode=True)
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(run_supervisor.Supervisor, "_spawn"), \
+                mock.patch.object(gh, "pr", return_value=dict(fg.LIVE)), \
+                mock.patch.object(observer, "notify", return_value=True):
+            return gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD, ser.APPROVED,
+                                                  db=self.db)
+
     def test_an_agreeing_review_during_the_wait_is_not_ruled_on(self):
         self.superseded()
         self.own_review("APPROVE", "agrees now")
         with mock.patch.object(type(self.st), "breach_start") as start:
             with self.assertRaises(ValueError) as caught:
                 self.claim()
-        self.assertEqual(str(caught.exception), "adjudication no longer current")
+        self.assertEqual(str(caught.exception), run_supervisor.turns.SHADOW_AGREES)
         self.assertFalse(run_supervisor.retryable(caught.exception))   # failed, not waited on
         start.assert_not_called()                  # the breach was never claimed for a ruling
-        self.assertEqual(self.st.breach_get(7), {})     # nor left parked for one: its hold is gone
+        self.assertEqual(self.escalate()[0], "shadow agrees")
+
+    def test_a_later_dissent_is_ruled_on_even_while_the_agreeing_run_ends(self):
+        # #2688 review F1: the hold stays until the ledger shows the agreeing run failed. A
+        # dissent before then finds it ("already"), not a fresh marker parked on that run's key;
+        # one after re-arms the failed run through the real delivery, so it is ruled on.
+        self.superseded()
+        self.own_review("APPROVE", "agrees now")
+
+        def dissent():
+            self.reviewer("reconsider:2", time.time())
+            self.own_review("REQUEST_CHANGES", "F3: a later dissent", key="reconsider:2")
+            return (self.adjudicator_row()["state"], self.escalate_for_real())
+        seen = self.run_turn(dissent)
+        self.assertEqual(seen["during"], ("running", "already"))
+        row = self.adjudicator_row()
+        self.assertEqual(row["state"], "failed")
+        self.assertIn(run_supervisor.turns.SHADOW_AGREES, row["error"])
+        self.assertEqual(self.st.breach_get(7), {})     # its hold went with it, once it failed
         _marker, blockers, why = self.explain_and_ready()
         self.assertFalse(any(w.startswith("escalated:") for w in [*blockers, *why]), (blockers, why))
-        self.assertEqual(self.escalate()[0], "shadow agrees")
-        self.reviewer("reconsider:2", time.time())     # a later re-review, and its dissent
-        self.own_review("REQUEST_CHANGES", "F3: a later dissent", key="reconsider:2")
-        self.assertEqual(self.escalate()[0], "new")     # escalates anew, not "already"
+        self.assertEqual(self.escalate_for_real(), "new")
+        self.assertEqual(self.adjudicator_row()["state"], "pending")      # re-armed for its ruling
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
 
     def test_only_this_rounds_shadow_escalation_awaiting_its_ruling_is_cleared(self):
         clear = self.st.breach_clear_pending

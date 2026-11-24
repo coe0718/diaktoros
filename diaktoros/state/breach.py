@@ -108,7 +108,10 @@ class Breaches:
         """Drop a ``delivery-pending`` marker at ``head`` that no longer holds it (a raised cap
         or a dismissed verdict). Only that status, that head, and no delivery in flight. With
         ``shadow_rounds``: only a shadow escalation of that round, awaiting its ruling too, whose
-        shadow review agrees by the ruling's launch (#2688), so a later dissent escalates anew."""
+        shadow review agrees by the ruling's launch (#2688), so a later dissent escalates anew. Its
+        run clears it only once the ledger shows that run failed (#2688 review F1): a dissent that
+        escalates after that re-arms the run, and one before it finds this marker ("already"), so
+        none is parked on a run that was already ending."""
         key = f"{self.loop['repo']}#{number}"
         with self.breach_lock():
             data = _state._mapping(self._load(self.breach, {}))
