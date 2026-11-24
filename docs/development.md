@@ -54,6 +54,9 @@ from today's sizes (#1349), so it can add and raise entries, loosening the ratch
 rewrites it anyway. That is a one-shot, reviewed change (re-founding the baseline), never a way to
 pass the check: to follow a shrink, use `--write`.
 
+Any other arguments (a misspelled `--force`, flags in another order) are refused with exit 2 and
+nothing is checked or written (#2008), rather than silently running the plain check.
+
 ## Lint
 
 Main has no lint findings, and CI's `lint` job keeps it that way: it runs `ruff check .` with the
