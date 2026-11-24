@@ -46,6 +46,15 @@ class SetupFolds(app_cli.Base):
         self.assertTrue(has_app("keep[bot]"))
         self.assertFalse(has_app("unrelated"))
 
+    def test_the_app_login_test_folds_the_queried_login(self):
+        # The reverse order: the App is given ASCII, the queried login is the ``ß`` spelling, so
+        # the query side's fold is what matches (``lower`` would keep ``ß`` and miss it).
+        has_app = setup_command._app_logins_test(
+            argparse.Namespace(app=[f"{ASKED}=1:/k/x.pem", "keep[bot]=2:/k/y.pem"]))
+        self.assertTrue(has_app(MAPPED))
+        self.assertTrue(has_app("keep[bot]"))
+        self.assertFalse(has_app("unrelated"))
+
     def test_setup_asks_no_file_for_an_app_login_spelled_the_other_way(self):
         key = self.key("fix")
         args = self.setup_args("--reviewer", tfs.REV, "--fixer", ASKED,
@@ -89,6 +98,35 @@ class InitFormCredentials(app_cli.Base):
         got = install._form_credentials(form, {util.login_key(MAPPED)}, tfs.REV, ASKED, "")
         self.assertNotIn("fixer_token_file", got)
         self.assertEqual(got["reviewer_token_file"], "/f/rev.pat")   # the unrelated role keeps it
+
+    def test_the_helper_folds_the_seat_login(self):
+        # The reverse order: the seat is the ``ß`` spelling, the explicit set holds the folded
+        # ASCII one, so the seat side's fold is what matches.
+        from diaktoros.cli import install
+        form = {"adjudicator_login": "", "reviewer_token_file": "/f/rev.pat",
+                "fixer_token_file": "/f/fix.pat", "adjudicator_token_file": "",
+                **{f"{role}_{suffix}": "" for role in ("reviewer", "fixer", "adjudicator")
+                   for suffix in ("app_id", "app_key_file")}}
+        got = install._form_credentials(form, {util.login_key(ASKED)}, tfs.REV, MAPPED, "")
+        self.assertFalse([k for k in got if k.startswith("fixer_")], got)
+        self.assertEqual(got["reviewer_token_file"], "/f/rev.pat")   # the unrelated role keeps it
+
+    def test_init_keeps_the_cli_app_over_the_forms_file(self):
+        # Through `init`, the --app case: `--app rd-ss[bot]=…` (an App login is ASCII) with
+        # `--fixer rd-ß[bot]` and a form fixer App. The CLI App stays the fixer's credential; the
+        # form's App does not replace it. (A form *token file* would not show the fold here:
+        # `select_credentials` ignores a PAT field for a login that already has an App.)
+        key = self.key("fix")
+        argv = self.app_argv(reviewer=tfs.REV,
+                             tokens=[(tfs.READER, self.pats["read"]), (tfs.REV, self.pats["rev"])],
+                             apps=[(BOT_ASKED, 9, key)])
+        argv[argv.index(tfs.FIX)] = BOT_MAPPED
+        rc, out = self.run_cli(argv, settings={"fixer_app_id": "77",
+                                               "fixer_app_key_file": str(self.key("form-fix"))})
+        self.assertEqual(rc, 0, out)
+        loop = self.loop_json()
+        self.assertEqual(loop["apps"], {BOT_ASKED: {"app_id": 9, "key_file": str(key)}})
+        self.assertEqual(sorted(loop["tokens"]), sorted([tfs.READER, tfs.REV]), loop["tokens"])
 
     def test_init_keeps_the_cli_token_over_the_forms_file(self):
         # Through `init` itself: `--token fix-ß=…` with `--fixer fix-ss` and a form fixer file.
