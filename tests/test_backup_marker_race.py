@@ -15,6 +15,7 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
+import errno
 import fcntl
 import io
 import json
@@ -27,7 +28,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_backup as tb  # noqa: E402
 from diaktoros import cli  # noqa: E402
-from diaktoros.state import backup, migrate  # noqa: E402
+from diaktoros.state import backup, backup_pause, migrate  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 
 
@@ -117,6 +118,21 @@ class MigrateDuringTheWrite(tb.Base):
         fcntl.flock(fd, fcntl.LOCK_SH)                 # as a backup's write holds it
         self.assertTrue(migrate.dead(left))
         self.assertIn("did not finish", migrate.describe(left))
+
+    def test_a_lock_that_cannot_be_taken_refuses_the_backup(self):
+        # Vex, #2685 round 3: any other flock error (ENOLCK here) fails closed, never unlocked.
+        real = fcntl.flock
+
+        def no_locks(fd, op):
+            if op & fcntl.LOCK_SH:
+                raise OSError(errno.ENOLCK, "No locks available")
+            return real(fd, op)
+        out = self.root / "unlocked.tar.gz"
+        with mock.patch.object(backup_pause.fcntl, "flock", no_locks):
+            code, text = self.run_cmd(cli.cmd_backup, out=str(out), keep=10)
+        self.assertEqual(code, 2, text)
+        self.assertIn("No locks available", text)
+        self.assertFalse(out.exists())
 
 if __name__ == "__main__":
     unittest.main()

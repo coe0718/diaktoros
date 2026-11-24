@@ -12,8 +12,8 @@ So a backup holds ``migrate``'s lock shared for its whole write (``held_off``). 
 takes the same lock exclusive and without waiting, so a migrate or restore that starts while a
 backup is being written refuses (``MigrationBusy``) and moves nothing, and a backup that starts
 while one holds it refuses here. ``migrate``'s and ``restore``'s own backups (``held``) are taken
-under their exclusive hold and take nothing. On a filesystem without ``flock`` the lock does not
-take (as with ``util.hold_temp``) and only the marker checks stand.
+under their exclusive hold and take nothing. A lock that cannot be taken for any other reason
+(no ``flock`` on the filesystem, ``ENOLCK``) refuses the backup: ``migrate.hold`` refuses the same.
 """
 from __future__ import annotations
 
@@ -50,8 +50,9 @@ def held_off(held: bool):
         except BlockingIOError:        # a migrate or restore holds it, its marker maybe not yet
             raise backup.BackupError(migrate.snapshot_refusal() or (
                 "a migration or restore is starting; back up once it has finished")) from None
-        except OSError:
-            pass                       # no flock on this filesystem: the marker check alone
+        except OSError as exc:         # fail closed: unlocked, a migrate could run mid-write
+            raise backup.BackupError(f"could not lock {path} to keep a migrate or restore out "
+                                     f"while backing up ({exc}); nothing was written") from exc
         refuse(False)
         yield
     finally:
