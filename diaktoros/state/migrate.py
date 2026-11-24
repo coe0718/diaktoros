@@ -136,7 +136,7 @@ def hold():
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise MigrationBusy(describe(migrating() or {})) from None
+            raise MigrationBusy(describe(migrating()) or "a backup, migrate or restore is running: try again once it is done") from None
         owned, left, kept = True, migrating(), _kept_path()
         kept.unlink(missing_ok=True)       # a dead holder's leftover: the lock is ours now
         if left is not None:

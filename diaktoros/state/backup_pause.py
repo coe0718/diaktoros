@@ -1,20 +1,25 @@
-"""Whether ``backup.create`` may snapshot the install now, given ``migrate``'s pause marker
-(#1054, #2322). Split out of ``backup``, which is over the size cap.
+"""Whether ``backup.create`` may snapshot the install now, given ``migrate``'s pause (#1054,
+#2322). Split out of ``backup``, which is over the size cap.
 
 While the marker exists (a migrate or restore holds it, or one died holding it) records may be
 half moved, and they are only safe under the pause: an archive of them restored later would come
-back with no marker, and the loop would run on them unpaused (#1054). ``create`` asks twice:
-before the archive's first byte, and again once its last is written. The first check alone left a
-window: a backup that passed it and then raced a ``migrate`` that wrote its marker while the
-archive was being written read records half moved, and still wrote ``migrating: None`` into its
-manifest, which ``restore`` takes for a clean archive (#2322). Asked again at the end, such an
-archive is refused and deleted, never published.
+back with no marker, and the loop would run on them unpaused (#1054). Checking the marker only
+before the archive's first byte left a window: a migrate that wrote its marker during the write,
+or that started and even finished during it, had moved records under a backup that still wrote
+``migrating: None`` into its manifest, which ``restore`` takes for a clean archive (#2322).
 
-A migration that both starts and finishes between the two checks leaves no marker for either to
-see. Closing that too would mean holding ``migrate``'s lock for the whole write, so that a
-migrate refuses while any backup runs; that is not done here.
+So a backup holds ``migrate``'s lock shared for its whole write (``held_off``). ``migrate.hold``
+takes the same lock exclusive and without waiting, so a migrate or restore that starts while a
+backup is being written refuses (``MigrationBusy``) and moves nothing, and a backup that starts
+while one holds it refuses here. ``migrate``'s and ``restore``'s own backups (``held``) are taken
+under their exclusive hold and take nothing. On a filesystem without ``flock`` the lock does not
+take (as with ``util.hold_temp``) and only the marker checks stand.
 """
 from __future__ import annotations
+
+import contextlib
+import fcntl
+import os
 
 from . import backup, migrate
 
@@ -27,3 +32,27 @@ def refuse(held: bool) -> None:
     why = "" if held else migrate.snapshot_refusal()
     if why:
         raise backup.BackupError(why)
+
+
+@contextlib.contextmanager
+def held_off(held: bool):
+    """Keep any migrate or restore from starting until the block ends, and refuse (``refuse``)
+    if one holds the install now; ``held`` takes nothing (see the module docstring)."""
+    if held:
+        yield
+        return
+    path = migrate.lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:        # a migrate or restore holds it, its marker maybe not yet
+            raise backup.BackupError(migrate.snapshot_refusal() or (
+                "a migration or restore is starting; back up once it has finished")) from None
+        except OSError:
+            pass                       # no flock on this filesystem: the marker check alone
+        refuse(False)
+        yield
+    finally:
+        os.close(fd)                   # closing the descriptor releases the lock

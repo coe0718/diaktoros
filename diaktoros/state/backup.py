@@ -410,49 +410,48 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
     stack, so a caller that goes on to read or print the archive has it for as long as it needs
     it; without, the lock ends when ``create`` returns.
 
-    Refused while ``migrate``'s marker exists (#1054), before the first byte and after the last
-    (#2322, ``backup_pause``), unless the caller holds it (``held``: ``migrate``'s own backup),
-    which passes an interrupted run's marker as ``half_moved``: ``restore`` puts it back.
+    Refused while ``migrate``'s marker exists (#1054); no migrate or restore starts during the
+    write (#2322, ``backup_pause.held_off``). Unless the caller holds it (``held``: ``migrate``'s
+    own backup), which passes an interrupted run's marker as ``half_moved``: ``restore`` puts it back.
 
     A listed file that is gone by the time it is read is left out and named in ``skipped``
     (#1694), unless its path is in ``must_read``: then the backup fails with ``BackupError``.
     ``restore``'s undo snapshot passes every path it is about to write, so a file removed (and
     perhaps recreated) while the snapshot reads it is never overwritten without being in it."""
     check_keep(keep)
-    from .backup_pause import refuse  # noqa: PLC0415 - imports backup
-    refuse(held)
-    chosen = bool(out)
-    out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
-    loops = config.all_loops()
-    files, skipped = _listed_files(loops)
-    ledger = run_supervisor.production_ledger()
-    manifest = _manifest(loops, skipped, half_moved)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fd, out = _open_new(out, chosen)
-    try:
-        # ``closefd=False``: the lock is on ``fd`` and must outlive the stream (see ``using``).
-        with os.fdopen(fd, "wb", closefd=False) as stream, \
-                tarfile.open(fileobj=stream, mode="w:gz") as tar, \
-                tempfile.TemporaryDirectory() as scratch:
-            if not chosen:
-                tar.addfile(tarfile.TarInfo(DEFAULT_MARK))   # provenance: first member, see prune
-            if ledger.is_file():
-                snap = pathlib.Path(scratch) / "ledger"
-                _snapshot_ledger(ledger, snap)
-                files.append((ledger, snap, "ledger"))
-            _add_files(tar, files, manifest, must_read)
-            raw = json.dumps(manifest, indent=1).encode()
-            info = tarfile.TarInfo(MANIFEST)
-            info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600
-            tar.addfile(info, io.BytesIO(raw))
-        refuse(held)          # a migrate began during the write: deleted below, never kept (#2322)
-        os.chmod(out, 0o600)           # still locked: no other run's prune can take it from here
-    except BaseException:
+    from .backup_pause import held_off  # noqa: PLC0415 - imports backup
+    with held_off(held):         # no migrate or restore starts until the archive is whole (#2322)
+        chosen = bool(out)
+        out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
+        loops = config.all_loops()
+        files, skipped = _listed_files(loops)
+        ledger = run_supervisor.production_ledger()
+        manifest = _manifest(loops, skipped, half_moved)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd, out = _open_new(out, chosen)
         try:
-            out.unlink(missing_ok=True)
-        finally:
-            os.close(fd)
-        raise
+            # ``closefd=False``: the lock is on ``fd`` and must outlive the stream (see ``using``).
+            with os.fdopen(fd, "wb", closefd=False) as stream, \
+                    tarfile.open(fileobj=stream, mode="w:gz") as tar, \
+                    tempfile.TemporaryDirectory() as scratch:
+                if not chosen:
+                    tar.addfile(tarfile.TarInfo(DEFAULT_MARK))   # provenance: first member, see prune
+                if ledger.is_file():
+                    snap = pathlib.Path(scratch) / "ledger"
+                    _snapshot_ledger(ledger, snap)
+                    files.append((ledger, snap, "ledger"))
+                _add_files(tar, files, manifest, must_read)
+                raw = json.dumps(manifest, indent=1).encode()
+                info = tarfile.TarInfo(MANIFEST)
+                info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600
+                tar.addfile(info, io.BytesIO(raw))
+            os.chmod(out, 0o600)           # still locked: no other run's prune can take it from here
+        except BaseException:
+            try:
+                out.unlink(missing_ok=True)
+            finally:
+                os.close(fd)
+            raise
     with contextlib.ExitStack() as own:
         (own if using is None else using).callback(os.close, fd)
         if not chosen:
