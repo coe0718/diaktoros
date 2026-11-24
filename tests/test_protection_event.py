@@ -182,6 +182,25 @@ class Handler(unittest.TestCase):
                 self.assertTrue(self.reads, payload)
                 self.assertIn("main does not require lint", self.notices[0][1]["outcome"])
 
+    def test_a_created_or_deleted_rule_with_changes_off_the_base_is_read(self):
+        """Review of #2660: a non-empty ``changes`` is read whatever the action, so a created or
+        deleted rule that carries one (any key) is unsure even though its targets miss the base."""
+        self.rules = [checks_rule("tests")]
+        for action in ("created", "deleted"):
+            for payload in (ruleset(include=("refs/heads/dev",), action=action,
+                                    changes={"ref_name": {}}),
+                            ruleset(include=("~ALL",), exclude=("refs/heads/main",), action=action,
+                                    changes={"enforcement": {"from": "disabled"}}),
+                            ruleset(target="tag", action=action, changes={"target": {}}),
+                            classic(name="dev", action=action, changes={"other": {}})):
+                self.reads.clear()
+                self.notices.clear()
+                self.st.kv_set(self.st.dir / protection_event.FILE, [])
+                reason, decision = self.deliver(payload)
+                self.assertEqual(decision, "accepted", (reason, payload))
+                self.assertTrue(self.reads, payload)
+                self.assertIn("main does not require lint", self.notices[0][1]["outcome"])
+
     def test_a_rule_that_may_cover_the_base_is_read(self):
         self.rules = []
         for payload in (classic(name="*"), classic(name="ma?n"), classic(name="dev",
