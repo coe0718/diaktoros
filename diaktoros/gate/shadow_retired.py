@@ -7,7 +7,9 @@ alone: a gate pass between its failure and that clear could replace the marker a
 run, and the late clear would then drop the replacement (round 5). So every gate pass over the
 head (``shadows.shadow_escalation``, from the shadow's finish and the watchdog sweep) drops such
 a marker, and only the exact marker it read, while its run is still that failed run, both
-checked under the breach lock: the dissent that follows escalates anew and re-arms the run.
+checked under the breach lock: the dissent that follows escalates anew and re-arms the run. A
+marker whose delivery failed is still ``delivery-pending`` (round 6): it goes too, once no
+delivery of it is in flight (``breach_clear_pending`` refuses one that is).
 """
 from __future__ import annotations
 
@@ -43,10 +45,11 @@ def _read(db, read):
 
 def reconcile(loop: dict, st, number: int, head: str, marker, db=None):
     """The marker as it stands once a retired one is dropped: unchanged unless it is this head's
-    shadow escalation, awaiting its ruling, and the ruling run of its round failed finding the
-    shadow review agreeing. An unreadable ledger changes nothing (the next pass reads again)."""
+    shadow escalation, awaiting its ruling or its delivery, and the ruling run of its round failed
+    finding the shadow review agreeing. An unreadable ledger changes nothing (the next pass reads
+    again)."""
     m = marker if isinstance(marker, dict) else {}
-    if (m.get("head") != head or m.get("status") != "awaiting-adjudication"
+    if (m.get("head") != head or m.get("status") not in ("awaiting-adjudication", "delivery-pending")
             or (m.get("escalated") or {}).get("by") != gate.SHADOW_ESCALATION):
         return marker
     run = _read(db, lambda con: _failed_run(con, loop["repo"], number, head, m.get("rounds")))

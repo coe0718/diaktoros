@@ -156,9 +156,16 @@ class Superseded(ser.Base):
 
     def test_a_hold_a_delivery_parks_while_the_agreeing_run_ends_still_goes(self):
         # #2688 review F1 (round 4): a delivery of the same marker is in flight while the run
-        # finishes, so its finish cannot clear it, and the delivery then parks it on the failed
-        # run. The next gate pass drops it: with the shadow agreeing, no hold; with a later
-        # dissent, a fresh escalation that re-arms the run for its ruling.
+        # finishes, and then parks it on the failed run. The next gate pass drops it: with the
+        # shadow agreeing, no hold; with a later dissent, a fresh escalation that re-arms the run.
+        self.held_delivery(True, "awaiting-adjudication")
+
+    def test_a_hold_whose_delivery_fails_while_the_agreeing_run_ends_still_goes(self):
+        # Round 6: the wake reports failure (the run was enqueued all the same): the marker stays
+        # delivery-pending on the failed run, and the next gate pass drops it just the same.
+        self.held_delivery(False, "delivery-pending")
+
+    def held_delivery(self, delivered, parked):
         import threading
         from diaktoros import gate, gh, observer
         self.superseded()
@@ -170,7 +177,7 @@ class Superseded(ser.Base):
             woken = wake(*args)                # the real enqueue: "duplicate running"
             sent.set()
             release.wait(10)                   # finalized only after the run has finished
-            return woken
+            return woken if delivered else False
 
         def deliver():
             outcome["breach"] = gate.breach(self.loop, self.st, 7, fg.HEAD, 1, "r",
@@ -194,10 +201,10 @@ class Superseded(ser.Base):
             release.set()
             thread.join(10)
         self.assertEqual(outcome["breach"], "retry")
-        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")   # parked
+        self.assertEqual(self.st.breach_get(7)["status"], parked)
         self.assertEqual(self.escalate_for_real(), "shadow agrees")
         self.assertEqual(self.st.breach_get(7), {})               # ...and dropped on the next pass
-        self.mark_escalated(status="awaiting-adjudication")      # parked again, then a dissent
+        self.mark_escalated(status=parked)                       # parked again, then a dissent
         self.reviewer("reconsider:2", time.time())
         self.own_review("REQUEST_CHANGES", "F3: a later dissent", key="reconsider:2")
         self.assertEqual(self.escalate_for_real(), "new")
