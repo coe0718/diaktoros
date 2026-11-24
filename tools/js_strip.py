@@ -20,8 +20,10 @@ import re
 # Not a full tokenizer: whether a `/` opens a regex is read from the token before it. After
 # punctuation that cannot end an expression, or a keyword such as `return`, it is a regex; after a
 # name, number, literal or `]`, a division. A keyword after `.` or `?.` is a property name
-# (`obj.return / a`), so a division (#1974). After `)`, `}`, `++` or `--`, or a contextual word
-# (`of`, `yield`, `await`, which can also be plain names), it can be either
+# (`obj.return / a`), so a division (#1974), unless a digit precedes the `.`: that dot may end a
+# number (`1. instanceof /re/`, a keyword) or access a property (`x1.in / a`), so "either".
+# After `)`, `}`, `++` or `--`, or a contextual word (`of`, `yield`, `await`, which can also be
+# plain names), it can be either
 # (`if (x) /re/` vs `(a) / b`, a block vs `{} / a`), so both readings are scanned: where they keep
 # the same text the scan goes on, and where they differ it raises AmbiguousSlash rather than
 # guess, so a guard built on it fails closed instead of passing on code it never saw (#1965).
@@ -63,6 +65,8 @@ def _slash_reading(tail: str) -> str:
         return "division"
     before = tail[:word.start()].rstrip()
     if before.endswith(".") and not before.endswith("..."):
+        if before[:-1][-1:].isdigit():
+            return "either"         # `1. instanceof /re/` (a number's dot) or `x1.in / a` (#2656)
         return "division"           # a property name (`obj.return`, `obj?.in`), not a keyword
     return "either" if word.group() in _CONTEXTUAL_WORDS else "regex"
 

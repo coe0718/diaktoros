@@ -837,6 +837,32 @@ class Package(unittest.TestCase):
                          "return /'/.test(s);  const t = `b`;\n")
         self.assertEqual(strip_js_comments("f(...typeof /'/); // it's\n"), "f(...typeof /'/); \n")
 
+    def test_comment_stripper_fails_closed_on_a_keyword_after_a_number_dot_2656(self):
+        # `1. instanceof /'/` is a number then a keyword, so a regex; `x1.in / a` is a property,
+        # so a division. Both end in a digit and a dot: where the readings differ, fail closed.
+        for src in ("false && (1. instanceof /'/); /* it's // prose */ const t = `x`;\n",
+                    "y = x1.in / a; /* it's // prose */ const t = `x`;\n"):
+            with self.subTest(src=src), self.assertRaises(AmbiguousSlash):
+                strip_js_comments(src)
+        # Where both readings keep the same text it strips as usual; `1..in` is a property.
+        self.assertEqual(strip_js_comments("y = x1.in / 2; t = `x`;\n"), "y = x1.in / 2; t = `x`;\n")
+        self.assertEqual(strip_js_comments("y = 1..in / a; /* it's // p */ t = `x`;\n"),
+                         "y = 1..in / a;  t = `x`;\n")
+
+    def test_guards_fail_on_a_keyword_after_a_number_dot_2656(self):
+        # Through the guards: `1. instanceof /'/` hides nothing from them; they fail closed.
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        plugin = pathlib.Path(temp.name) / "plugin.js"
+        plugin.write_text("false && (1. instanceof /'/); /* it's // prose */ document.title = `x`;\n"
+                          "// otherStates(s) 'other' cleanLine(counts, checks.length)\n")
+        for case in (Package("test_first_render_findings_641"),
+                     Surface("test_stays_inside_the_sdk_surface")):
+            with self.subTest(case=case.id()), mock.patch(f"{__name__}.PLUGIN_JS", plugin):
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertFalse(result.wasSuccessful())
+
     def test_guards_see_code_after_a_division_by_a_keyword_property_1974(self):
         # Through the guards: `obj.return / a` is a division, so the code after the comment
         # (a backtick and `document.`) is seen and both guards fail.
