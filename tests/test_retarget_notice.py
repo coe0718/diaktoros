@@ -56,7 +56,8 @@ class RetargetNotice(unittest.TestCase):
         return [(e["event"], e["urgent"], e["outcome"]) for e in entries
                 if e.get("identity") == f"retarget:{C}"]
 
-    def test_a_queued_fresh_review_is_routine_and_only_a_retry_is_an_urgent_stall(self):
+    def test_one_notice_per_retarget_routine_when_queued_urgent_on_retry(self):
+        # A queued fresh review is a routine ``retargeted`` notice (#2153).
         self.retarget()
         self.assertEqual(len(self.enqueued), 1)
         (event, urgent, outcome), = self.notices()
@@ -65,22 +66,24 @@ class RetargetNotice(unittest.TestCase):
         for table in (observer.EVENTS, observer.LABEL, observer.EMOJI):
             self.assertIn("retargeted", table)
         self.assertIn("retargeted", observer.ROUTINE_EVENTS)
-        self.doCleanups()                       # the same retarget, its enqueue failing
+        # The same retarget, its enqueue failing: an urgent ``stall``.
+        self.doCleanups()
         self.setUp()
         self.enqueue_error = FileNotFoundError("diaktoros-runtime.json")
-        self.retarget()
+        before = self.retarget()
         (event, urgent, outcome), = self.notices()
         self.assertEqual((event, urgent), ("stall", True))
         self.assertIn("fresh review retry", outcome)
-
-    def test_a_replay_that_queues_the_retried_review_sends_no_second_notice(self):
-        self.enqueue_error = FileNotFoundError("diaktoros-runtime.json")
-        before = self.retarget()
-        self.assertEqual([n[0] for n in self.notices()], ["stall"])
+        # A replay of that sweep (a crash before it saved its listing) whose enqueue works picks
+        # ``retargeted``, another observer key: still the one notice.
         self.enqueue_error = None
-        self.replay(before)                     # picks ``retargeted`` now: no second notice
+        self.replay(before)
         self.assertEqual(len(self.enqueued), 2)
         self.assertEqual([n[0] for n in self.notices()], ["stall"])
+        # An unreadable observer ledger skips the notice; the sweep itself goes on.
+        self.st.observations.write_text("{not json")
+        self.replay(before)
+        self.assertIn("{not json", self.st.observations.read_text())
 
 if __name__ == "__main__":
     unittest.main()

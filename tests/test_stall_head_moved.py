@@ -76,15 +76,12 @@ class HeadMovedIsNotAStall(fg.Base):
         watch["heads"]["7"]["observed_at"] = time.time() - 36000
         self.st.watch_save(watch)
 
-    def test_a_review_cancelled_for_a_head_move_is_no_stall_at_the_listed_head(self):
+    def test_a_head_move_hides_the_stall_only_from_a_listing_read_before_it(self):
         self.arm_long_ago()
-        self.assertNotIn(STALL, self.sweep(("cancelled", MOVED)))   # after the listing's read
-
-    def test_a_head_that_returned_to_a_moved_sha_stalls_again(self):
-        # The cancellation predates this sweep's listing: the head moved away and came back, so
-        # the listed head is current. A failed review at the head in between redelivers nothing.
-        self.arm_long_ago()
-        self.turn("cancelled", MOVED)
+        # The cancellation lands after this sweep read its listing: that listing is stale.
+        self.assertNotIn(STALL, self.sweep(("cancelled", MOVED)))
+        # The next sweep's listing, read after it, still shows the head: it moved away and came
+        # back. A failed review at the head in between redelivers nothing, so this is a stall.
         self.turn("failed", "reviewer crashed", head="c" * 40)
         self.assertIn(STALL, self.sweep())
 

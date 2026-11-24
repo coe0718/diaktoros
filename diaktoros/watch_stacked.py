@@ -9,6 +9,7 @@ import hashlib
 import json
 
 from diaktoros import gh, observer, situation, transition, watch_mode
+from diaktoros.util import log
 from diaktoros import state as state_mod
 
 def _retarget_notice(loop: dict, st, number: int, head: str, status: str, next_turn: str) -> None:
@@ -16,8 +17,13 @@ def _retarget_notice(loop: dict, st, number: int, head: str, status: str, next_t
     urgent stall (#2153). One per retarget whichever event a replayed sweep picks: the observer's
     key includes the event, so a notice under either one already recorded stands."""
     ident = f"retarget:{head}"
-    if any(observer.recorded(st, observer.key_for(loop, number, head, event, ident))
-           for event in ("stall", "retargeted")):
+    try:
+        if any(observer.recorded(st, observer.key_for(loop, number, head, event, ident))
+               for event in ("stall", "retargeted")):
+            return
+    except Exception as exc:  # noqa: BLE001 - a notice is best effort; the sweep goes on
+        log(f"#{number}: retarget notice skipped, the observer ledger is unreadable: "
+            f"{type(exc).__name__}: {exc}")
         return
     observer.notify(loop, st, "retargeted" if status == "enqueued" else "stall", number, head,
                     identity=ident, next_turn=next_turn,
