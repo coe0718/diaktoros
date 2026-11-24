@@ -141,6 +141,22 @@ class Snapshot(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(fs.load_baseline(baseline), expected)
 
+    def test_unrecognized_arguments_are_refused_not_run_as_the_check(self):
+        # #2008: a misspelled --force must not fall through to the plain check and exit 0.
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "file_sizes_baseline.json"
+            fs.write(Rules.BASE, baseline)
+            before = baseline.read_text()
+            for argv in (["--snapshot", "--Force"], ["--snapshot", "--forse"], ["--writ"],
+                         ["--force", "--snapshot"], ["--write", "--force"]):
+                with self.subTest(argv=argv):
+                    code, out, err = self.run_main(argv, baseline)
+                    self.assertEqual(code, 2)
+                    self.assertIn("unrecognized arguments", err)
+                    self.assertIn("usage:", err)
+                    self.assertNotIn("within the ratchet", out)
+                    self.assertEqual(baseline.read_text(), before)
+
 
 class Measuring(unittest.TestCase):
     def test_functions_are_named_by_qualified_name_without_decorators(self):
