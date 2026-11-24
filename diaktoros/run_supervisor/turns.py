@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .. import claimant, run_supervisor, runtime_detect, util
+from .. import claimant, run_supervisor, runtime_detect, state as state_mod, util
 from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
@@ -1190,9 +1190,9 @@ class ClaimAndLaunch:
         prompted as, the change it saw and the shadow review a ruling's prompt showed. A ruling's
         prompt also fills ``seen`` with the reviewer reviews it showed (#2402)."""
         from .. import config
-        # The reviewer and fixer see the change itself (#50); the adjudicator needs both
-        # sides' comments. A read that failed is transient (retry); a moved head is not.
-        # The shadow is prompted as the reviewer it shadows.
+        # The reviewer and fixer see the change itself (#50); the adjudicator needs both sides'
+        # comments. A read that failed is transient (retry); a moved head is not. The shadow is
+        # prompted as the reviewer it shadows.
         prompt_row = dict(row, seat='reviewer') if row['seat'] == run_supervisor.SHADOW else row
         try:
             # The last allowed attempt degrades an unreadable file list rather than failing
@@ -1210,7 +1210,8 @@ class ClaimAndLaunch:
                     raise run_supervisor.RetryableError("waiting on the active reviewer turn's shadow review")
                 if shadow is None:      # #1145: a ruling on none records '': wait for a read
                     raise run_supervisor.RetryableError('shadow review unreadable before launch')
-                if str(shadow[2]) != 'REQUEST_CHANGES':  # it agrees now: as the gate, no ruling
+                if str(shadow[2]) != 'REQUEST_CHANGES':  # it agrees now: no ruling, nor its hold
+                    state_mod.state_for(loop).breach_clear_pending(row['pr'], row['head'], int(marker['rounds']))
                     raise ValueError('adjudication no longer current')
                 extra = {'shadow': shadow}
             if row['seat'] == 'adjudicator':
@@ -1218,8 +1219,7 @@ class ClaimAndLaunch:
             elif row['seat'] == run_supervisor.SHADOW:
                 # Prompted as the reviewer, but told its own step budget (#2199).
                 extra = {'steps': config.max_steps(loop, run_supervisor.SHADOW)}
-            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change,
-                                                  **extra)
+            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change, **extra)
         except ValueError as exc:
             if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
                     or str(exc).startswith('PR files unreadable'):

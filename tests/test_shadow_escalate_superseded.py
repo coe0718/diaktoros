@@ -5,7 +5,8 @@ same head (``review --reconsider`` queues one) leaves the ledger readable but wi
 that turn yet. The launch waits for it within the retry backoff, saying what it waits on rather
 than "shadow review unreadable", so the turn's own review, landing minutes later, is still ruled
 on with nobody involved (#2688); one that agrees is not ruled on, as the gate would not escalate
-it. An unreadable ledger still waits as before (#1145).
+it, and its escalation is cleared, so a later dissent escalates anew. An unreadable ledger still
+waits as before (#1145).
 Driven through the real launch (``_prepare_launch``) on a real run ledger.
 """
 from __future__ import annotations
@@ -30,6 +31,8 @@ ROW = {"repo": fg.REPO, "pr": 7, "head": fg.HEAD}
 
 class Superseded(ser.Base):
     claim = ser.Between.claim          # the real launch; not a subclass, so its tests run once
+    explain_and_ready = ser.Between.explain_and_ready
+    escalate = ser.Trigger.escalate
 
     def reviewer(self, key, at):
         """A reviewer run of turn ``key`` at the head, created at ``at``."""
@@ -69,11 +72,11 @@ class Superseded(ser.Base):
                 self.claim()
         self.assertEqual(str(caught.exception), "shadow review unreadable before launch")
 
-    def own_review(self, verdict, body):
-        """The active (reconsider:1) turn's own shadow review, landing during the wait."""
+    def own_review(self, verdict, body, key="reconsider:1"):
+        """The active (``key``) reviewer turn's own shadow review, landing during the wait."""
         self.shadow(verdict, body=body, at=time.time())
         with closing(sqlite3.connect(self.db)) as con, con:
-            con.execute("UPDATE runs SET turn_key='reconsider:1' WHERE id=?", (f"s{self.n}",))
+            con.execute("UPDATE runs SET turn_key=? WHERE id=?", (key, f"s{self.n}"))
 
     def test_an_agreeing_review_during_the_wait_is_not_ruled_on(self):
         self.superseded()
@@ -84,7 +87,26 @@ class Superseded(ser.Base):
         self.assertEqual(str(caught.exception), "adjudication no longer current")
         self.assertFalse(run_supervisor.retryable(caught.exception))   # failed, not waited on
         start.assert_not_called()                  # the breach was never claimed for a ruling
-        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")  # as the gate
+        self.assertEqual(self.st.breach_get(7), {})     # nor left parked for one: its hold is gone
+        _marker, blockers, why = self.explain_and_ready()
+        self.assertFalse(any(w.startswith("escalated:") for w in [*blockers, *why]), (blockers, why))
+        self.assertEqual(self.escalate()[0], "shadow agrees")
+        self.reviewer("reconsider:2", time.time())     # a later re-review, and its dissent
+        self.own_review("REQUEST_CHANGES", "F3: a later dissent", key="reconsider:2")
+        self.assertEqual(self.escalate()[0], "new")     # escalates anew, not "already"
+
+    def test_only_this_rounds_shadow_escalation_awaiting_its_ruling_is_cleared(self):
+        clear = self.st.breach_clear_pending
+        for status, by, rounds, cleared in (("awaiting-adjudication", "shadow", 1, True),
+                                            ("adjudicating", "shadow", 1, False),
+                                            ("awaiting-adjudication", "dispute", 1, False),
+                                            ("awaiting-adjudication", "shadow", 2, False)):
+            with self.subTest(status=status, by=by, rounds=rounds):
+                self.mark_escalated(by=by, status=status)
+                self.assertEqual(clear(7, fg.HEAD, rounds), cleared)
+                self.assertEqual(self.st.breach_get(7) == {}, cleared)
+        self.mark_escalated(status="awaiting-adjudication")
+        self.assertFalse(clear(7, fg.HEAD))         # without a round: delivery-pending only
 
     def test_the_active_turns_own_review_launches_as_before(self):
         self.superseded()

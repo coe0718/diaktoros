@@ -104,14 +104,22 @@ class Breaches:
         return "new" if new else "retry"
 
 
-    def breach_clear_pending(self, number: int, head: str) -> bool:
+    def breach_clear_pending(self, number: int, head: str, shadow_rounds: int | None = None) -> bool:
         """Drop a ``delivery-pending`` marker at ``head`` that no longer holds it (a raised cap
-        or a dismissed verdict). Only that status, that head, and no delivery in flight."""
+        or a dismissed verdict). Only that status, that head, and no delivery in flight. With
+        ``shadow_rounds``: only a shadow escalation of that round, awaiting its ruling too, whose
+        shadow review agrees by the ruling's launch (#2688), so a later dissent escalates anew."""
         key = f"{self.loop['repo']}#{number}"
         with self.breach_lock():
             data = _state._mapping(self._load(self.breach, {}))
             marker = _state._mapping(data.get(key))
-            if (marker.get("head") != head or marker.get("status") != "delivery-pending"
+            statuses = ("delivery-pending",)
+            if shadow_rounds is not None:
+                if ((marker.get("escalated") or {}).get("by") != "shadow"
+                        or int(marker.get("rounds") or 0) != shadow_rounds):
+                    return False
+                statuses += ("awaiting-adjudication",)
+            if (marker.get("head") != head or marker.get("status") not in statuses
                     or _state._delivery_in_flight(marker)):
                 return False
             data.pop(key)
