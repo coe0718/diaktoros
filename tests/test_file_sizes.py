@@ -109,12 +109,13 @@ class Snapshot(unittest.TestCase):
         real_write = fs.write
         # write() binds its default path at definition: redirect it too, so no run of main()
         # (with or without the fix) can touch the real baseline.
-        with mock.patch.object(fs, "measure", return_value=self.MEASURED), \
+        with mock.patch.object(fs, "measure", return_value=self.MEASURED) as measure, \
                 mock.patch.object(fs, "BASELINE", baseline), \
                 mock.patch.object(fs, "write", lambda data, path=None: real_write(data, baseline)), \
                 contextlib.redirect_stdout(io.StringIO()) as out, \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             code = fs.main(argv)
+        self.measure = measure  # kept so a test can assert whether main() measured at all
         return code, out.getvalue(), err.getvalue()
 
     def test_snapshot_refuses_to_overwrite_an_existing_baseline(self):
@@ -140,6 +141,24 @@ class Snapshot(unittest.TestCase):
             code, _, _ = self.run_main(["--snapshot", "--force"], baseline)
             self.assertEqual(code, 0)
             self.assertEqual(fs.load_baseline(baseline), expected)
+
+    def test_unrecognized_arguments_are_refused_not_run_as_the_check(self):
+        # #2008: a misspelled --force must not fall through to the plain check and exit 0.
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "file_sizes_baseline.json"
+            fs.write(Rules.BASE, baseline)
+            before = baseline.read_text()
+            for argv in (["--snapshot", "--Force"], ["--snapshot", "--forse"], ["--writ"],
+                         ["--force", "--snapshot"], ["--write", "--force"]):
+                with self.subTest(argv=argv):
+                    code, out, err = self.run_main(argv, baseline)
+                    self.assertEqual(code, 2)
+                    self.assertIn("unrecognized arguments", err)
+                    self.assertIn("usage:", err)
+                    self.assertNotIn("within the ratchet", out)
+                    self.assertEqual(baseline.read_text(), before)
+                    # Refused before measuring, not after: nothing is checked (review F1).
+                    self.measure.assert_not_called()
 
 
 class Measuring(unittest.TestCase):
