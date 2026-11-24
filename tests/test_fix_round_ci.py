@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import ci, gh, issue_facts  # noqa: E402
+from diaktoros import ci, gh, gh_text, issue_facts  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
@@ -31,7 +31,7 @@ class FixRoundCI(unittest.TestCase):
                 mock.patch.object(gh, "api", return_value={
                     "status": "completed",
                     "steps": [{"name": "Run unit tests", "conclusion": "failure"}]}), \
-                mock.patch.object(gh, "read_text",
+                mock.patch.object(gh_text, "read_text",
                                   return_value="ok\nFAIL: test_walk (test_reader_identity)\n"), \
                 mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
                 mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None):
