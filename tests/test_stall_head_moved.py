@@ -5,8 +5,8 @@ reviewer turn cancelled because the head moved before it started
 (``run_supervisor.REVIEW_HEAD_MOVED``) is proof the listed head is gone: the next sweep lists the
 new head, and #2468 delivers the review there. So that head is no "reviewer never posted a
 verdict" stall. Any other ending (another cancellation, a failure, ``uncertain``) or no turn at
-all still is, as before; so is a cancellation older than the sweep's listing, since the head can
-return to that SHA. The ledger here is real, so ``_stall_kind`` reads what the worker wrote.
+all still is, as before; so is a cancellation older than the sweep's listing read (not merely its
+start), since the head can return to that SHA. The ledger here is real, so ``_stall_kind`` reads what the worker wrote.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class HeadMovedIsNotAStall(fg.Base):
         """A reviewer turn at the listed head, ended as the worker leaves it: before the sweep,
         or (``now``) during it, after its listing was read."""
         self.n += 1
-        when = time.time() + self.n / 1000 if now else time.time() - 100 + self.n
+        when = time.time() + self.n / 1e6 if now else time.time() - 100 + self.n
         with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, attempts, "
                         "error, created, updated, turn_key, push_admitted, retries) "
@@ -51,14 +51,22 @@ class HeadMovedIsNotAStall(fg.Base):
                         (f"r{self.n}", f"d{self.n}", fg.REPO, 7, head, seat, state, error,
                          when, when, f"k{self.n}"))
 
-    def sweep(self, *during):
-        """One sweep; ``during``: turns ``(state, error)`` the worker ends after its listing read."""
+    def sweep(self, *during, before=()):
+        """One sweep; ``during``: turns ``(state, error)`` the worker ends after its listing read;
+        ``before``: ones it ends once the sweep began, but before that read (#2694 review F1)."""
         def listing(*_a, **_kw):
             for state, error in during:
                 self.turn(state, error, now=True)
             return [fg.LIVE]
+
+        def armed(c, hooks_armed=watchdog._hooks_armed):
+            for state, error in before:
+                self.turn(state, error, now=True)
+            time.sleep(0.01)            # the listing is read after these, as the sweep does
+            return hooks_armed(c)
         with mock.patch.object(watch_mode, "TEST", True), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
+                mock.patch.object(watchdog, "_hooks_armed", side_effect=armed), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
                 mock.patch.object(gh, "open_prs", side_effect=listing), \
                 mock.patch.object(gh, "reviews", return_value=[]), \
@@ -84,6 +92,12 @@ class HeadMovedIsNotAStall(fg.Base):
         # back. A failed review at the head in between redelivers nothing, so this is a stall.
         self.turn("failed", "reviewer crashed", head="c" * 40)
         self.assertIn(STALL, self.sweep())
+
+    def test_a_head_that_came_back_before_its_listing_still_stalls(self):
+        # #2694 review F1: cancelled after the sweep began, but before its listing was read. That
+        # listing shows the head again (moved away and back): nothing says it is stale.
+        self.arm_long_ago()
+        self.assertIn(STALL, self.sweep(before=[("cancelled", MOVED)]))
 
     def test_no_turn_or_another_ending_still_stalls(self):
         self.arm_long_ago()

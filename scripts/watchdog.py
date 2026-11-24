@@ -344,9 +344,9 @@ def _app_flag_unknown(c: _Sweep) -> bool:
 
 
 def _read_listing(c: _Sweep) -> None:
-    # With the hooks confirmed, the open-PR listing is read here, before the health check, so
-    # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
-    # that works must not announce "reads work again" while the listing is still refused).
+    # With the hooks confirmed, the open-PR listing is read here, before the health check, so that a listing
+    # GitHub refuses counts as a failed read this sweep (a working /user probe must not say "reads work again").
+    c.listed_at = watch_mode.now()      # #2626: the listing's own time, not the sweep's start
     c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
     if not watch_mode.TEST:
         # The listed heads let a gate's failed PR read that a live turn covers stay quiet (#1959).
@@ -799,10 +799,10 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                 f"the review queued at {moved[:7]} was cancelled when the head moved — delivered "
                 "it for this head" if moved else "a pending review request had started no review "
                 "— delivered it to the reviewer gate"))
-    # #2626: a turn cancelled for a head move since this sweep began proves its listing is stale.
+    # #2626: a turn cancelled for a head move once the listing was read proves that listing stale.
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
             and not watch_health.live_turn(loop, number, head, "reviewer")
-            and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer", c.now)):
+            and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer", c.listed_at)):
         return (f"reviewer never posted a verdict — head {head[:7]} observed {mins / 60:.1f}h ago, "
                 f"0 verdicts at this head (`hermes dk review --loop {loop['id']} --pr {number}` "
                 "asks for one)")
