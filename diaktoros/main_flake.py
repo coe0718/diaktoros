@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 import re
 import time
 
-from . import ci, ci_tests, config, gh
+from . import ci, ci_tests, config, gh, gh_text
 
 TESTS_MAX = 10
 # How long a rerun may take to show at the head before a red read of the old jobs counts as red.
@@ -76,7 +76,7 @@ def timeouts(log: str) -> bool:
 def _failed_job(loop: dict, view: ci.CIState, name: str, head: str, runs: dict):
     """``(run id, conclusion, log)`` of a failed check that is an Actions job of this repository at
     ``head``; None when it is not one, or anything is unreadable. A log over ``LOG_LIMIT`` is
-    unreadable too: ``gh.read_text`` keeps only its tail, and a failure cut off above the tail
+    unreadable too: ``gh_text.read_text`` keeps only its tail, and a failure cut off above the tail
     must not let the rest pass for a flake (#2285). One byte past the limit is read to tell."""
     job_id = view.ids.get(name)
     if type(job_id) is not int:
@@ -84,7 +84,7 @@ def _failed_job(loop: dict, view: ci.CIState, name: str, head: str, runs: dict):
     job = ci_tests._job_at_head(loop, job_id, head, runs)
     if job is None:
         return None
-    log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
+    log = gh_text.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
                        login=loop.get("read_token"), limit=ci_tests.LOG_LIMIT + 1)
     if not log or len(log.encode()) > ci_tests.LOG_LIMIT:
         return None                               # no log, or only its tail (#2285)

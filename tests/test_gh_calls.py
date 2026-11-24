@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from diaktoros import gh, gh_cache, gh_calls, github_app, hostdirs  # noqa: E402
+from diaktoros import gh, gh_cache, gh_calls, gh_text, github_app, hostdirs  # noqa: E402
 
 LOOP = {"repo": "owner/one", "read_token": "reader"}
 
@@ -137,17 +137,17 @@ class Counted(unittest.TestCase):
         self.assertEqual((reader["limit"]["used"], reader["limit"]["limit"]), ("103", "5000"))
 
     def test_a_job_log_read_is_counted_too(self):
-        self.assertIsNotNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/5/logs"))
+        self.assertIsNotNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/5/logs"))
         self.assertEqual(self.counted()["reader"]["paths"],
                          [["GET", "/repos/R/actions/jobs/N/logs", "spent", 1]])
 
     def test_a_failed_job_log_read_is_counted_once_with_its_outcome(self):
         # Review of #1758, F2: a refused, unanswered or unsent log read is counted too.
-        self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/5/limited"))
+        self.assertIsNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/5/limited"))
         with mock.patch.object(gh, "API", "http://127.0.0.1:1"):     # nothing listens there
-            self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/6/logs"))
+            self.assertIsNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/6/logs"))
         with mock.patch.object(gh, "token", side_effect=gh.GitHubError("no token file")):
-            self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/7/logs"))
+            self.assertIsNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/7/logs"))
         reader = self.counted()["reader"]
         self.assertEqual((reader["limited"], reader["error"], reader["unsent"], reader["spent"]),
                          (1, 1, 1, 0))
@@ -155,9 +155,9 @@ class Counted(unittest.TestCase):
     def test_a_log_read_github_redirected_is_spent_whatever_the_storage_host_does(self):
         # Review of #1758, F3: GitHub answered, so a storage host that is down or refuses
         # (a 403 that looks like a rate limit) does not turn the API call into error or limited.
-        self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/5/to-storage/down"))
-        self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/6/to-storage/limited"))
-        self.assertIsNotNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/7/to-storage/log"))
+        self.assertIsNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/5/to-storage/down"))
+        self.assertIsNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/6/to-storage/limited"))
+        self.assertIsNotNone(gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/7/to-storage/log"))
         reader = self.counted()["reader"]
         self.assertEqual((reader["spent"], reader["error"], reader["limited"]), (3, 0, 0))
         self.assertEqual(reader["limit"]["used"], "104")     # from the last redirect, not storage

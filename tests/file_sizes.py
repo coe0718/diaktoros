@@ -20,6 +20,8 @@ physical lines until a fix turn joined lines to pass the check, which made the c
 * ``--snapshot`` writes a first baseline from today's sizes, and so can add and raise entries.
   Once a baseline exists it refuses without ``--force`` (#1388): a forced snapshot loosens the
   ratchet and is a reviewed change, never routine.
+* Any other arguments are refused with exit 2, nothing checked or written (#2008), so a
+  misspelled ``--force`` is never swallowed by the plain check.
 
 Covers ``diaktoros/`` and ``scripts/`` (not ``tests/``). A function is named by its file and its
 qualified name (``Class.method``, ``outer.inner``), and measured from its ``def`` line to its
@@ -169,7 +171,18 @@ def _snapshot(files: dict, functions: dict, *, force: bool) -> int:
     return 0
 
 
+USAGE = "usage: python3 tests/file_sizes.py [--write | --snapshot [--force]]"
+_ARGVS = ([], ["--write"], ["--snapshot"], ["--snapshot", "--force"])
+
+
 def main(argv: list[str]) -> int:
+    """Run the check, ``--write`` or ``--snapshot [--force]``. Any other argv is refused with exit
+    2 (#2008): falling through to the plain check would let a misspelled ``--force`` report
+    success with no snapshot written."""
+    if argv not in _ARGVS:
+        print(f"unrecognized arguments: {' '.join(argv)}; nothing checked or written\n{USAGE}",
+              file=sys.stderr)
+        return 2
     files, functions = measure()
     if argv == ["--write"]:
         write(tightened(files, functions, load_baseline()))

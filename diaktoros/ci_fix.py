@@ -14,7 +14,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from . import ci, ci_cache, config, gh
+from . import ci, ci_cache, config, gh, gh_text
 from .state import ledger
 
 # The ledger turn key of a CI-fix turn. One head, one key, so one turn per head.
@@ -140,7 +140,7 @@ def _job_view(loop: dict, job_id: int) -> tuple[str, str | None]:
         return hit["step"], hit["tail"]
     job = gh.api(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}", login=loop["read_token"])
     step = failing_step(job)
-    log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
+    log = gh_text.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
                        login=loop["read_token"])
     if log is None:
         return step, None
