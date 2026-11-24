@@ -50,9 +50,9 @@ def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
                     entry = transition.record(loop, st, number, (pr.get("head") or {}).get("sha"),
                                               base, watch=watch)
                     if entry:
-                        # Owner policy (#23): the parent merged and the child is on trunk
-                        # now, so start a fresh review situation — one isolated reviewer
-                        # turn. Nothing from before the boundary carries over.
+                        # Owner policy (#23): the parent merged, the child is on trunk: one
+                        # fresh isolated reviewer turn, nothing older carried over. Queued is
+                        # routine; else a stall (#2153).
                         status, detail = transition.start_fresh_review(loop, st, number, live=live)
                         next_turn = {"enqueued": "reviewer queued (fresh review)",
                                      "retry": "fresh reviewer enqueue retries next sweep"}.get(
@@ -60,7 +60,8 @@ def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
                         lines.append(f"#{number} retargeted to {base} at the same head — old "
                                      "reviews, rounds and queued work quarantined; fresh review: "
                                      f"{status} ({detail})")
-                        observer.notify(loop, st, "stall", number, entry["head"],
+                        observer.notify(loop, st, "retargeted" if status == "enqueued"
+                                        else "stall", number, entry["head"],
                                         identity=f"retarget:{entry['head']}",
                                         outcome="old same-head reviews quarantined; fresh review "
                                         f"{status}", next_turn=next_turn)

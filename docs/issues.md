@@ -471,7 +471,9 @@ moved before it started: a review-only author's push, or a base merge by the hos
 would wait with no verdict and nothing queued (#2468). Unlike a pending request, this covers a
 head that was already there when the loop was armed: the cancelled turn in the run ledger shows a
 review was asked for, and the 15 minutes count from when the loop first saw the head (from
-arming, for a watchdog record too old to say). Other
+arming, for a watchdog record too old to say). A sweep whose listing still shows the old head
+reports no "reviewer never posted a verdict" stall for it when that head's newest reviewer turn
+was cancelled this way: the head is gone, and the next sweep judges the new one (#2626). Other
 dropped wakes show as stall alerts.
 
 ## Current limits

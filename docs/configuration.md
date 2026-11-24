@@ -366,6 +366,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `ci_declined` | A CI-fix turn declined to push because no push of this PR fixes the failure (a file over a size limit, or a failure outside the PR), or a conflict-resolution turn declined a file it cannot resolve honestly (`needs-a-person`, #2034), naming the kind, the fixer's reason and the maintainer's move: once per run, and only once the reason was posted or its POST's outcome is unknown (#1526). Urgent tier. |
 | `main_flaked` | With `main_flake_rerun` on, a red main head that looked like a flake was rerun once and passed: once per main head, naming the test(s). Routine tier (#1784). |
 | `granted` | With `review_only_rerequest_grants` on, a maintainer's GitHub re-request granted one more verdict on a review-only PR at its cap: once per head and verdict count, naming who re-requested. Urgent tier (#2496). |
+| `retargeted` | A stacked child retargeted to the base at the same head has its old reviews quarantined and its fresh review queued: once per retarget head. One whose fresh review could not be queued is a `stall`. Routine tier (#2153). |
 
 ```bash
 hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>"
