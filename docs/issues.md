@@ -161,11 +161,11 @@ fixer profile and account, not a separate issue-fixer profile.
 If a fix is possible, the broker:
 
 1. Records the intent before external writes.
-2. Pushes one commit to new branch `diaktoros/issue-N` from the captured base SHA.
-   The branch must be absent; an existing branch is never overwritten. When the base moved
-   during the turn, the push also carries a clean merge of the base's tip (one that brings no
-   workflow change), so the PR opens up to date instead of behind (#2591). A merge that isn't
-   clean, or can't be computed, is left out and the fix is pushed alone.
+2. Pushes the fix, one commit on the captured base SHA, to new branch `diaktoros/issue-N`,
+   which must be absent: an existing branch is never overwritten. When the base moved during
+   the turn, a clean merge of the base's tip (one that brings no workflow change) goes on top,
+   on every loop, `update_behind` or not, so the PR opens up to date (#2591, #2606). A merge
+   that isn't clean, or can't be computed, is left out and the fix is pushed alone, behind.
 3. Opens a PR against the configured base, with `Fixes #N` in its description.
    Right after, it labels the PR, as the fixer, with the issue's labels as the host re-reads
    them at write time (never labels the model chose): type, priority, `maintainer`, area and
