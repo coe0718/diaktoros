@@ -834,17 +834,25 @@ class RunBroker(broker_issues.IssueWrites):
                                   head=self.scope.head, ledger_db=self.scope.ledger_db)
 
     def _decline_kind(self, operation: str, verdict: object) -> str:
-        """The kind a fixer's request declines a CI fix with (#1526), ``""`` for none. Only a
-        CI-fix turn that pushed nothing may decline; any other use is refused before anything is
-        read or spent."""
+        """The kind a fixer's request declines a CI fix (#1526) or a conflict resolution (#2034)
+        with, ``""`` for none. Only a turn that pushed nothing may decline, and only with a kind
+        of its own scope (``ci_decline.refusal``: a CI-fix kind on a CI-fix turn, a conflict kind
+        on a conflict turn, whose scope carries ``merge``); any other use is refused before
+        anything is read or spent."""
         if operation != "request_review":
             return ""
         try:
             name = ci_decline.kind(verdict)
         except ValueError as exc:
             raise ProtocolError(f"{exc}; nothing was written, resubmit") from None
-        if name and (not self.scope.ci_fix or self._pushed_head):
-            raise ProtocolError("only a CI-fix turn that pushed nothing may decline")
+        if not name:
+            return ""
+        refused = ci_decline.refusal(name, ci_fix=self.scope.ci_fix,
+                                     conflict=bool(self.scope.merge))
+        if refused:
+            raise ProtocolError(f"{refused}; nothing was written")
+        if self._pushed_head:
+            raise ProtocolError("only a turn that pushed nothing may decline")
         return name
 
     def _answers_only(self, head: str, body: str, dispute: bool, decline: str) -> dict:
@@ -875,6 +883,7 @@ class RunBroker(broker_issues.IssueWrites):
                 pass  # stays 'posting'; a finished run's notice then says uncertain
         if decline:
             ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
+            ci_decline.remember(self._loop, self.scope.number, head, decline, body)   # #2034
         if self.answers_outcome not in ("posted", "uncertain"):
             raise ProtocolError(f"answers comment {self.answers_outcome}")
         self.completed = True

@@ -12,6 +12,13 @@ posted (``record``), posts the reason once on the PR as the fixer's answers, sen
 ``ci_declined`` notice (``notify``), and the run ends succeeded, so nothing retries it. The answers
 record makes it a write the ledger never replays: a redelivery is refused, and so is ``retry``.
 A new head is what gets another CI fix. ``explain`` names it for its head (``line``).
+
+A conflict-resolution turn declines the same way (#2034), with its own kind, ``needs-a-person``:
+a conflicted file it cannot resolve honestly (it cannot tell what one side meant). Each kind is
+accepted on its own scope only (``refusal``): a CI-fix kind on a CI-fix turn, a conflict kind on a
+conflict turn (the broker scope's ``merge``). A conflict decline is also remembered for the head
+(``remember``, #1154's record), so the next base merge queues no new conflict turn for it; like a
+whole-file conflict it lapses after a day (#1271), and a new head clears it.
 """
 from __future__ import annotations
 
@@ -22,7 +29,10 @@ from .state import ledger
 PREFIX = "DECLINE:"           # the request's verdict field: ``DECLINE:<kind>``
 # Each kind, and the maintainer's move it leaves.
 KINDS = {"size-limit": "split the file over its limit, or raise its baseline",
-         "not-this-pr": "re-run the failed job, or fix what broke outside this PR"}
+         "not-this-pr": "re-run the failed job, or fix what broke outside this PR",
+         "needs-a-person": "merge the base by hand, resolving the files named above"}
+# The kinds a conflict-resolution turn declines with (#2034); every other kind is a CI fix's.
+CONFLICT_KINDS = frozenset({"needs-a-person"})
 
 
 def kind(verdict: object) -> str:
@@ -36,10 +46,25 @@ def kind(verdict: object) -> str:
     return name
 
 
+def refusal(name: str, *, ci_fix: bool, conflict: bool) -> str:
+    """Why a turn of this scope may not decline with ``name``, or ``""``. A conflict kind is a
+    conflict-resolution turn's only, every other kind a CI-fix turn's only (#2034)."""
+    if name in CONFLICT_KINDS:
+        return "" if conflict else f"only a conflict-resolution turn may decline as {name}"
+    return "" if ci_fix else f"only a CI-fix turn may decline as {name}"
+
+
+def _what(name: str) -> str:
+    """What a decline of this kind declined: the CI fix, or the conflict resolution."""
+    return "conflict resolution" if name in CONFLICT_KINDS else "CI fix"
+
+
 def comment(name: str, body: str) -> str:
     """The text posted as the fixer's answers: the decline, its reason, and whose move is next."""
-    return (f"**CI fix declined ({name}): no push.**\n\n{body.strip()}\n\n"
-            f"Next, for a maintainer: {KINDS[name]}. A new head gets a CI fix again.")
+    again = ("A new head (the base merged in) ends it." if name in CONFLICT_KINDS
+             else "A new head gets a CI fix again.")
+    return (f"**{_what(name).capitalize()} declined ({name}): no push.**\n\n{body.strip()}\n\n"
+            f"Next, for a maintainer: {KINDS[name]}. {again}")
 
 
 def record(db, run_id: str, repo: str, pr: int, head: str, name: str, body: str) -> None:
@@ -68,7 +93,8 @@ def summary(name: str, body: str) -> str:
 
 
 def notify(loop: dict, number: int, head: str, run_id: str, name: str, body: str) -> None:
-    """The one urgent ``ci_declined`` notice (keyed by the run: never twice). Best effort."""
+    """The one urgent ``ci_declined`` notice (keyed by the run: never twice), for a CI fix's or a
+    conflict turn's decline alike (#2034). Best effort."""
     from . import observer, state as state_mod
     try:
         observer.notify(loop, state_mod.state_for(loop), "ci_declined", number, head,
@@ -77,8 +103,29 @@ def notify(loop: dict, number: int, head: str, run_id: str, name: str, body: str
         pass
 
 
+def remember(loop: dict, number: int, head: str, name: str, body: str) -> None:
+    """A conflict decline makes this head's conflict a person's (#1154's record, #2034): the
+    watchdog queues no new conflict turn for it on the next base merge. It lapses like a
+    whole-file conflict's (#1271), since a later base may resolve it; a new head clears it. Only
+    a conflict kind is remembered. Best effort."""
+    if name not in CONFLICT_KINDS:
+        return
+    from . import conflict_person, state as state_mod
+    try:
+        conflict_person.record(state_mod.state_for(loop), int(number), head,
+                               f"the fixer declined to resolve it: {summary(name, body)}",
+                               lapse_s=conflict_person.WHOLE_FILE_RETRY_S)
+    except Exception:  # noqa: BLE001 - the decline is recorded and posted; this only saves turns
+        pass
+
+
 def line(db, repo: str, pr: int, head: str, short: str) -> str:
-    """``explain``'s blocker for a declined CI fix at this head, or ``""``."""
+    """``explain``'s blocker for a declined CI fix or conflict resolution at this head, or
+    ``""``."""
     found = at_head(db, repo, pr, head)
-    return (f"the CI fix at head {short} was {summary(*found)}; nothing retries it, and the "
-            "review waits for green or a new head") if found else ""
+    if not found:
+        return ""
+    waits = ("the PR waits for a person to merge the base (a new head)"
+             if found[0] in CONFLICT_KINDS else "the review waits for green or a new head")
+    return (f"the {_what(found[0])} at head {short} was {summary(*found)}; nothing retries it, "
+            f"and {waits}")

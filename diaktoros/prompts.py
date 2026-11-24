@@ -567,7 +567,12 @@ What to do:
    review's findings: this turn answers none of them, and the host heads your summary as a merge.
 
 If you cannot resolve a file honestly (you cannot tell what one side meant), do not guess and
-do not push: say so in your summary, file by file. A person resolves it.
+do not push. Don't just say so in your summary either: nothing publishes it, and the turn would be
+retried as a failure. Write why to `/tmp/why.md`, file by file (which file, what each side
+changed, and what you cannot tell), and decline with
+""" + DECLINE.format(kind="needs-a-person") + """. The host posts it once on the PR as your
+answers and tells a maintainer to merge `{base}` by hand, and the turn ends: it is never retried.
+Only this turn may decline as `needs-a-person`, and only with nothing pushed. A person resolves it.
 
 Never claim the push or the review request succeeded without an ok response from the broker."""
 

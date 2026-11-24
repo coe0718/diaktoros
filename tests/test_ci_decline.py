@@ -103,6 +103,55 @@ class Decline(base.Base):
             self.assertEqual((server.requests, server.completed), (0, False))
 
 
+CONFLICT_WHY = "a.py: main renamed parse() and this PR changed its contract; I cannot tell which.\n"
+MERGE = {"base_ref": "main", "base_sha": "c" * 40, "tree": "d" * 40}
+
+
+class ConflictDecline(Decline):
+    """#2034: a conflict turn that cannot resolve a file declines as ``needs-a-person``."""
+    def setUp(self):
+        super().setUp()
+        self.scope = dataclasses.replace(self.scope, ci_fix=False, merge=MERGE)
+
+    def test_a_conflict_turn_that_declines_posts_records_notifies_once_and_ends_done(self):
+        with self.serving() as server:
+            result = self.decline(server, "needs-a-person", CONFLICT_WHY)
+            self.assertTrue(result["ok"], result)
+            self.assertTrue(server.completed)
+            self.assertFalse(self.decline(server, "needs-a-person", CONFLICT_WHY)["ok"])
+        posts = self.fake.posts()
+        self.assertEqual(len(posts), 1)
+        text = posts[0][1]["body"]
+        self.assertIn("Conflict resolution declined (needs-a-person): no push.", text)
+        self.assertIn("merge the base by hand", text)
+        self.assertEqual([tuple(r) for r in self.declines()],
+                         [(self.run_id, 7, HEAD, "needs-a-person", CONFLICT_WHY)])
+        with Supervisor(self.db)._connect() as con:
+            self.assertIsNotNone(run_supervisor.write_records(con, self.run_id))
+        (args, kw), = self.notices
+        self.assertEqual((args[2], args[3]), ("ci_declined", 7))
+        self.assertIn("merge the base by hand", kw["outcome"])
+
+    def test_kinds_are_refused_on_the_wrong_scope(self):
+        with self.serving() as server:
+            for kind in ("size-limit", "not-this-pr"):
+                refused = self.decline(server, kind)
+                self.assertFalse(refused["ok"])
+                self.assertIn("only a CI-fix turn", refused["error"])
+        for scope in (dataclasses.replace(self.scope, merge=None, ci_fix=True),
+                      dataclasses.replace(self.scope, merge=None, ci_fix=False)):
+            with mock.patch.object(self, "scope", scope), self.serving() as server:
+                refused = self.decline(server, "needs-a-person", CONFLICT_WHY)
+                self.assertFalse(refused["ok"])
+                self.assertIn("only a conflict-resolution turn", refused["error"])
+        self.assertEqual((self.fake.posts(), self.declines(), self.notices), ([], [], []))
+
+    def test_the_conflict_prompt_says_to_decline_not_just_summarize(self):
+        text = " ".join(prompts.ISOLATED_CONFLICT.split())
+        self.assertIn("--decline needs-a-person`", text)
+        self.assertNotIn("do not push: say so in your summary", text)
+
+
 class Client(unittest.TestCase):
     def run_client(self, *argv):
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,7 +224,7 @@ class Reports(unittest.TestCase):
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed harness's classes run in test_fixer_answers."""
     suite = unittest.TestSuite()
-    for cls in (Decline, Client, Reports):
+    for cls in (Decline, ConflictDecline, Client, Reports):
         for name in sorted(vars(cls)):
             if name.startswith("test_"):
                 suite.addTest(cls(name))
