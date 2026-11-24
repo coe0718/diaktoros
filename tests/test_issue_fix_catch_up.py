@@ -203,7 +203,7 @@ class Doctor(unittest.TestCase):
         on = self.detail(triage={"route": "w-t", "fix_label": "fix-me"})
         self.assertIn("merges nothing into an open loop PR", on)
         self.assertIn("an issue fix still merges a moved base if clean and workflow-free", on)
-        self.assertNotIn("issue-fix", self.detail())        # issue fixes off: nothing to except
+        self.assertNotIn("issue fix still merges", self.detail())   # issue fixes off: no such clause
 
 
 if __name__ == "__main__":
