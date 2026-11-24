@@ -219,6 +219,30 @@ class ExplainPendingHandoff(AppSeat):
                          report["blockers"])
         self.assertTrue(review_kick.app_handoff_delivered(self.loop, 7, "e" * 40))
 
+    def test_late_acks_for_many_older_heads_keep_the_live_head_and_the_bound(self):
+        """#1946 (Vex F3/F4 on #1943): the live head's delivery is requested last but
+        acknowledged first; more than ``HANDOFF_HEADS_KEPT`` late acknowledgements for older
+        heads must not evict it, and the record still holds no more than the bound."""
+        self.fake.pr_head = fa.NEW_HEAD
+        live = self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7")
+        older = [f"{i:040x}" for i in range(1, 21)]  # 20 > HANDOFF_HEADS_KEPT, fixed on purpose
+        self.assertLess(review_kick.HANDOFF_HEADS_KEPT, len(older))
+        with mock.patch.object(routes, "fire", return_value=True):
+            with mock.patch.object(review_kick.time, "time", return_value=1000.0):
+                self.assertTrue(review_kick.kick(self.loop, live, fa.NEW_HEAD, "fix", "kick-7"))
+            for i, head in enumerate(older):          # requested earlier, acknowledged later
+                with mock.patch.object(review_kick.time, "time", return_value=float(i + 1)):
+                    self.assertTrue(review_kick.kick(self.loop, live, head, "fix", "sweep-7"))
+        report = self.report()
+        self.assertTrue(report["request_pending"], report)
+        self.assertTrue(review_kick.app_handoff_delivered(self.loop, 7, fa.NEW_HEAD))
+        record = state_mod.read_record(state_mod.state_for(self.loop), review_kick.HANDOFFS)
+        kept = review_kick._acknowledged_heads(record["7"])
+        self.assertEqual(len(kept), review_kick.HANDOFF_HEADS_KEPT)
+        self.assertEqual(kept[-1], fa.NEW_HEAD)
+        self.assertEqual(kept[:-1], older[-(review_kick.HANDOFF_HEADS_KEPT - 1):])
+        self.assertFalse(review_kick.app_handoff_delivered(self.loop, 7, older[0]))
+
     def test_a_handoff_recorded_by_the_earlier_format_still_counts(self):
         """A record written before F3 (one head per PR) still reads, and the next delivery
         keeps it."""
@@ -330,6 +354,16 @@ class WatchdogBackstop(__import__("test_fixer_gating").Base):
     def test_a_pat_reviewer_not_requested_is_left_alone(self):
         self.assertFalse(config.reviewer_is_app(self.loop))
         self.assertFalse(self.sweep().called)
+
+    def test_the_sweep_drops_a_closed_prs_handoffs_and_keeps_an_open_ones(self):
+        """#1946: the sweep prunes ``review-handoffs.json`` with the open PR numbers it read
+        (#7 is open, #8 merged or closed), as it does the conflict record."""
+        path = self.st.dir / review_kick.HANDOFFS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"7": {"%s": 5.0}, "8": {"%s": 6.0}}' % ("a" * 40, "b" * 40))
+        self.sweep()
+        record = state_mod.read_record(self.st, review_kick.HANDOFFS)
+        self.assertEqual(record, {"7": {"a" * 40: 5.0}})
 
 
 if __name__ == "__main__":

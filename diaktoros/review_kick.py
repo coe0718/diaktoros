@@ -12,6 +12,7 @@ a real delivery. The watchdog's drain sends the same event for a queued review.
 from __future__ import annotations
 
 import json
+import time
 
 from . import config, routes
 
@@ -53,31 +54,59 @@ HANDOFF_HEADS_KEPT = 16
 
 
 def _acknowledged_heads(entry: object) -> list[str]:
-    """The heads one PR's record entry names, oldest first: a list, or a single head as an
-    earlier record wrote it. Anything else names none."""
+    """The heads one PR's record entry names, oldest request first (``_requested_at``)."""
+    return list(_requested_at(entry))
+
+
+def _requested_at(entry: object) -> dict[str, float]:
+    """One PR's record entry as ``{head: when its delivery was requested}``, oldest request
+    first. An earlier record's entry (a list of heads, or a single head) has no times: its heads
+    count as requested before every timed one, in their order. Anything else names none."""
     if isinstance(entry, str):
-        return [entry] if entry else []
+        return {entry: 0.0} if entry else {}
     if isinstance(entry, list):
-        return [h for h in entry if isinstance(h, str) and h]
-    return []
+        return {h: 0.0 for h in entry if isinstance(h, str) and h}
+    if isinstance(entry, dict):
+        timed = {h: float(t) for h, t in entry.items() if isinstance(h, str) and h
+                 and isinstance(t, (int, float)) and not isinstance(t, bool)}
+        return dict(sorted(timed.items(), key=lambda item: item[1]))
+    return {}
 
 
-def _record_handoff(loop: dict, number: object, head: str) -> None:
+def _record_handoff(loop: dict, number: object, head: str, requested_at: float) -> None:
     """Remember that ``head`` of PR ``number`` reached the reviewer gate (#1213), under the
     loop's state lock so two deliveries for different PRs do not lose each other's entry.
 
-    Every acknowledged head is kept (the last ``HANDOFF_HEADS_KEPT`` of them), not only the
-    latest one to complete (Vex F3 on #1943): deliveries can complete out of order, and a late
-    acknowledgement for an older head must not erase the current head's."""
+    Every acknowledged head is kept (the ``HANDOFF_HEADS_KEPT`` most recently requested), not
+    only the latest one to complete (Vex F3 on #1943). Deliveries complete out of order, so the
+    heads are ranked by when their delivery was *requested* (``requested_at``), not by when it
+    was acknowledged (#1946): late acknowledgements for older heads, however many, never evict
+    the head requested last, which is the PR's live head."""
     from . import state as state_mod      # here: state imports much more than this module needs
     st = state_mod.state_for(loop)
     path = _handoffs_path(loop)
     with st.locked():
         record = st.kv_get(path, {})
         record = record if isinstance(record, dict) else {}
-        heads = [h for h in _acknowledged_heads(record.get(str(number))) if h != head]
-        record[str(number)] = (heads + [head])[-HANDOFF_HEADS_KEPT:]
+        heads = _requested_at(record.get(str(number)))
+        heads[head] = max(requested_at, heads.get(head, requested_at))
+        kept = sorted(heads.items(), key=lambda item: item[1])[-HANDOFF_HEADS_KEPT:]
+        record[str(number)] = dict(kept)
         st.kv_set(path, record)
+
+
+def prune(st, open_numbers) -> None:
+    """Drop the handoff record of every PR no longer open (#1946), as ``conflict_person.prune``
+    does; the watchdog's sweep passes the open PR numbers its listing already read."""
+    from . import state as state_mod
+    keep = {str(n) for n in open_numbers}
+    if not any(k not in keep for k in state_mod.read_record(st, HANDOFFS)):
+        return
+    path = st.dir / HANDOFFS
+    with st.locked():
+        record = st.kv_get(path, {})
+        if isinstance(record, dict):
+            st.kv_set(path, {k: v for k, v in record.items() if k in keep})
 
 
 def app_handoff_delivered(loop: dict, number: int, head: str) -> bool:
@@ -108,11 +137,12 @@ def kick(loop: dict, pr: dict, head: str, sender: str, tag: str) -> bool:
     route = ((loop.get("seats") or {}).get("reviewer") or {}).get("route")
     if not route:
         return False
+    requested_at = time.time()            # ranks this head among the PR's handoffs (#1946)
     sent = routes.fire(route, "pull_request", review_requested(loop, pr, head, sender), tag,
                        loop.get("host"))
     if sent:
         try:
-            _record_handoff(loop, pr.get("number"), head)
+            _record_handoff(loop, pr.get("number"), head, requested_at)
         except Exception as exc:          # the delivery happened; only explain learns less
             from .util import log
             log(f"#{pr.get('number')} @ {str(head)[:7]}: review handoff not recorded: "
