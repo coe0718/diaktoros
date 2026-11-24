@@ -18,7 +18,7 @@ from .. import (
 )
 from ..gate import shims as gate_shims
 from . import common as cli_common
-from . import route_sync
+from . import merge_check_off, route_sync
 from ..config import credentials
 from ..config import settings_form
 from .common import GATE_SCRIPT
@@ -96,8 +96,8 @@ def _app_revert_notes(loop: dict, updated: dict, dry_run: bool) -> None:
         print(f"  --identity-from-form: the {role} {moves} from the GitHub App {old!r} to {new!r}; "
               f"{kept} {stay} (doctor still checks its key) — remove them once no open PR needs "
               "them")
-    if any(role == "reviewer" for role, _, _ in reverts):
-        _merge_check_note(loop, updated, dry_run)
+    if not (any(r == "reviewer" for r, _, _ in reverts) and _merge_check_note(loop, updated, dry_run)):
+        merge_check_off.note(loop, updated, dry_run)    # any other stop of posting (#1987)
 
 
 def _merge_check_state(loop: dict, updated: dict, dry_run: bool) -> str:
@@ -106,9 +106,8 @@ def _merge_check_state(loop: dict, updated: dict, dry_run: bool) -> str:
     App's check run or the PAT reviewer's commit status (#1979 review, F1 and F3)."""
     was, now = config.merge_check_on(loop), config.merge_check_on(updated)
     if not now:
-        if was:
-            return (("would stop being posted" if dry_run else "is now off")
-                    + " (merge_check: auto follows an App reviewer)")
+        if was:     # the setting as it is, never ``auto`` for an explicit off (#1986)
+            return f"{'would stop being posted' if dry_run else 'is now off'} ({merge_check_off.why(updated)})"
         return "would stay off" if dry_run else "stays off"
     new_id = protection.reviewer_app_id(updated)
     who = (f"a check run of the App {updated.get('reviewer_seat')!r} ({new_id})" if new_id
@@ -118,8 +117,8 @@ def _merge_check_state(loop: dict, updated: dict, dry_run: bool) -> str:
     return f"would turn on, posted as {who}" if dry_run else f"is now on, posted as {who}"
 
 
-def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> None:
-    """The merge check after the reviewer left the App it was pinned to (#1307, #1979 F1, F3).
+def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> bool:
+    """Whether it printed the merge check after the reviewer left its pinned App (#1307, #1979).
 
     Printed for every reviewer move off an App, whatever ``merge_check`` was before: a ruleset
     ``protect`` wrote while the reviewer was that App stays pinned to its id after
@@ -131,7 +130,7 @@ def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> None:
     lid, old_id = loop["id"], protection.reviewer_app_id(loop)
     new_id = protection.reviewer_app_id(updated)
     if old_id is not None and new_id == old_id:
-        return                                        # another login on the same App: pin holds
+        return False                                  # another login on the same App: pin holds
     protect = f"hermes dk protect --loop {lid} --admin-token LOGIN"
     old = f"the App {old_id}" if old_id is not None else "the old reviewer App"
     if config.merge_check_on(updated):
@@ -151,6 +150,7 @@ def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> None:
           f"leaves the ruleset in place), its ruleset is pinned to {old}, which {who}: every PR "
           f"stays blocked until you either delete it (`{protect} --remove`) or {rewrite} — "
           f"{result}")
+    return True
 
 
 def _apply(args) -> int:

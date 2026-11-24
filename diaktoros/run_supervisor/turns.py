@@ -602,13 +602,13 @@ class ClaimAndLaunch:
                 self._refresh_check(None, row, 'failed')        # #2326
                 return None
             if merge_hold.spanned(con, row['repo'], row['pr'], now, read.fence):
-                # #2468: a host merge push holds the PR, or held it during the reads. Claimed
-                # now, the turn could start at the head the push moves: it waits, and its next
-                # claim reads the moved head.
+                # #2468: a host merge push holds (or held) the PR: claimed now, the turn could
+                # start at the head the push moves, so it waits for its next claim's reads.
                 self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
                 con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?, updated=? "
                             "WHERE id=?", (now + merge_hold.WAIT_S, merge_hold.WAITING, now, row['id']))
                 con.execute('COMMIT')
+                self._refresh_check(None, row, 'waiting')       # its new reason shows (#2562)
                 return None
             owner = uuid.uuid4().hex
             con.execute("UPDATE runs SET state='claimed', attempts=attempts+1, "

@@ -798,7 +798,10 @@ What it is for:
 - the reader account, or the adjudicator's comment account;
 - the gateway host (`--host`), which updates the loop config; use `apply` to reconcile installed route/hook origins afterwards;
 - the observer feed: its route, profile, destination and events, plus `--observer-mute` and
-  `--observer-unmute` to pause and resume it.
+  `--observer-unmute` to pause and resume it;
+- the `diaktoros/review` merge check (`--merge-check`). Turning it off says that a ruleset
+  [`protect`](#protect) wrote still blocks every PR until posting is back on or the ruleset is
+  removed (#1987); `set` does not read the ruleset, `doctor` and `protect` do.
 
 `set` never changes the reviewer/fixer profile or login. That comes from the settings form
 through [`apply`](#apply), so one place decides seat identity. Concurrency above 1 needs a
@@ -999,7 +1002,14 @@ and how the check is now posted, and names the two ways out:
   has no App pin and accepts `diaktoros/review` from any source, because a commit status cannot
   be pinned. Anyone with write access can then post a green status of that name.
 
-A move to another login of the same App id prints no merge-check note: the pin still matches.
+A move to another login of the same App id prints no pin note: the pin still matches.
+
+Any `apply` or `set` that stops the check being posted (`merge_check` set to `off`, or `auto`
+once the reviewer is no App), with or without a seat move, prints that the check is now off and
+names the setting as it is (#1986, #1987). A ruleset `protect` wrote still requires the check and
+blocks every PR until you turn posting back on (`hermes dk set --loop ID --merge-check on`) or
+remove the ruleset (`hermes dk protect --loop ID --remove`). A move off an App prints the pin
+note above instead, which names the same two ways out.
 
 `apply` itself never edits the ruleset, because that needs an admin token. `doctor` reports a
 pin the reviewer cannot meet.

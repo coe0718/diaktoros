@@ -17,8 +17,10 @@ before **each** write:
 * no maintainer hold (#477), and the PR is open, not a draft, by an authorized fixer.
 
 Then it **approves** the head and **dismisses** that one overruled review, both citing the ruling
-(a link to its PR comment, or where to read it when it has none). The loop's readers count the
-approval only while an ACCEPT backs it and it is the head's newest verdict
+(a link to its PR comment, or where to read it when it has none). The dismissal follows in the
+same sweep once the posted approval reads back from GitHub, so the merge check turns green in
+that sweep (#2619); an approval not read back yet leaves it to the next sweep. The loop's readers
+count the approval only while an ACCEPT backs it and it is the head's newest verdict
 (``gate.ruled_approvals``), so the dismissal never makes the head look unreviewed. A newer
 verdict from the reviewer after the approval stops the dismissal for a person. Any other blocking
 review (a maintainer's, one at another head) is never dismissed: the merge check names it.
@@ -37,6 +39,7 @@ import time
 
 from . import broker, ci, config, gate, gh, pr_hold
 from .run_supervisor import CI_WAIT_MAX_S, Supervisor, production_ledger, views
+from .ruled_wording import cite, named, ruling_tag
 
 
 def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
@@ -108,12 +111,12 @@ def _saw(ruling: dict) -> frozenset[int] | None:
     return views.ruling_saw(production_ledger(), str(ruling.get("run_id") or ""))
 
 
-def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
+def _act(loop: dict, st, sup, pr: dict, ruling: dict, log, reviews=None) -> bool:
     """Approve, then dismiss, for one PR whose newest ruling at its head is ACCEPT, as this
     ruling's record says; an earlier ruling's record there is only settled (its write in flight
-    stops this ruling's claim, ``ruled_approval_step(claim=True)``)."""
+    stops this ruling's claim, ``ruled_approval_step(claim=True)``). ``reviews``: read already."""
     repo, number, head, run = loop["repo"], int(pr["number"]), ruling["head"], ruling["run_id"]
-    reviews = gh.reviews(loop, number)
+    reviews = gh.reviews(loop, number) if reviews is None else reviews
     if not isinstance(reviews, list):
         return False
     rows = sup.ruled_approvals(repo, number, head)
@@ -139,7 +142,10 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
         if gate.is_ruled_approval(latest, loop):       # approved already, by hand
             return sup.ruled_approval_step(repo, number, head, run, "approve", "none",
                                            overruled=found["id"])
-        return _approve(loop, sup, ruling, number, branch, found["id"], log)
+        if not _approve(loop, sup, ruling, number, branch, found["id"], log):
+            return False
+        _dismiss_now(loop, st, sup, pr, ruling, log)       # the same sweep (#2619)
+        return True
     if not gate.is_ruled_approval(latest, loop):
         if latest is None:
             return False                               # the approval not readable yet: wait
@@ -147,8 +153,23 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
             return sup.ruled_approval_step(repo, number, head, run, "dismiss", "none")   # is lifted
         return sup.ruled_approval_step(
             repo, number, head, run, "dismiss", "denied",
-            error=f"a newer verdict at the head ({_named(latest)}) supersedes the approval")
+            error=f"a newer verdict at the head ({named(latest)}) supersedes the approval")
     return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
+
+
+def _dismiss_now(loop: dict, st, sup, pr: dict, ruling: dict, log) -> None:
+    """Right after a posted approval, the dismissal in the same sweep (#2619), by every check
+    ``_act`` takes for it, once the approval reads back; else the next sweep takes it, as before.
+    An approval left uncertain or denied never gets here: those wait for a later sweep."""
+    number, run = int(pr["number"]), ruling["run_id"]
+    row = next((r for r in sup.ruled_approvals(loop["repo"], number, ruling["head"])
+                if r["ruling"] == run), {})
+    if row.get("approve") != "posted" or (landed := row.get("review_id")) is None:
+        return
+    reviews = gh.reviews(loop, number)
+    if isinstance(reviews, list) and any(isinstance(r, dict) and r.get("id") == landed
+                                         for r in reviews):
+        _act(loop, st, sup, pr, ruling, log, reviews)
 
 
 def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool = True) -> str:
@@ -285,11 +306,6 @@ def _landed(loop: dict, reviews: list, head: str, run: str) -> list:
             and ruling_tag(run) in str(r.get("body") or "")]
 
 
-def ruling_tag(run: str) -> str:
-    """How an approval on a ruling names it, so its own write can be told from another's."""
-    return f"ruling `{run}`"
-
-
 def _wait_or_deny(loop: dict, st, number: int, head: str, checks: bool = True) -> tuple[str, str]:
     """``(wait, deny)``: why the next write waits for a later sweep, or why it is a person's.
     ``checks``: whether it waits for green required checks (the approval does, the dismissal
@@ -334,17 +350,6 @@ def _still_current(loop: dict, number: int, ruling: dict, step: str, target) -> 
     review = next((r for r in reviews if isinstance(r, dict) and r.get("id") == target), None)
     return (gate.is_ruled_approval(latest, loop) and review is not None
             and gh.review_state(review) == "CHANGES_REQUESTED")
-
-
-def cite(loop: dict, number: int, ruling: dict) -> str:
-    """Where the ruling can be read: its PR comment's link, or, with none, the host command that
-    prints its full text from the run ledger."""
-    if type(ruling.get("comment_id")) is int and ruling.get("comment") == "posted":
-        return (f"https://github.com/{loop['repo']}/pull/{number}"
-                f"#issuecomment-{ruling['comment_id']}")
-    return (f"not posted as a comment (comment {ruling.get('comment') or 'unknown'}); its full text: "
-            f"`python -m diaktoros.run_supervisor rulings {production_ledger()} "
-            f"{ruling.get('run_id') or '?'}` on the host")
 
 
 def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: int, log) -> bool:
@@ -406,12 +411,6 @@ def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: 
     sup.ruled_approval_step(repo, number, head, run, "dismiss", "posted")
     others = [r for r in gate.blocking_reviews(reviews) if r.get("id") != target]
     log(f"#{number} @ {head[:7]}: dismissed review {target} on the ACCEPT; "
-        + (f"{_named(others[0])} still blocks, for a person" if others else
+        + (f"{named(others[0])} still blocks, for a person" if others else
            "nothing else blocks the merge"))
     return True
-
-
-def _named(review: dict) -> str:
-    """A review as the log and the ledger name it."""
-    return (f"{gate.reviewer_login(review) or '?'}'s {gh.review_state(review).lower()} "
-            f"{review.get('id')} at {str(review.get('commit_id') or '?')[:7]}")
