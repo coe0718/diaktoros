@@ -320,12 +320,12 @@ def adjudication_situation(marker: dict) -> str:
             "round")
 
 
-def newest_shadow_review(row):
-    """The newest shadow review of this row's head and active reviewer turn (#1683), from the
-    run ledger, as ``(run_id, model, verdict, body)``, or None when there is none or the ledger
-    cannot be read (#1112). One read
-    serves both the adjudicator's prompt and the ``RunScope`` that records which review the
-    ruling answers, so a review landing in between cannot make them differ."""
+def newest_shadow_review(row, missing=None):
+    """The newest shadow review of this row's head and active reviewer turn (#1683), in the run
+    ledger, as ``(run_id, model, verdict, body)``; ``missing`` when that turn has none (a newer
+    turn superseded its review, #2601), None when unreadable (#1112). One read serves the
+    ruling's prompt and the ``RunScope`` naming the review it answers, so a review landing
+    between cannot split them."""
     import sqlite3
     from .. import gate
     try:
@@ -342,7 +342,7 @@ def newest_shadow_review(row):
             con.close()
     except (sqlite3.Error, OSError):
         return None
-    return tuple(found) if found is not None else None
+    return tuple(found) if found else missing
 
 
 def shadow_review_section(loop: dict, row, found=_READ) -> str:
