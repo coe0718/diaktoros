@@ -2,8 +2,8 @@
 
 The delivery says only that a rule changed: the handler reads the base's rulesets and classic
 protection again (``protection.read``, against a fake GitHub here) and names, in one ``protection``
-notice, any check the loop expects that the base no longer requires. A rule that cannot cover the
-base reads nothing.
+notice, any check the loop expects that the base no longer requires. A created or deleted rule that
+cannot cover the base reads nothing; an edited one is always read (#2030).
 """
 from __future__ import annotations
 
@@ -125,18 +125,41 @@ class Handler(unittest.TestCase):
 
     def test_a_change_on_another_branch_sends_nothing_and_reads_nothing(self):
         self.rules = []                            # it would be a notice, if it looked
-        for payload in (classic(name="release/*"), classic(name="dev"),
-                        ruleset(include=("refs/heads/release/*",)),
-                        ruleset(include=("~ALL",), exclude=("refs/heads/main",)),
-                        ruleset(include=("~ALL",), exclude=("refs/heads/m*",)),
-                        ruleset(include=("~ALL",), exclude=("~DEFAULT_BRANCH",)),
-                        ruleset(target="tag"), ruleset(target="push")):
-            reason, decision = self.deliver(payload)
-            self.assertEqual(decision, "declined", payload)
-            self.assertIn("does not cover main", reason)
-        reason, _ = self.deliver(ruleset(), {**LOOP, "base": "develop"})   # main is the default
-        self.assertIn("does not cover develop", reason)
+        for action in ("created", "deleted"):      # an edit is always read (#2030)
+            for payload in (classic(name="release/*", action=action),
+                            classic(name="dev", action=action),
+                            ruleset(include=("refs/heads/release/*",), action=action),
+                            ruleset(include=("~ALL",), exclude=("refs/heads/main",), action=action),
+                            ruleset(include=("~ALL",), exclude=("refs/heads/m*",), action=action),
+                            ruleset(include=("~ALL",), exclude=("~DEFAULT_BRANCH",), action=action),
+                            ruleset(target="tag", action=action),
+                            ruleset(target="push", action=action)):
+                reason, decision = self.deliver(payload)
+                self.assertEqual(decision, "declined", payload)
+                self.assertIn("does not cover main", reason)
+        reason, _ = self.deliver(ruleset(action="created"), {**LOOP, "base": "develop"})
+        self.assertIn("does not cover develop", reason)                 # main is the default
         self.assertEqual((self.notices, self.reads), ([], []))
+
+    def test_an_edit_that_narrows_a_rule_off_the_base_is_read(self):
+        """#2030: the payload has the rule as it is now; an edit may have dropped the base from it,
+        whatever key ``changes`` names (or none), so it is read and the lost check named."""
+        self.rules = [checks_rule("tests")]        # the narrowed rule no longer requires lint
+        for payload in (ruleset(include=("refs/heads/release/*",)),
+                        ruleset(include=("~ALL",), exclude=("refs/heads/main",)),
+                        ruleset(include=("refs/heads/dev",), changes={"ref_name": {}}),
+                        ruleset(include=("refs/heads/dev",), changes={}),
+                        ruleset(target="tag", changes={"target": {"from": "branch"}}),
+                        ruleset(include=("refs/heads/dev",), action="other",
+                                changes={"enforcement": {}}),
+                        classic(name="dev"), classic(name="dev", changes={"other": {}})):
+            self.reads.clear()
+            self.notices.clear()
+            self.st.kv_set(self.st.dir / protection_event.FILE, [])
+            reason, decision = self.deliver(payload)
+            self.assertEqual(decision, "accepted", (reason, payload))
+            self.assertTrue(self.reads, payload)
+            self.assertIn("main does not require lint", self.notices[0][1]["outcome"])
 
     def test_a_rule_that_may_cover_the_base_is_read(self):
         self.rules = []

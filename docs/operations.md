@@ -320,7 +320,8 @@ A change to the base's protection is otherwise seen only by `doctor`. With `prot
 on (#683), GitHub's `branch_protection_rule` and `repository_ruleset` events re-read the base's
 protection when a rule changes, and an urgent `protection` notice names any check the loop
 expects that the base no longer requires: a check in `required_checks`, or `diaktoros/review`
-when the loop posts it. A rule on another branch reads nothing. `doctor` stays the check of
+when the loop posts it. A rule created or deleted on another branch reads nothing; an edited rule
+is always read, since the edit may have narrowed it off the base (#2030). `doctor` stays the check of
 record, for organization rulesets too, which may send no repository event.
 
 CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, across its
