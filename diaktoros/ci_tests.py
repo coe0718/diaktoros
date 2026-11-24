@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from . import ci, ci_cache, gh
+from . import ci, ci_cache, gh, gh_text
 
 # Required jobs whose logs are read per review. This repository's own loop requires 12 (#850: the
 # unit suite sharded per Python, plus the harness and four other checks); one log read each.
@@ -144,7 +144,7 @@ def _job_results(loop: dict, job_id: int, head: str, runs: dict) -> dict[str, st
     job = _job_at_head(loop, job_id, head, runs)
     if job is None:
         return {}
-    log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
+    log = gh_text.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
                        login=loop.get("read_token"), limit=LOG_LIMIT)
     tests = parse(log or "")
     if log and job.get("status") == "completed":

@@ -923,6 +923,12 @@ def _best_effort_sweeps(c: _Sweep) -> None:
             log(f"#{number}: pending escalation dropped (the PR is closed, or it lapsed)")
     except Exception as exc:
         log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
+    try:                                          # #1946: a closed PR's review handoffs go
+        for number in review_kick.prune(loop, st, [p.get("number") for p in prs
+                                                   if isinstance(p, dict)]):
+            log(f"#{number}: review handoffs dropped (GitHub says the PR is closed)")
+    except Exception as exc:
+        log(f"review handoff prune failed: {type(exc).__name__}: {exc}")
 
 
 def _finish(c: _Sweep) -> None:

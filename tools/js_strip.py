@@ -19,7 +19,11 @@ import re
 # `//` inside a block comment (or a `/*` inside a line comment) is part of that comment.
 # Not a full tokenizer: whether a `/` opens a regex is read from the token before it. After
 # punctuation that cannot end an expression, or a keyword such as `return`, it is a regex; after a
-# name, number, literal or `]`, a division. After `)`, `}`, `++` or `--` it can be either
+# name, number, literal or `]`, a division. A keyword after `.` or `?.` is a property name
+# (`obj.return / a`), so a division (#1974), unless a digit precedes the `.`: that dot may end a
+# number (`1. instanceof /re/`, a keyword) or access a property (`x1.in / a`), so "either".
+# After `)`, `}`, `++` or `--`, or a contextual word (`of`, `yield`, `await`, which can also be
+# plain names), it can be either
 # (`if (x) /re/` vs `(a) / b`, a block vs `{} / a`), so both readings are scanned: where they keep
 # the same text the scan goes on, and where they differ it raises AmbiguousSlash rather than
 # guess, so a guard built on it fails closed instead of passing on code it never saw (#1965).
@@ -27,6 +31,9 @@ import re
 _REGEX_AFTER = set("(,=:[!&|?{;+-*%<>~^")
 _REGEX_AFTER_WORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
                       "throw", "case", "do", "else", "yield", "await"}
+# Words that are keywords only in some contexts and plain identifiers elsewhere (`let of = 4`,
+# `yield` outside a generator, `await` outside an async function): a `/` after one is "either".
+_CONTEXTUAL_WORDS = {"of", "yield", "await"}
 _EITHER_AFTER = (")", "}", "++", "--")
 _LAST_WORD = re.compile(r"[\w$]+$")
 
@@ -54,7 +61,14 @@ def _slash_reading(tail: str) -> str:
     if not tail or tail[-1] in _REGEX_AFTER:
         return "regex"
     word = _LAST_WORD.search(tail)
-    return "regex" if word is not None and word.group() in _REGEX_AFTER_WORDS else "division"
+    if word is None or word.group() not in _REGEX_AFTER_WORDS:
+        return "division"
+    before = tail[:word.start()].rstrip()
+    if before.endswith(".") and not before.endswith("..."):
+        if before[:-1][-1:].isdigit():
+            return "either"         # `1. instanceof /re/` (a number's dot) or `x1.in / a` (#2656)
+        return "division"           # a property name (`obj.return`, `obj?.in`), not a keyword
+    return "either" if word.group() in _CONTEXTUAL_WORDS else "regex"
 
 
 def _literal_end(source: str, i: int) -> int:
