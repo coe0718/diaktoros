@@ -491,15 +491,15 @@ class ThirtyHeldPRsSeatFree(_Workload):
         self.assertEqual(self.states(), {'succeeded': 30})
         return counted
 
-    def test_the_poller_lock_cuts_workers_and_reads_with_the_same_decisions(self):
-        unlocked = self.span(locked=False)
-        locked = self.span(locked=True)
+    def test_the_poller_lock_cuts_lingerers_with_no_more_calls_and_the_same_decisions(self):
+        unlocked, locked = self.span(locked=False), self.span(locked=True)
         print(f"\n#2609 seat free, CI running {int(self.SPAN)} s: without the lock "
               f"{unlocked[2]} worker(s) lingering at once at most, {unlocked[0]} started, "
               f"{unlocked[1]} reads; with it {locked[2]}, {locked[0]}, {locked[1]}")
         self.assertEqual(locked[2], 1)                      # one poller
         self.assertGreater(unlocked[2], 10)                 # every holder lingering
-        self.assertLessEqual(locked[:2], unlocked[:2])      # no more started, no more reads
+        self.assertLessEqual(locked[0], unlocked[0])        # no more started and no more reads,
+        self.assertLessEqual(locked[1], unlocked[1])        # each on its own, not as a tuple (#2635)
 
 
 if __name__ == '__main__':
