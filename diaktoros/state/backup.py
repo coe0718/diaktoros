@@ -410,18 +410,17 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
     stack, so a caller that goes on to read or print the archive has it for as long as it needs
     it; without, the lock ends when ``create`` returns.
 
-    Refused while ``migrate``'s marker exists (#1054, ``migrate.snapshot_refusal``), unless the
-    caller holds it (``held``: ``migrate``'s own backup), which passes an interrupted run's
-    marker as ``half_moved``: ``restore`` puts it back.
+    Refused while ``migrate``'s marker exists (#1054), before the first byte and after the last
+    (#2322, ``backup_pause``), unless the caller holds it (``held``: ``migrate``'s own backup),
+    which passes an interrupted run's marker as ``half_moved``: ``restore`` puts it back.
 
     A listed file that is gone by the time it is read is left out and named in ``skipped``
     (#1694), unless its path is in ``must_read``: then the backup fails with ``BackupError``.
     ``restore``'s undo snapshot passes every path it is about to write, so a file removed (and
     perhaps recreated) while the snapshot reads it is never overwritten without being in it."""
     check_keep(keep)
-    from . import migrate  # noqa: PLC0415 - the pause marker's owner
-    if not held and migrate.snapshot_refusal():
-        raise BackupError(migrate.snapshot_refusal())
+    from .backup_pause import refuse  # noqa: PLC0415 - imports backup
+    refuse(held)
     chosen = bool(out)
     out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
     loops = config.all_loops()
@@ -446,6 +445,7 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
             info = tarfile.TarInfo(MANIFEST)
             info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600
             tar.addfile(info, io.BytesIO(raw))
+        refuse(held)          # a migrate began during the write: deleted below, never kept (#2322)
         os.chmod(out, 0o600)           # still locked: no other run's prune can take it from here
     except BaseException:
         try:
