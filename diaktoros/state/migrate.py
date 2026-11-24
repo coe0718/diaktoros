@@ -89,14 +89,14 @@ def lock_path() -> pathlib.Path:
 
 
 def _running() -> bool:
-    """Whether a migrate holds the lock right now (#447): the lock, not a PID, says so — two
-    runs cannot both take it, and a reused PID cannot pass for a live one."""
+    """Whether a migrate holds the lock right now (#447): the lock, not a PID, says so. The probe is
+    shared, so a backup's shared hold (#2322) never passes for a migrate's exclusive one."""
     try:
         fd = os.open(lock_path(), os.O_RDWR)
     except FileNotFoundError:
         return False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
         return True
     finally:

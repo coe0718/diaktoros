@@ -17,6 +17,7 @@ import argparse
 import contextlib
 import fcntl
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -100,6 +101,22 @@ class MigrateDuringTheWrite(tb.Base):
         self.assertIn("cannot back up: a migration or restore is starting", text)
         self.assertFalse(out.exists())
 
+
+    def test_an_abandoned_marker_is_still_named_dead_while_a_backup_holds_the_lock(self):
+        # Vex, #2685 round 2: the backup's shared hold must not pass for a live migrate, in the
+        # refusal it prints or in the watchdog's dead() check.
+        left = {"pid": 999999, "started": 1}
+        migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
+        migrate.marker_path().write_text(json.dumps(left))
+        code, text = self.run_cmd(cli.cmd_backup, out=str(self.root / "dead.tar.gz"), keep=10)
+        self.assertEqual(code, 2, text)
+        self.assertIn("did not finish", text)
+        self.assertNotIn("is running", text)
+        fd = os.open(migrate.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_SH)                 # as a backup's write holds it
+        self.assertTrue(migrate.dead(left))
+        self.assertIn("did not finish", migrate.describe(left))
 
 if __name__ == "__main__":
     unittest.main()
