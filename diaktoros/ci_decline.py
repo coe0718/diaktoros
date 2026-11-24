@@ -75,6 +75,18 @@ def record(db, run_id: str, repo: str, pr: int, head: str, name: str, body: str)
                     "VALUES(?,?,?,?,?,?,?)", (run_id, repo, pr, head, name, body, time.time()))
 
 
+def forget(db, run_id: str) -> None:
+    """Withdraw a run's decline whose answers comment was definitely not posted (authorization
+    denied, or its answers record could not be written, so no POST was made): nothing was
+    declined, so ``explain`` names no decline and the row is no longer a write record. Never
+    called once a POST was sent (posted, or uncertain). Best effort."""
+    try:
+        with ledger.connect(db, timeout=ledger.LOCK_WAIT_S) as con:
+            con.execute("DELETE FROM declines WHERE run_id=?", (run_id,))
+    except Exception:  # noqa: BLE001 - the run still fails on the comment's outcome
+        pass
+
+
 def at_head(db, repo: str, pr: int, head: str) -> tuple[str, str] | None:
     """``(kind, reason)`` of the newest decline at this head, or None (none, or no table yet)."""
     try:

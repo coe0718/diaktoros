@@ -187,6 +187,65 @@ class ConflictDecline(Decline):
         self.assertEqual(self.person(), "")                  # the next sweep may queue a turn
         self.sweep("f" * 40).assert_called_once()
 
+    def explained(self):
+        """``explain``'s blockers for #7 at HEAD, read from this test's ledger."""
+        c = types.SimpleNamespace(pr={}, state="open", repo=REPO, number=7, head=HEAD,
+                                  short=HEAD[:7], blockers=[])
+        with mock.patch.object(explain.config, "host_path", return_value=self.db), \
+                mock.patch.multiple(explain, _read_blockers=mock.DEFAULT,
+                                    _gate_blockers=mock.DEFAULT, _run_blockers=mock.DEFAULT):
+            explain._blockers(c)
+        return c.blockers
+
+    def finish(self):
+        """The worker's completion of the run after the turn: the broker never completed, so the
+        turn raised ``TurnDenied`` (not ``retryable``): rc 0 with that error, no automatic retry."""
+        sup = Supervisor(self.db)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET owner='w' WHERE id=?", (self.run_id,))
+        state = sup.complete_uncertain(self.run_id, "w", 0, "agent exited without a confirmed "
+                                       "scoped write", retry=False)
+        with sup._connect() as con:
+            return state, run_supervisor.write_records(con, self.run_id)
+
+    def test_an_undelivered_decline_is_no_decline_notice_explain_or_record(self):
+        """#2034 review 2 F1: a decline whose comment was definitely not posted (authorization
+        denied; its answers record unwritable, so no POST) sends no notice, leaves no decline row
+        for ``explain`` or the supervisor, and the run fails, never ending as declined."""
+        denied = mock.patch.object(base.broker_ipc.broker, "authorize",
+                                   side_effect=base.broker_ipc.broker.BrokerDenied("not the fixer"))
+        unrecorded = mock.patch.object(Supervisor, "begin_answers",
+                                       side_effect=RuntimeError("ledger busy"))
+        for name, patch, wrote in (("denied", denied, "fixer answers denied"),
+                                   ("unrecorded", unrecorded, None)):
+            with self.subTest(outcome=name):
+                self.setUp()
+                with patch, self.serving() as server:
+                    refused = self.decline(server, "needs-a-person", CONFLICT_WHY)
+                    self.assertIn(f"answers comment {name}", refused["error"])
+                    self.assertFalse(server.completed)
+                self.assertEqual((self.fake.posts(), self.notices, self.declines()), ([], [], []))
+                self.assertEqual(self.explained(), [])
+                self.assertEqual(self.person(), "")
+                # The run fails, never succeeds as declined. A denied answers row stays a write
+                # record (#1052, as for any fixer answers); with none (unrecorded) an operator
+                # `retry` or a redelivery may re-arm it. A later base tip queues a new turn.
+                state, records = self.finish()
+                self.assertEqual((state, records), ("failed", wrote))
+                self.sweep("f" * 40).assert_called_once()
+
+    def test_an_uncertain_decline_is_still_a_decline(self):
+        """A POST whose outcome is unknown may have landed: the decline stands (never replayed)."""
+        with mock.patch.object(base.broker_ipc.broker, "post_fixer_answers",
+                               side_effect=RuntimeError("connection reset")), \
+                self.serving() as server:
+            self.assertEqual(self.decline(server, "needs-a-person", CONFLICT_WHY)["result"]
+                             ["answers"], "uncertain")
+        self.assertEqual(len(self.notices), 1)
+        self.assertEqual(len(self.declines()), 1)
+        self.assertIn("conflict resolution", self.explained()[0])
+        self.assertIn("the fixer declined to resolve it", self.person())
+
     def test_a_ci_decline_records_no_conflict(self):
         ci_fix = dataclasses.replace(self.scope, ci_fix=True, merge=None)
         with mock.patch.object(self, "scope", ci_fix), self.serving() as server:

@@ -881,17 +881,26 @@ class RunBroker(broker_issues.IssueWrites):
                     comment_id=self._answers_comment_id, error=self._answers_error)
             except Exception:
                 pass  # stays 'posting'; a finished run's notice then says uncertain
-        if decline:
-            ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
         delivered = self.answers_outcome in ("posted", "uncertain")
-        if decline and delivered:
-            # #2034: only a reason that reached (or may have reached) the PR hands the conflict
-            # to a person; a denied or unrecorded comment leaves the run failed and requeueable.
-            ci_decline.remember(self._loop, self.scope.number, head, decline, body)
+        if decline:
+            self._settle_decline(head, decline, body, delivered)
         if not delivered:
             raise ProtocolError(f"answers comment {self.answers_outcome}")
         self.completed = True
         return {"answers": self.answers_outcome}
+
+    def _settle_decline(self, head: str, decline: str, body: str, delivered: bool) -> None:
+        """After a decline's answers POST (#1526, #2034). A reason that reached (or may have
+        reached) the PR is a decline: its one ``ci_declined`` notice and, for a conflict kind, the
+        person record. One definitely not posted ('denied', 'unrecorded': no POST was made) is no
+        decline at all: its write-ahead row is withdrawn (``ci_decline.forget``), so ``explain``
+        names no decline and no notice tells a maintainer to act on a reason nobody can read; the
+        run fails with the comment's outcome."""
+        if not delivered:
+            ci_decline.forget(self.scope.ledger_db, self.scope.run_id)
+            return
+        ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
+        ci_decline.remember(self._loop, self.scope.number, head, decline, body)
 
     def _publish_answers(self, head: str, text: str, dispute: bool = False) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.
