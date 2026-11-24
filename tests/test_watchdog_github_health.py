@@ -237,6 +237,10 @@ class CoveredRead(Health):
         from diaktoros import config, run_supervisor
         db = config.host_path("ledger")
         db.parent.mkdir(parents=True, exist_ok=True)
+        # The ledger lives in the shared test home, not the per-test state dir: drop it after
+        # the test, or the next one (test_an_absent_ledger_alerts) would find it there.
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            self.addCleanup(pathlib.Path(f"{db}{suffix}").unlink, missing_ok=True)
         run_supervisor.Supervisor(db)
         with sqlite3.connect(db) as con:
             con.execute("DELETE FROM runs")
