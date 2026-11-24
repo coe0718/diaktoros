@@ -273,6 +273,48 @@ class Reconsider(Harness):
         self.assertIsNone(state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A))
         self.assertEqual(self.keys, [])
 
+    def review_only_pr(self, earlier):
+        """PR 7 by a review-only author: ``earlier`` change requests, then an approval, all at
+        the head (as the at-cap test builds it)."""
+        import json
+        pr = t.pr(7, author="owner")
+        pr["reviews"] = [t.review(t.REVIEWER, head=t.HEAD_A, rid=20 + i) for i in range(earlier)]
+        pr["reviews"].append(t.review(t.REVIEWER, "APPROVED", head=t.HEAD_A, rid=11))
+        t.reset(prs={"7": pr})
+        path = config.config_dir() / "widgets.json"
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), review_only=["owner"])))
+        return pr["reviews"]
+
+    def assert_reconsider_queues(self):
+        """The reconsider reaches the gate and queues its turn, with no cap refusal."""
+        with mock.patch.object(actions, "_reviewer_runs",
+                               side_effect=lambda repo, n, head, key=None: int(
+                                   bool(key and self.keys))):
+            result = self.reconsider()
+        lines = "\n".join(result["lines"])
+        self.assertNotIn("the review cap is reached", lines)
+        self.assertEqual(self.keys, [("reviewer", 7, t.HEAD_A, RECONSIDER_KEY)], lines)
+
+    def test_a_reconsider_on_a_review_only_pr_below_its_cap_queues(self):
+        # #2016: the helper's pass-through for a review-only author (gate.review_cap_hit false):
+        # one verdict spent, under review_only_cap, so the reconsider must reach the gate.
+        from diaktoros import gate
+        reviews = self.review_only_pr(1)
+        rounds = len(gate.verdicts(reviews, self.loop()))
+        self.assertEqual(rounds, 1)
+        self.assertLess(rounds, config.review_only_cap(self.loop()))
+        self.assert_reconsider_queues()
+
+    def test_a_reconsider_on_a_review_only_pr_after_a_grant_queues(self):
+        # #2016: at the review-only cap, a maintainer's `--another-round` grant for this head
+        # (st.review_cap_granted) lifts it, so the reconsider queues instead of being refused.
+        from diaktoros import gate, state as state_mod
+        rounds = len(gate.verdicts(self.review_only_pr(6), self.loop()))
+        self.assertGreaterEqual(rounds, config.review_only_cap(self.loop()))
+        st = state_mod.state_for(self.loop())
+        self.assertTrue(st.review_cap_grant(7, t.HEAD_A, rounds))
+        self.assert_reconsider_queues()
+
     def test_a_reconsider_held_for_a_missing_runtime_says_it_was_not_queued(self):
         # #1369: with no worker runtime the gate holds the turn in the seat queue, which keeps
         # no turn key, and nothing replays a reconsider: the command must not say "queued,
