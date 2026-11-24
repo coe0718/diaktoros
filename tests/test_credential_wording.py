@@ -178,8 +178,10 @@ class AdjudicatorAppFix(app_doctor.AppLoop):
                          f"{PERSON!r} is not an App's bot login")
         self.assertEqual(credentials.reader_app_alternative(),
                          "--app <that login>=APP_ID:/abs/key.pem for a GitHub App reader")
-        self.assertEqual(credentials.reader_app_alternative("LOGIN"),
+        self.assertEqual(credentials.reader_app_alternative("", "LOGIN"),
                          "--app LOGIN=APP_ID:/abs/key.pem for a GitHub App reader")
+        # #2450: a reader really named LOGIN is a person's login, not the stand-in.
+        self.assertNotIn("--app LOGIN=", credentials.reader_app_alternative("LOGIN"))
 
 
 if __name__ == "__main__":

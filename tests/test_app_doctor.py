@@ -430,7 +430,7 @@ class Selftest(AppLoop):
         self.loop["read_token"] = ""
         ok, rows = self.identities(lambda login: {"login": login, "id": 7, "type": "Bot", "app_id": 9})
         self.assertFalse(ok)
-        self.assertEqual(rows["github:read"][4], credentials.reader_fix(self.loop, "LOGIN"))
+        self.assertEqual(rows["github:read"][4], credentials.reader_fix(self.loop, stand_in="LOGIN"))
         self.assertIn("--app LOGIN=APP_ID:/abs/key.pem", rows["github:read"][4])
 
     def test_an_unmapped_seat_is_told_the_settings_way(self):

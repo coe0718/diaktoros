@@ -717,7 +717,7 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not login:
             ok = False
             report.add(step, name, FAIL, f"no login configured for the {role} identity",
-                       credentials.reader_fix(loop, "LOGIN") if role == "read" else
+                       credentials.reader_fix(loop, stand_in="LOGIN") if role == "read" else
                        f"name the {role} login: reviewer_login/fixer_login in the plugin settings, "
                        f"then `hermes dk apply --loop {loop.get('id') or '<id>'}` (a new "
                        "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")
@@ -726,7 +726,7 @@ def check_identities(report: Report, loop: dict) -> bool:
         from . import github_app
         if not raw and github_app.is_app(loop, login):
             # A GitHub App identity (#1163): its key, then its live bot principal — minted and
-            # read with the App's own credentials, never GET /user.
+            # read as the App itself, never GET /user.
             check = identity_checks.check_app_identity(loop, login, name)
             if check.status != doctor.VERIFIED:
                 ok = False
