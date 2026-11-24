@@ -303,6 +303,14 @@ raise its baseline; re-run the job). The run ends succeeded, so nothing retries 
 names the decline at that head. A redelivery or `retry` does not re-run it: a new head gets a CI
 fix again. A turn that ends without any broker call is still unpublished and retried once.
 
+A conflict-resolution turn that cannot resolve a file honestly declines the same way with
+`--decline needs-a-person` (#2034), accepted only on a conflict turn that pushed nothing; the
+notice's move is to merge the base by hand, and the watchdog queues no new conflict turn for that
+head for a day. A decline only counts once its comment was posted or its POST's outcome is
+unknown: when the comment is definitely not posted (authorization denied, or its answers record
+could not be written), the decline row is withdrawn, no notice is sent, `explain` names no decline
+and the run fails.
+
 By default the watchdog sweep notices a red check, so a CI-fix turn or a `main_red` notice
 can wait up to a sweep interval. With `ci_webhook` on (#681), GitHub's `check_suite` event
 does it when the run finishes: the host re-reads that commit's checks and runs the sweep's own

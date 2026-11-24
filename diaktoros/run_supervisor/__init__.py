@@ -584,7 +584,8 @@ def write_records(con, run_id: str) -> str | None:
     - ``review_receipts``: a review receipt claim (reviewer)
     - ``rulings``: a ruling (adjudicator; the optional PR comment follows it)
     - ``disputes``: a recorded dispute
-    - ``declines``: a CI fix's recorded decline (#1526; its answers comment follows it)
+    - ``declines``: a CI fix's or a conflict turn's recorded decline (#1526, #2034; its answers
+      comment follows it, and the row is withdrawn when that comment was definitely not posted)
     - ``fixer_answers``: a fixer's answers comment, in any state ('posting' is committed
       before the POST; 'uncertain' means its outcome is unknown: reconcile, never replay,
       #1052). An answers-only run (a dispute, a partial view) holds no push intent, so this
