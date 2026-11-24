@@ -1,9 +1,10 @@
-"""#2601, #2623: a shadow escalation's ruling whose shadow review is missing, not unreadable.
+"""#2601, #2623, #2688: a shadow escalation's ruling whose shadow review is missing, not unreadable.
 
 The review a ruling answers is the active reviewer turn's (#1683). A newer reviewer turn at the
 same head (``review --reconsider`` queues one) leaves the ledger readable but with no review for
-that turn: no read brings one, so the launch is no longer current instead of being retried as
-"shadow review unreadable" until the retry limit. An unreadable ledger still waits (#1145).
+that turn yet. The launch waits for it within the retry backoff, saying what it waits on rather
+than "shadow review unreadable", so the turn's own review, landing minutes later, is still ruled
+on with nobody involved (#2688). An unreadable ledger still waits as before (#1145).
 Driven through the real launch (``_prepare_launch``) on a real run ledger.
 """
 from __future__ import annotations
@@ -50,12 +51,13 @@ class Superseded(ser.Base):
         with mock.patch.object(views, "read_only_connect", return_value=None):
             self.assertIsNone(turn_prompts.newest_shadow_review(ROW, missing=False))
 
-    def test_a_superseded_shadow_review_is_no_longer_current_not_unreadable(self):
+    def test_a_superseded_shadow_review_waits_for_the_active_turns_own(self):
         self.superseded()
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(run_supervisor.RetryableError) as caught:
             self.claim()
-        self.assertEqual(str(caught.exception), "no shadow review for the active reviewer turn")
-        self.assertFalse(run_supervisor.retryable(caught.exception))
+        self.assertEqual(str(caught.exception),
+                         "waiting on the active reviewer turn's shadow review")
+        self.assertTrue(run_supervisor.retryable(caught.exception))   # backoff, not failed (#2688)
         # ...and nothing was ruled on: the breach marker was never claimed for a ruling.
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
 

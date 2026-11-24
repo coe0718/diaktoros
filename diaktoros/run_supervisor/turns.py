@@ -1208,8 +1208,8 @@ class ClaimAndLaunch:
             if (row['seat'] == 'adjudicator'
                     and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
                 shadow = turn_prompts.newest_shadow_review(row, missing=False)
-                if shadow is False:     # superseded (#2601): no read brings one
-                    raise ValueError('no shadow review for the active reviewer turn')
+                if shadow is False:     # superseded (#2601): wait, bounded, for its own (#2688)
+                    raise run_supervisor.RetryableError("waiting on the active reviewer turn's shadow review")
                 if shadow is None:      # #1145: a ruling on none records '': wait for a read
                     raise run_supervisor.RetryableError('shadow review unreadable before launch')
                 extra = {'shadow': shadow}
