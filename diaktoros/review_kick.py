@@ -12,6 +12,7 @@ a real delivery. The watchdog's drain sends the same event for a queued review.
 from __future__ import annotations
 
 import json
+import time
 
 from . import config, routes
 
@@ -53,31 +54,90 @@ HANDOFF_HEADS_KEPT = 16
 
 
 def _acknowledged_heads(entry: object) -> list[str]:
-    """The heads one PR's record entry names, oldest first: a list, or a single head as an
-    earlier record wrote it. Anything else names none."""
+    """The heads one PR's record entry names, oldest request first (``_requested_at``)."""
+    return list(_requested_at(entry))
+
+
+def _requested_at(entry: object) -> dict[str, float]:
+    """One PR's record entry as ``{head: when its delivery was requested}``, oldest request
+    first. An earlier record's entry (a list of heads, or a single head) has no times: its heads
+    count as requested before every timed one, in their order. Anything else names none."""
     if isinstance(entry, str):
-        return [entry] if entry else []
+        return {entry: 0.0} if entry else {}
     if isinstance(entry, list):
-        return [h for h in entry if isinstance(h, str) and h]
-    return []
+        return {h: 0.0 for h in entry if isinstance(h, str) and h}
+    if isinstance(entry, dict):
+        timed = {h: float(t) for h, t in entry.items() if isinstance(h, str) and h
+                 and isinstance(t, (int, float)) and not isinstance(t, bool)}
+        return dict(sorted(timed.items(), key=lambda item: item[1]))
+    return {}
 
 
-def _record_handoff(loop: dict, number: object, head: str) -> None:
+def _record_handoff(loop: dict, number: object, head: str, requested_at: float) -> None:
     """Remember that ``head`` of PR ``number`` reached the reviewer gate (#1213), under the
     loop's state lock so two deliveries for different PRs do not lose each other's entry.
 
-    Every acknowledged head is kept (the last ``HANDOFF_HEADS_KEPT`` of them), not only the
-    latest one to complete (Vex F3 on #1943): deliveries can complete out of order, and a late
-    acknowledgement for an older head must not erase the current head's."""
+    Every acknowledged head is kept (the ``HANDOFF_HEADS_KEPT`` most recently requested), not
+    only the latest one to complete (Vex F3 on #1943). Deliveries complete out of order, so the
+    heads are ranked by when their delivery was *requested* (``requested_at``), not by when it
+    was acknowledged (#1946): late acknowledgements for older heads, however many, never evict
+    the head requested last, which is the PR's live head."""
     from . import state as state_mod      # here: state imports much more than this module needs
     st = state_mod.state_for(loop)
     path = _handoffs_path(loop)
     with st.locked():
         record = st.kv_get(path, {})
         record = record if isinstance(record, dict) else {}
-        heads = [h for h in _acknowledged_heads(record.get(str(number))) if h != head]
-        record[str(number)] = (heads + [head])[-HANDOFF_HEADS_KEPT:]
+        heads = _requested_at(record.get(str(number)))
+        heads[head] = max(requested_at, heads.get(head, requested_at))
+        kept = sorted(heads.items(), key=lambda item: item[1])[-HANDOFF_HEADS_KEPT:]
+        record[str(number)] = dict(kept)
         st.kv_set(path, record)
+
+
+PRUNE_CONFIRMS_PER_SWEEP = 20
+
+
+def _confirmed_closed(loop: dict, number: str) -> bool:
+    """Whether a fresh read of PR ``number`` says it is closed (merged or not; #1946, Vex F1 on
+    #2654). A failed or malformed read, or another PR's answer, confirms nothing: unknown keeps
+    the entry."""
+    from . import gh
+    try:
+        wanted = int(number)
+    except (TypeError, ValueError):
+        return False
+    live = gh.pr(loop, wanted)
+    return (isinstance(live, dict) and live.get("number") == wanted
+            and live.get("state") == "closed")
+
+
+def prune(loop: dict, st, open_numbers) -> list[str]:
+    """Drop the handoff record of every PR no longer open (#1946), as ``conflict_person.prune``
+    does with the open PR numbers the watchdog's sweep already listed; returns those dropped.
+
+    The listing is older than the prune, so a PR opened or reopened since is missing from it
+    (Vex F1 on #2654), whether or not a handoff was written for it in between. A PR missing from
+    the listing is only a candidate: its entry goes once a fresh read of that PR
+    (``_confirmed_closed``) says it is closed, and only if the entry is unchanged since the
+    candidates were taken (a handoff written meanwhile keeps it for a later sweep). At most
+    ``PRUNE_CONFIRMS_PER_SWEEP`` PRs are read per call; the rest wait for a later sweep."""
+    from . import state as state_mod
+    keep = {str(n) for n in open_numbers}
+    current = state_mod.read_record(st, HANDOFFS)
+    candidates = [k for k in current if k not in keep][:PRUNE_CONFIRMS_PER_SWEEP]
+    closed = {k: current[k] for k in candidates if _confirmed_closed(loop, k)}
+    if not closed:
+        return []
+    path = st.dir / HANDOFFS
+    with st.locked():
+        record = st.kv_get(path, {})
+        if not isinstance(record, dict):
+            return []
+        dropped = [k for k, v in closed.items() if k in record and record[k] == v]
+        if dropped:
+            st.kv_set(path, {k: v for k, v in record.items() if k not in dropped})
+    return dropped
 
 
 def app_handoff_delivered(loop: dict, number: int, head: str) -> bool:
@@ -108,11 +168,12 @@ def kick(loop: dict, pr: dict, head: str, sender: str, tag: str) -> bool:
     route = ((loop.get("seats") or {}).get("reviewer") or {}).get("route")
     if not route:
         return False
+    requested_at = time.time()            # ranks this head among the PR's handoffs (#1946)
     sent = routes.fire(route, "pull_request", review_requested(loop, pr, head, sender), tag,
                        loop.get("host"))
     if sent:
         try:
-            _record_handoff(loop, pr.get("number"), head)
+            _record_handoff(loop, pr.get("number"), head, requested_at)
         except Exception as exc:          # the delivery happened; only explain learns less
             from .util import log
             log(f"#{pr.get('number')} @ {str(head)[:7]}: review handoff not recorded: "

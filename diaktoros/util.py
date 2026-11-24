@@ -311,7 +311,18 @@ def login_key(login) -> str:
 
     It is for comparing logins, never for validating one: ``config.APP_LOGIN`` is ASCII-only and
     is matched against ``lower()``, because folding turns ``ß`` into ``ss`` and would accept a
-    login GitHub cannot have."""
+    login GitHub cannot have.
+
+    It is for the credential maps (``tokens``, ``apps``) and the forms and commands that read or
+    write their keys. The other login comparisons stay on ``lower()``, by design (#1940): the
+    seat checks in ``config.credentials`` and the gate's author checks compare a login with the
+    allowlists the loader stores lowercased (``fixers``, ``reviewers``, ``review_only``,
+    ``lists._check_logins``) or with the login GitHub answers; ``init``'s and ``setup``'s login
+    comparisons pick a seat out of those same allowlists; and ``verify_credentials``' lowered
+    ``tokens`` dict runs after ``case_clash`` (which folds) has refused two keys that fold alike.
+    Moving one of them alone would compare a folded login with a lowered list, two rules for one
+    question. GitHub logins are ASCII, where ``lower`` and ``casefold`` agree, so neither rule
+    changes what a real login matches."""
     return str(login).casefold()
 
 
