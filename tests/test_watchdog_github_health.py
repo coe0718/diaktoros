@@ -291,6 +291,91 @@ class CoveredRead(Health):
                                              "", "", {7: self.HEAD})
         self.assertEqual(len([x for x in got if "could not" in x]), 1, got)
 
+    def test_an_unreadable_existing_ledger_alerts(self):
+        from diaktoros import config
+        db = config.host_path("ledger")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(db.unlink, missing_ok=True)
+        db.write_bytes(b"not a sqlite database, just junk" * 64)
+        self.assertEqual(len(self.lines()), 1, "unknown is never covered")
+
+    def test_a_fixer_still_holding_the_pr_is_not_covered(self):
+        # Round 2, F2: a fixer-side review_requested is also the handoff that frees the fixer's
+        # seat. The dropped event did not free it, so the queued reviewer turn may be waiting on
+        # that very release: the failure is alerted, and explain does not call it harmless.
+        self.ledger()
+        self.assertTrue(self.st.acquire("fixer", "acme/widgets#7", head=self.HEAD))
+        self.assertEqual(len(self.lines()), 1, "a lost handoff is not harmless")
+        self.assertIn("started nothing", self.explain())
+        self.st.release_if("fixer", "acme/widgets#7")
+        self.assertEqual(self.lines(), [], "once the seat is free, the live turn covers it")
+
+
+class CoveredReadSweep(Health):
+    """#1959 end to end: the gate records its event's action with the failed read, the sweep
+    takes the PR's head from its own open-PR listing, and the covered marker survives the
+    watch state's save and reload until the covering turn succeeds (round 2, F1 and F4)."""
+    HEAD = CoveredRead.HEAD
+    ledger, explain = CoveredRead.ledger, CoveredRead.explain
+
+    def gate_read_fails(self, action="review_requested"):
+        """The reviewer gate's ``gate.context`` for an event, then its PR read refused (422)."""
+        from diaktoros import app_ingress
+        stub = pathlib.Path(self.tmp.name) / "stub.py"
+        stub.write_text(f"#!{sys.executable}\nprint('{{\"__gh_stub_response__\": {{\"status\": "
+                        "422, \"body\": {\"message\": \"too many files changed\"}}}')\n")
+        stub.chmod(0o755)
+        with mock.patch.dict(os.environ, {"DIAKTOROS_GH_STUB": str(stub)}), \
+             mock.patch.object(gate, "payload_loop", return_value=self.loop), \
+             mock.patch.object(gate, "_record_decisions"), \
+             mock.patch.object(app_ingress, "redrive_held", return_value=""), \
+             mock.patch.object(sys, "argv", ["gate_reviewer.py"]), \
+             gh.gate_scope(time.monotonic() + 60):
+            gate.context({"action": action})
+            self.assertIsNone(gh.pr(self.loop, 7))
+        failure = self.st.github_failure()
+        self.assertEqual((failure.get("where"), failure.get("event")),
+                         ("gate_reviewer.py", action))
+
+    def sweep_with(self, at):
+        listing = [{"number": 7, "head": {"sha": self.HEAD}, "user": {"login": "stranger"},
+                    "base": {"ref": "elsewhere"}, "draft": False}]
+        with mock.patch.object(watch_mode, "TEST", False), \
+             mock.patch.object(watchdog.gate, "hooks_read", return_value=(True, "")), \
+             mock.patch.object(watchdog.gh, "auth_probe", return_value=OK), \
+             mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
+             mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
+             mock.patch.object(watchdog.observer, "retry", return_value=0), \
+             mock.patch.object(watchdog.observer, "flush"), \
+             mock.patch.object(watchdog.time, "time", return_value=at):
+            return [x for x in watchdog.sweep_loop(self.loop, self.st) if "could not GET" in x]
+
+    def test_the_gate_records_its_action_and_the_sweep_stays_quiet_through_success(self):
+        self.loop.update(base="main", fixers=["drey"], reviewers=["vex"])
+        self.ledger()
+        self.gate_read_fails()
+        self.assertEqual(self.sweep_with(self.now + 60), [], "the listed head's live turn covers it")
+        self.assertIsInstance(self.st.watch().get(watch_health.COVERED_KEY), dict,
+                              "the cover is kept across the save")
+        self.ledger(state="succeeded")
+        self.assertEqual(self.sweep_with(self.now + 900), [],
+                         "its turn gave the review: no false 'started nothing'")
+        self.assertIn("harmless", self.explain())
+
+    def test_the_same_read_under_edited_alerts_through_the_sweep(self):
+        self.loop.update(base="main", fixers=["drey"], reviewers=["vex"])
+        self.ledger()
+        self.gate_read_fails("edited")
+        self.assertEqual(len(self.sweep_with(self.now + 60)), 1)
+
+    def test_a_covered_failure_alerts_through_the_sweep_once_its_turn_fails(self):
+        self.loop.update(base="main", fixers=["drey"], reviewers=["vex"])
+        self.ledger()
+        self.gate_read_fails()
+        self.assertEqual(self.sweep_with(self.now + 60), [])
+        self.ledger(state="failed")
+        self.assertEqual(len(self.sweep_with(self.now + 900)), 1)
+
 
 class ReviewProbeHealth(unittest.TestCase):
     """#1727: a failed review probe page (past the page bound) reaches the watchdog's health

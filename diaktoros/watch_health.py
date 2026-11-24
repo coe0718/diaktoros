@@ -86,7 +86,11 @@ def covered_read(loop: dict, failure: dict, heads: dict | None) -> tuple[int, st
     otherwise — a write, another gate, an event that does something else or is not recorded
     (``edited`` records a base retarget and starts its own fresh review; ``closed`` cleans up),
     a path that names no PR, a head that is not known, no live turn, a turn at an older head,
-    or a ledger that cannot be read (unknown is never covered): those are alerted as before."""
+    or a ledger that cannot be read (unknown is never covered): those are alerted as before.
+    Nor while the fixer's seat still holds PR N (:func:`fixer_holds`): a ``review_requested``
+    from the fixer side is also the handoff that frees that seat (``scripts/gate_reviewer.py``),
+    and the dropped event did not free it, so the queued reviewer turn may be waiting on the
+    very release that was lost."""
     from diaktoros import gate
     if ((failure.get("method") or "GET") != "GET" or not heads
             or failure.get("where") != COVERED_GATE
@@ -94,9 +98,22 @@ def covered_read(loop: dict, failure: dict, heads: dict | None) -> tuple[int, st
         return None
     number = re.search(r"/pulls/(\d+)$", str(failure.get("path") or ""))
     head = heads.get(int(number.group(1))) if number else None
-    if not head or not live_turn(loop, int(number.group(1)), head, COVERED_SEAT):
+    if (not head or fixer_holds(loop, int(number.group(1)))
+            or not live_turn(loop, int(number.group(1)), head, COVERED_SEAT)):
         return None
     return int(number.group(1)), head
+
+
+def fixer_holds(loop: dict, number: int) -> bool:
+    """Whether the fixer's seat holds PR ``number`` (an unexpired claim in the lock ledger), or
+    that cannot be read: unknown counts as held, so it never covers a failed read (#1959). Read
+    with ``live_locks``, which writes nothing, because ``explain`` asks it too."""
+    from diaktoros import gate
+    try:
+        held = state_mod.state_for(loop).live_locks("fixer")
+    except Exception:
+        return True
+    return gate.seat_key(loop, number) in held
 
 
 def covered_done(loop: dict, failure: dict, watch: dict) -> tuple[int, str] | None:
@@ -314,9 +331,11 @@ def _gate_failure_lines(loop: dict, st: state_mod.LoopState, watch: dict, now: f
             watch[COVERED_KEY] = {"at": failure.get("at"), "pr": cover[1][0], "head": cover[1][1]}
             return lines
         watch["gate_failure_seen"] = at
-        watch.pop(COVERED_KEY, None)
         if cover:
+            # Kept (keyed by this failure's ``at``) so ``explain`` still says the turn that
+            # covered it succeeded, as the sweep decided; a later failure never matches it.
             return lines                     # the turn that covered it gave its review
+        watch.pop(COVERED_KEY, None)
         if watch_mode.alert_due(watch, f"gate:{failure.get('where')}:{status or 'none'}", now,
                                 cooldown):
             lines.append(_gate_failure_alert(loop, failure, at, status, configured))
