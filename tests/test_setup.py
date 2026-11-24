@@ -330,6 +330,52 @@ class Setup(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.ran, ["doctor", "selftest", "arm"])
 
+    # -- #1698: the stops in step 2 and arm's exit code ----------------------------------------
+
+    def test_declining_the_install_stops_with_nothing_installed(self):
+        from diaktoros.cli import setup_command
+        asked = []
+
+        def agree(question, default, interactive, unattended):
+            asked.append(question)
+            return question != "Install this loop?"
+        with patch.object(setup_command, "_agree", agree):
+            rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Install this loop?", asked)
+        self.assertIn("setup stopped: nothing installed", out)
+        self.assertFalse(LOOP_FILE.exists())
+        self.assertEqual(self.ran, [])
+
+    def test_an_existing_loop_that_does_not_load_stops_setup(self):
+        LOOP_FILE.write_text("{not json")
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"loop {LOOP_ID!r} exists but does not load", out)
+        self.assertEqual(self.ran, [])
+
+    def test_a_failed_init_stops_setup(self):
+        from diaktoros.cli import setup_command
+        real = setup_command._verb
+
+        def verb(*argv):
+            if argv and argv[0] == "init" and "--dry-run" not in argv:
+                return 2
+            return real(*argv)
+        with patch.object(setup_command, "_verb", verb):
+            rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("setup stopped: init failed", out)
+        self.assertFalse(LOOP_FILE.exists())
+        self.assertEqual(self.ran, [])
+
+    def test_setup_returns_arms_exit_code(self):
+        self.fail_check = "arm"
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.ran, ["doctor", "selftest", "arm"])
+        self.assertIn("arm was not confirmed", out)
+
     def test_the_merge_check_step_runs_after_the_checks_and_before_arming(self):
         # #1163 M2c: step 5 offers the loop's ruleset; it never stops setup.
         from diaktoros.cli import setup_command as cli_setup

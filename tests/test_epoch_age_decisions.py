@@ -5,7 +5,8 @@ stall on a missing or garbage time, never reads it as "just now".
 (#563). A decision that wrote ``age_min(...) or 0.0`` would turn that into a fresh zero and hide
 the stall, and a test of ``age_min`` and ``past`` alone would not notice. So each consumer in
 ``AGE_DECISIONS`` is driven here through its own branch of ``scripts/watchdog.py``
-(``_stall_kind``'s push-off and fixer-never-pushed checks, ``_disputed_kind``'s grace, and
+(``_stall_kind``'s push-off check, ``_fixer_kind``'s fixer-never-pushed check,
+``_disputed_kind``'s grace, and
 ``parked_kind``'s awaiting and adjudicating markers) with the time missing and garbage, and two
 controls: a valid old time that raises the stall and a valid fresh one that does not. The scan
 fails on an ``age_min`` call not registered here.
@@ -33,7 +34,8 @@ LOOP = {"id": "l", "repo": "o/r", "cap": 3}
 GRACE_MIN = 30.0
 # path::function -> how many age_min calls it makes; each has a test below.
 AGE_DECISIONS = {
-    "scripts/watchdog.py::_stall_kind": 2,       # test_push_off_wait, test_fixer_never_pushed
+    "scripts/watchdog.py::_stall_kind": 1,       # test_push_off_wait
+    "scripts/watchdog.py::_fixer_kind": 1,       # test_fixer_never_pushed (via _stall_kind)
     "scripts/watchdog.py::_disputed_kind": 1,    # test_disputed_wait
     "scripts/watchdog.py::parked_kind": 2,       # test_parked_awaiting, test_parked_adjudicating
 }
@@ -92,7 +94,7 @@ class EveryAgeDecision(unittest.TestCase):
                 mock.patch.object(watchdog.run_supervisor, "production_ledger", return_value="db"), \
                 mock.patch.object(views, "disputed", return_value=disputed), \
                 mock.patch.object(views, "dispute_choices", return_value="choose"), \
-                mock.patch.object(watchdog, "live_turn", return_value=False):
+                mock.patch.object(watchdog.watch_health, "live_turn", return_value=False):
             return watchdog._stall_kind(c, {"title": "t"}, 7, HEAD, "someone", [latest], latest,
                                         None)
 

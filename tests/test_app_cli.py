@@ -14,6 +14,7 @@ import argparse
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_token_file_settings as tfs  # noqa: E402
@@ -308,8 +309,12 @@ class Setup(Base):
         setup_command._ask = lambda question, default="", interactive=False: \
             asked.append(question) or default
         self.addCleanup(setattr, setup_command, "_ask", orig)
+        # #1698: interactive=True sent _agree and _switch to input(); nothing here may read stdin.
+        no_stdin = mock.patch("builtins.input", side_effect=AssertionError("read stdin"))
+        no_stdin.start()
+        self.addCleanup(no_stdin.stop)
         argv, got = setup_command._setup_init_argv(args, "acme/widgets", "widgets",
-                                                   interactive=True)
+                                                   interactive=False)
         self.assertEqual(got, admin)
         self.assertIn(f"--app={admin}=9:{admin_key}", argv)
         self.assertFalse(any(a.startswith(f"--token={admin}=") for a in argv), argv)

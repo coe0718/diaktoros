@@ -10,8 +10,10 @@
 3. No work order at all: nothing starts one by itself, so after enabling the verdict is
    re-delivered to the fixer gate.
 
-A queue entry the gate declined (a terminal turn) is no push-off hold: the drain leaves it, so
-it too needs the retry. Each state is run through the sweep or the drain after enabling.
+A queue entry the gate declined (a terminal turn) is no push-off hold: the drain leaves it. When
+``retry`` offers a run at the head (a failed or policy-cancelled one), ``hermes dk retry`` re-arms
+it; otherwise ``retry`` has nothing to re-arm and the fix is by hand. Each state is run through
+the sweep or the drain after enabling.
 """
 from __future__ import annotations
 

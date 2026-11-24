@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from ..config import settings_form
+
 INSTALL = ("init", "setup")
 ALL = ("init", "setup", "set")
 
@@ -94,10 +96,17 @@ TABLE: tuple[SeatFlag, ...] = (
 
 def help_for(row: SeatFlag, command: str, d: dict | None = None) -> str:
     """The help ``command`` shows for ``row``: the shared text, and on ``init`` and ``setup``
-    the row's install note (its ``{key}`` placeholders filled from the settings form ``d``)."""
+    the row's install note (its ``{key}`` placeholders filled from the settings form ``d``).
+
+    A key ``d`` lacks (or no ``d`` at all) is filled with the settings form's schema default, so
+    a caller that adds an install row without the form cannot crash the parser build (#2041).
+    A placeholder that is no settings key at all is a table bug; ``tests/test_seat_flags.py``
+    checks every row's placeholders against ``SETTINGS_SCHEMA``.
+    """
     if command not in INSTALL or not row.install_note:
         return row.help
-    return f"{row.help} (default: {row.install_note.format(**(d or {}))})"
+    values = {**settings_form.settings_defaults(None), **(d or {})}
+    return f"{row.help} (default: {row.install_note.format_map(values)})"
 
 
 def rows(command: str) -> tuple[SeatFlag, ...]:

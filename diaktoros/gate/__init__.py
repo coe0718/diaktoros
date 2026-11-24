@@ -36,6 +36,11 @@ from ..util import log, note_gate_hold, now_iso, silence
 from .. import envnames
 from . import shadows   # the shadow review's rules (#218, #1004); they read this core as gate.X
 
+# The pull_request actions whose only work in the reviewer gate is to queue a review at the head
+# (``scripts/gate_reviewer.py``). A failed read under one of them is covered by a reviewer turn
+# already live at that head (#1959); ``edited`` and ``closed`` do other work and never are.
+REVIEW_ACTIONS = frozenset({"opened", "ready_for_review", "reopened", "review_requested"})
+
 
 def payload_loop(payload: dict) -> dict:
     full = ((payload.get("repository") or {}).get("full_name") or "")
@@ -56,7 +61,9 @@ def payload_loop(payload: dict) -> dict:
 def context(payload: dict):
     loop = payload_loop(payload)
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
-    gh.record_failures()
+    # The event's action goes with it: a failed read under ``edited`` is not covered by a queued
+    # review the way one under ``review_requested`` is (#1959).
+    gh.record_failures(payload.get("action") or "")
     from .. import gh_cache
     gh_cache.enable_writes()            # #1646: a gate is a writer process: it keeps the GET cache
     _record_decisions(loop, payload)

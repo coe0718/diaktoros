@@ -401,17 +401,23 @@ def auth_probe(loop: dict) -> Response:
 
 
 _RECORD_FAILURES = False
+# The webhook action (``opened``, ``edited``, ...) of the event the opted-in gate is handling,
+# kept with each failure it records: whether a queued turn covers a failed read depends on what
+# the dropped event would have done (#1959). Empty when the event named none (unknown).
+_RECORD_EVENT = ""
 
 
-def record_failures() -> None:
-    """Opt this process in to ``record_failure``. The gates do (``gate.context``); ``explain`` and
-    ``doctor`` never do, because they promise to write nothing."""
-    global _RECORD_FAILURES
+def record_failures(event: str = "") -> None:
+    """Opt this process in to ``record_failure``. The gates do (``gate.context``), naming the
+    event's action; ``explain`` and ``doctor`` never do, because they promise to write nothing."""
+    global _RECORD_FAILURES, _RECORD_EVENT
+    event = event if isinstance(event, str) else ""
     scoped = _SCOPED.get()
     if scoped is not None:
         scoped["record"] = True      # this gate call only (#1046)
+        scoped["event"] = event
     else:
-        _RECORD_FAILURES = True
+        _RECORD_FAILURES, _RECORD_EVENT = True, event
 
 
 def record_failure(loop: dict, method: str, path: str, error: str,
@@ -425,6 +431,7 @@ def record_failure(loop: dict, method: str, path: str, error: str,
     """
     scoped = _SCOPED.get()
     enabled = scoped["record"] if scoped is not None else _RECORD_FAILURES
+    event = (scoped.get("event") or "") if scoped is not None else _RECORD_EVENT
     if not enabled or not loop.get("state_dir") or status_of(error) == 404:
         return
     try:
@@ -432,7 +439,8 @@ def record_failure(loop: dict, method: str, path: str, error: str,
         state_mod.state_for(loop).github_failure_record({
             "at": time.time(), "where": pathlib.Path(sys.argv[0] or "review-loop").name,
             "method": method, "path": path.split("?", 1)[0], "error": one_line(error, 200),
-            "status": status_of(error), "login": login or loop.get("read_token") or ""})
+            "status": status_of(error), "login": login or loop.get("read_token") or "",
+            "event": event})
     except Exception:
         pass
 

@@ -706,6 +706,21 @@ class LedgerTests(unittest.TestCase):
                         (state, owner, time.time() + 60, run_id))
         return run_id
 
+    def test_recorded_runs_reads_only_allowlisted_columns(self):
+        """#2044: the column (and its condition) interpolated into the query come only from
+        ``views.RECORDED_COLUMNS``; any other name is refused before the ledger is read."""
+        from diaktoros.run_supervisor import Supervisor, views
+        sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
+                         hermes_home=self.root)
+        run_id = self.row(sup)
+        sup.record_dependencies(run_id, "w", "rust: ready")
+        self.assertEqual(set(views.RECORDED_COLUMNS), {"deps", "partial_view"})
+        self.assertEqual(views._recorded_runs(sup.db, REPO, 7, 5, "deps")[0]["deps"],
+                         "rust: ready")
+        for column in ("repo", "deps FROM runs --", "id,owner", "owner"):
+            with self.subTest(column=column), self.assertRaises(ValueError):
+                views._recorded_runs(sup.db, REPO, 7, 5, column)
+
     def test_only_the_owner_of_a_live_run_records_and_it_is_bounded(self):
         from diaktoros.run_supervisor import Supervisor, views
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,

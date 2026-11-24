@@ -245,15 +245,25 @@ def _watch_lines(c) -> None:
         github_bits.append(f"last failed call: {failure.get('where') or '?'} "
                            f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} at {when}: "
                            f"{gh.one_line(failure.get('error'), 300)} — "
-                           + ("a gate that hit it treated the PR as unavailable and started nothing"
-                              if (failure.get("method") or "GET") == "GET"
-                              else gh.write_outcome(str(failure.get("method")),
-                                                    str(failure.get("path") or ""),
-                                                    failure.get("status")
-                                                    if type(failure.get("status")) is int
-                                                    else None))
+                           + _failure_cost(c, failure, watch)
                            + _owner_note(c.loop, failure))
     c.github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
+
+
+def _failure_cost(c, failure: dict, watch: dict) -> str:
+    """What the last failed call cost, by the sweep's own rule (#1959,
+    ``watch_health.read_cover``): nothing when a reviewer turn at this PR's current head covers
+    it (only this PR's head is known here, so a failure on another PR, or an unknown head,
+    is never called harmless while its turn is live); otherwise a GET started nothing and a
+    write's outcome is said."""
+    from . import watch_health
+    heads = {c.number: c.head} if c.head else None
+    if (cover := watch_health.read_cover(c.loop, failure, heads, watch)):
+        return watch_health.covered_note(*cover)
+    if (failure.get("method") or "GET") == "GET":
+        return "a gate that hit it treated the PR as unavailable and started nothing"
+    return gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
+                            failure.get("status") if type(failure.get("status")) is int else None)
 
 
 def _state_report(c) -> dict:

@@ -349,8 +349,12 @@ def _read_listing(c: _Sweep) -> None:
     # that works must not announce "reads work again" while the listing is still refused).
     c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
     if not watch_mode.TEST:
+        # The listed heads let a gate's failed PR read that a live turn covers stay quiet (#1959).
+        heads = {p["number"]: (p.get("head") or {}).get("sha") for p in c.prs or []
+                 if isinstance(p, dict) and isinstance(p.get("number"), int)}
         c.health = watch_health.read_health(c.loop, c.st, c.watch, c.now, c.armed, c.armed_error,
-                                            c.listing_errors[0] if c.listing_errors else "")
+                                            c.listing_errors[0] if c.listing_errors else "",
+                                            heads)
         c.lines.extend(c.health.lines)
 
 
@@ -671,21 +675,28 @@ def _stall_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, review
                     f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
     elif at_head and (disputed := run_supervisor.views.disputed(
             run_supervisor.production_ledger(), loop["repo"], number, head, latest)) \
-            and not live_turn(loop, number, head, "fixer"):
+            and not watch_health.live_turn(loop, number, head, "fixer"):
         kind = _disputed_kind(c, number, head, len(changes), latest, disputed)
     elif at_head:
-        mins = age_min(latest.get("submitted_at"))
-        # A fix turn queued or running at this head is not a stall: the grace covers a turn's
-        # run, not its wait in the queue (behind another PR, paced, held).
-        if past(mins, c.grace["fixer"]) and not live_turn(loop, number, head, "fixer"):
-            kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
-                    f"{head[:7]} by {gate.reviewer_login(latest)}")
+        kind = _fixer_kind(c, number, head, latest)
     elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
         pass                                  # #539: the fixer takes this red head first
     else:
         kind = _reviewer_kind(c, pr, number, head, author, boundary, observed_at,
                               head_postdates_arming)
     return kind
+
+
+def _fixer_kind(c: _Sweep, number: int, head: str, latest: dict) -> str:
+    """The stall of a changes-requested head the fixer owns: ``"fixer never pushed"`` once the
+    fixer's grace has passed since the verdict, else ``""``. A fix turn queued or running at
+    this head is not a stall: the grace covers a turn's run, not its wait in the queue (behind
+    another PR, paced, held)."""
+    mins = age_min(latest.get("submitted_at"))
+    if past(mins, c.grace["fixer"]) and not watch_health.live_turn(c.loop, number, head, "fixer"):
+        return (f"fixer never pushed — changes requested {ago(mins)} at head "
+                f"{head[:7]} by {gate.reviewer_login(latest)}")
+    return ""
 
 
 def _cap_spent_kind(c: _Sweep, number: int, head: str, spent: int) -> str:
@@ -791,7 +802,7 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                 "a pending review request had started no review — delivered it to the "
                 "reviewer gate"))
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
-            and not live_turn(loop, number, head, "reviewer")):
+            and not watch_health.live_turn(loop, number, head, "reviewer")):
         return (f"reviewer never posted a verdict — head {head[:7]} observed "
                 f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
                 f"review --loop {loop['id']} --pr {number}` asks for one)")
@@ -947,16 +958,6 @@ def _finish(c: _Sweep) -> None:
     c.finish_reads()
     st.watch_save(c.watch)
     st.note(f"run: {len(c.alerts)} alert(s), {len(c.reported)} stuck, {len(c.prs)} open PRs")
-
-
-def live_turn(loop: dict, number: int, head: str, seat: str) -> bool:
-    """Whether ``seat``'s turn on this PR head is queued or running in the run ledger: one of
-    ``run_supervisor.NOT_ENDED``. An ``uncertain`` turn is not one — it will not push or post by
-    itself and someone must look, so it is a stall here, as explain's ``fix_live`` reads it (#1503).
-    """
-    from diaktoros.run_supervisor import views
-    state = views.turn_state(config.host_path("ledger"), loop["repo"], number, head, seat)
-    return state in run_supervisor.NOT_ENDED
 
 
 def stall_key(number: int, head: str, kind: str) -> str:

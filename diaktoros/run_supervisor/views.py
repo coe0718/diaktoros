@@ -422,14 +422,28 @@ def ruled_approvals(db: str | Path, repo: str, pr: int, head: str) -> tuple[list
             return [], ""                  # a ledger from before #905: nothing acted on
         return [], f"{type(exc).__name__}: {exc}"
 
-def _recorded_runs(db: str | Path, repo: str, pr: int | None, limit: int, column: str,
-                   recorded: str) -> list[dict] | None:
+# The ledger columns ``_recorded_runs`` may read, each with the condition that says a run
+# recorded it (#2044). Both are SQL text, so they come only from this fixed table: a caller
+# names a column and can never pass an identifier or condition of its own.
+RECORDED_COLUMNS = {
+    'deps': "deps IS NOT NULL",
+    'partial_view': "partial_view IS NOT NULL AND partial_view != ''",
+}
+
+
+def _recorded_runs(db: str | Path, repo: str, pr: int | None, limit: int,
+                   column: str) -> list[dict] | None:
     """The newest runs (at most ``limit``, clamped to 1–20) of ``repo``, and of ``pr`` when
-    given, where ``recorded`` holds, as ``id,repo,pr,head,seat,state,<column>,updated`` rows.
+    given, that recorded ``column``, as ``id,repo,pr,head,seat,state,<column>,updated`` rows.
 
     The shared read of ``dependency_view`` and ``view_view``: read-only; None when the ledger is
-    absent or unreadable, [] when the ledger predates ``column`` or no row matches.
+    absent or unreadable, [] when the ledger predates ``column`` or no row matches. ``column``
+    must be a key of ``RECORDED_COLUMNS`` (ValueError otherwise): the column name and its
+    condition are interpolated into the query, so neither may come from a caller (#2044).
     """
+    if column not in RECORDED_COLUMNS:
+        raise ValueError(f"not a recorded ledger column: {column!r}")
+    recorded = RECORDED_COLUMNS[column]
     try:
         con = read_only_connect(db)
         if con is None:
@@ -456,7 +470,7 @@ def dependency_view(db: str | Path, repo: str, pr: int | None = None,
 
     Read-only; None when the ledger is absent or unreadable, [] when nothing was recorded.
     """
-    return _recorded_runs(db, repo, pr, limit, 'deps', "deps IS NOT NULL")
+    return _recorded_runs(db, repo, pr, limit, 'deps')
 
 
 # The reason a turn killed at its budget records (#49); ``next_step`` keys on it.
@@ -657,8 +671,7 @@ def view_view(db: str | Path, repo: str, pr: int | None = None,
 
     Read-only; None when the ledger is absent or unreadable, [] when every recorded view was whole.
     """
-    return _recorded_runs(db, repo, pr, limit, 'partial_view',
-                          "partial_view IS NOT NULL AND partial_view != ''")
+    return _recorded_runs(db, repo, pr, limit, 'partial_view')
 
 
 def describe_view(row: dict) -> str:
