@@ -26,6 +26,7 @@ from .. import util
 FRESH_DAYS = 30         # doctor's backup:fresh warns when the newest archive is older than this
 CLOCK_SKEW_S = 86400    # an archive dated further ahead than this is not trusted as recent (#1875)
 FUTURE_RECORD = ".future-dated.json"   # in backups_dir(): archives `backup` saw past it (#1905)
+LOCK_WAIT_S = 5.0       # past this, a backup stops waiting for another's hold on the record (#2462)
 
 
 def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float] | None,
@@ -142,11 +143,26 @@ def _future_record_locked():
     file beside the record: that would be one more file in the directory every listing sees.
     Raises ``FileNotFoundError`` when the directory does not exist. On a filesystem without
     ``flock`` the lock does not take (as with ``util.hold_temp``) and overlapping runs are not
-    serialized."""
+    serialized.
+
+    The wait is bounded, as ``ledger.claim_lock``'s is: past ``LOCK_WAIT_S`` it raises
+    ``TimeoutError``, an ``OSError``, so ``hermes dk backup`` warns that nothing was recorded and
+    still exits 0. Unbounded, a holder that never lets go (stopped, or stuck in I/O) kept every
+    later backup from its prune and its exit, its own archive still locked (#2462)."""
     fd = os.open(backup.backups_dir(), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        until = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= until:
+                    raise TimeoutError(f"another backup held {backup.backups_dir()} past "
+                                       f"{LOCK_WAIT_S:g}s") from None
+                time.sleep(0.02)
+            except OSError:
+                break           # no flock on this filesystem: not serialized (above)
         yield
     finally:
         os.close(fd)        # closing the descriptor releases the flock
