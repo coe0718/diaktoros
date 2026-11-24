@@ -851,7 +851,7 @@ def _absent_branch(loop: dict, ref_path: str, branch: str, login: str) -> None:
 def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                 manifest: object) -> dict:
     """Push an issue fix (#214) to the new branch ``branch``: one commit on ``base``, topped by
-    ``_catch_up``'s merge of the base's tip when the base moved during the turn (#2591, #2606).
+    ``_catch_up``'s clean, workflow-free merge of the base's tip only if the base moved (#2606, #2686).
 
     Authorized against the live issue (``broker.authorize_issue_fix``) before construction and
     again just before the push. An existing branch (a second fix for the same issue) is refused,

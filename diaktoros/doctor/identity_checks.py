@@ -463,7 +463,7 @@ def check_update_behind(loop: dict, offline: bool = False) -> doctor.Check | Non
     if strict is not True:
         why = (f"{loop['base']} does not require branches to be up to date" if strict is False
                else f"could not read whether {loop['base']} requires up-to-date branches ({unread})")
-        fixes = "; a new issue-fix branch still gets a clean base merge" if config.issue_fixes_enabled(loop) else ""
+        fixes = "; an issue fix still merges a moved base if clean and workflow-free" if config.issue_fixes_enabled(loop) else ""
         return doctor.Check("update-behind", doctor.UNKNOWN,
                             f"on — {login} can push, but {why}: GitHub then never reports a PR "
                             f"`behind`, so the host merges nothing into an open loop PR{fixes}",

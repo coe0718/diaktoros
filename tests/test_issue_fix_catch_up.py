@@ -202,7 +202,7 @@ class Doctor(unittest.TestCase):
     def test_a_base_not_requiring_up_to_date_branches_still_leaves_the_issue_fix_catch_up(self):
         on = self.detail(triage={"route": "w-t", "fix_label": "fix-me"})
         self.assertIn("merges nothing into an open loop PR", on)
-        self.assertIn("issue-fix branch still gets a clean base merge", on)
+        self.assertIn("an issue fix still merges a moved base if clean and workflow-free", on)
         self.assertNotIn("issue-fix", self.detail())        # issue fixes off: nothing to except
 
 
