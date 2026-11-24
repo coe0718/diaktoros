@@ -5,6 +5,7 @@ cut one worker and multiplied the reads would still pass.
 
 The real spans give the same counts with and without the lock, which both checks pass; these
 cases pin the component-wise check with counts that tell the two apart."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import unittest
 
 
