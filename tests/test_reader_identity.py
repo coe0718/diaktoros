@@ -654,6 +654,7 @@ class HookWriteTests(_Loop):
         self.assertEqual(rc, 0, out)
         self.assertIn("would create no repo hooks", out)
         self.assertNotIn("would create 2", out)
+        self.assertNotIn("hooks would be created", out)     # no hook-editor line either (#1698)
 
     def test_a_successful_init_hooks_states_who_edits_them(self):
         # README: "`init --hooks` prints the login and this need" — on the real path, not only

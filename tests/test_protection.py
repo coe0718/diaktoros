@@ -97,7 +97,9 @@ class Read(Fake):
             return protection.reviewer_app_id(loop)
         self.assertEqual(stored("5"), 5)
         self.assertEqual(stored(7), 7)
-        for bad in ("²", "٣", "５", "x", "9" * 4301, "0"):      # superscript, Arabic-Indic, fullwidth: isdigit() but not int()
+        # "²" is a digit but not decimal (int() refuses it); "٣" and "５" are decimal and int()
+        # parses them, but they are not ASCII, so the isascii() guard in parse_app_id refuses them.
+        for bad in ("²", "٣", "５", "x", "9" * 4301, "0"):
             with self.subTest(app_id=bad):
                 self.assertIsNone(stored(bad))
         self.assertIsNone(protection.reviewer_app_id(pat_loop()))
