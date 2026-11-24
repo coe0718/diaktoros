@@ -126,5 +126,31 @@ class ABarrierCutInsideTheId(race._Race):
             self.assertEqual(con.execute("SELECT count(*) FROM ledger_events").fetchone(), (0,))
         self.claim()                            # this turn's own shadow row is in
 
+    def test_a_lift_written_whole_whose_sync_fails_leaves_nothing_to_lift_a_later_cut(self):
+        # #2644 review F5: the lift lands but its fsync fails every try, so it raises with the
+        # cut already lifted. Once another writer empties the log, a new writer can cut an add
+        # at the same byte: nothing published names that byte, so its hold stands.
+        real_sync = ledger.os.fsync
+
+        def no_sync(fd):                    # the claim lock's file alone
+            if ledger.os.readlink(f"/proc/self/fd/{fd}").endswith(".claims.lock"):
+                raise OSError(errno.EIO, "sync failed")
+            return real_sync(fd)
+        loop = self.queued_unsampled()
+        with self.race("running"), self.cut_after(1, times=2), \
+                mock.patch.object(ledger.os, "fsync", no_sync), \
+                mock.patch.object(shadow_owing, "LIFT_WAITS", (0, 0)):
+            self.assertEqual(self.enqueue(loop), "duplicate running")
+        self.assertEqual(self.holds_another(), (False, (set(), [])))
+        with ledger.claim_lock(self.sup().db) as held:      # another writer empties the log
+            ledger.owe(held, "another")
+            ledger.owe(held, "another", False)
+        self.assertEqual(self.lock_bytes(), b"")
+        self.lock_path().write_bytes(b"+")                  # a new writer's add, cut at byte 0
+        self.assertEqual(self.holds_another(), (True, (set(), [""])))
+        with contextlib.closing(sqlite3.connect(self.sup().db)) as con:
+            self.assertEqual(con.execute("SELECT count(*) FROM ledger_events").fetchone(), (0,))
+        self.claim()                            # this turn's own shadow row is in
+
 if __name__ == "__main__":
     unittest.main()
