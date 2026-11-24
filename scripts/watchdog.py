@@ -275,7 +275,7 @@ class _Sweep:
         self.now = watch_mode.now()
         self.cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
         self.health: watch_health.Health | None = None
-        self.listing_errors, self.read_at = [], {}    # read_at: when each PR's page came back (#2626)
+        self.listing_errors, self.read_at = [], {}    # read_at: when each PR's page was requested (#2626)
         self.pr_failures: list[tuple[int, str]] = []  # per-PR review reads that failed
         self.prs = None
 
@@ -346,8 +346,8 @@ def _app_flag_unknown(c: _Sweep) -> bool:
 def _read_listing(c: _Sweep) -> None:
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so that a listing
     # GitHub refuses counts as a failed read this sweep (a working /user probe must not say "reads work again").
+    c.listed_at = watch_mode.now()      # #2626: for a PR with no page time, the listing's start
     c.prs = gh.open_prs(c.loop, errors=c.listing_errors, read_at=c.read_at)
-    c.listed_at = watch_mode.now()      # #2626: for a PR with no page time, the whole listing's end
     if not watch_mode.TEST:
         # The listed heads let a gate's failed PR read that a live turn covers stay quiet (#1959).
         heads = {p["number"]: (p.get("head") or {}).get("sha") for p in c.prs or []
@@ -799,7 +799,7 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                 f"the review queued at {moved[:7]} was cancelled when the head moved — delivered "
                 "it for this head" if moved else "a pending review request had started no review "
                 "— delivered it to the reviewer gate"))
-    # #2626: only a turn cancelled for a head move after this PR's listed page came back proves it stale.
+    # #2626: a head-move cancel once this PR's page was asked for may leave its row stale: the next sweep says.
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
             and not watch_health.live_turn(loop, number, head, "reviewer")
             and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer", c.read_at.get(number, c.listed_at))):

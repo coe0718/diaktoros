@@ -5,8 +5,12 @@ reviewer turn cancelled because the head moved before it started
 (``run_supervisor.REVIEW_HEAD_MOVED``) is proof the listed head is gone: the next sweep lists the
 new head, and #2468 delivers the review there. So that head is no "reviewer never posted a
 verdict" stall. Any other ending (another cancellation, a failure, ``uncertain``) or no turn at
-all still is, as before; so is a cancellation older than the sweep's listing read (not merely its
-start), since the head can return to that SHA. The ledger here is real, so ``_stall_kind`` reads what the worker wrote.
+all still is, as before; so is a cancellation from before the PR's page was requested (not merely
+from after the sweep's start), since the head can return to that SHA. One while that page is in
+flight is ambiguous (#2694 review F5): GitHub may have read the old head before it, or the head
+may have come back first. That sweep stays quiet and the next, listed wholly after the
+cancellation, reports a head that really returned. The ledger here is real, so ``_stall_kind``
+reads what the worker wrote.
 """
 from __future__ import annotations
 
@@ -57,7 +61,7 @@ class HeadMovedIsNotAStall(fg.Base):
         """One sweep; turns ``(state, error)`` the worker ends once its listing came back
         (``after``), while that listing is being read (``inflight``), or once the sweep began but
         before the read (``before``, #2694 review F1). ``pages``: the real two-page listing, PR 7
-        on its first, with turns ended while page 1 or 2 is fetched (#2694 review F5)."""
+        on its first, with turns ended while page 1 or 2 is in flight (#2694 review F5)."""
         def ending(turns, step):
             def run(*args, **kw):
                 for state, error in turns:
@@ -113,20 +117,25 @@ class HeadMovedIsNotAStall(fg.Base):
         # back. A failed review at the head in between redelivers nothing, so this is a stall.
         self.turn("failed", "reviewer crashed", head="c" * 40)
         self.assertIn(STALL, self.sweep())
-        # #2694 review F1: cancelled once the sweep began, or while its listing was being read,
+        # #2694 review F1: cancelled once the sweep began but before the listing was asked for,
         # the head may have come back before GitHub listed it: nothing says it is stale.
-        for when in ("before", "inflight"):
-            with self.subTest(when):
-                self.assertIn(STALL, self.sweep(**{when: [("cancelled", MOVED)]}))
+        self.assertIn(STALL, self.sweep(before=[("cancelled", MOVED)]))
+        # Cancelled while the listing was in flight: ambiguous (review F5), so not this sweep;
+        # the next one, listed after it, still shows the head and reports it.
+        self.assertNotIn(STALL, self.sweep(inflight=[("cancelled", MOVED)]))
+        self.assertIn(STALL, self.sweep())
 
     def test_a_head_move_after_its_page_came_back_hides_the_stall_mid_listing(self):
         # #2694 review F5: the page listing PR 7 came back, then its turn was cancelled while a
         # later page was read: that page is stale, though the whole listing ended after.
         self.arm_long_ago()
         self.assertNotIn(STALL, self.sweep(pages={2: [("cancelled", MOVED)]}))
-        # Cancelled while its own page was being fetched: the head may have come back first.
-        self.turn("failed", "reviewer crashed", head="c" * 40)
-        self.assertIn(STALL, self.sweep(pages={1: [("cancelled", MOVED)]}))
+        # #2694 review F5 (round 6): cancelled while its own page was in flight, which already
+        # holds the old head (the fake fetch returns the row it had before the cancellation).
+        # GitHub's read may predate the cancellation, so no false alert this sweep; if the head
+        # really is back, the next sweep, whose page is asked for after it, reports the stall.
+        self.assertNotIn(STALL, self.sweep(pages={1: [("cancelled", MOVED)]}))
+        self.assertIn(STALL, self.sweep(pages={}))
 
     def test_no_turn_or_another_ending_still_stalls(self):
         self.arm_long_ago()

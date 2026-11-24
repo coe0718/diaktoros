@@ -568,7 +568,7 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     bound, or one the budget cannot finish (#1870, ``gh_paging``), returns the pages read *and*
     the reason, which the caller must report; a failed or malformed page is still unknown. Read
     from page ``start``; a cut sets ``progress['next']`` to the page not read, and each page read
-    appends ``(items so far, when it came back)`` to ``progress['pages']`` (#2626).
+    appends ``(items so far, when its request went out)`` to ``progress['pages']`` (#2626).
 
     Exactly ``max_pages`` full pages is told from more by one probe page past the bound (#1146),
     read only when every page was full: empty means whole, an item means past the bound. A failed
@@ -579,7 +579,7 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     """
     result: list[dict] = []
     for page in range(start, max_pages + 2):
-        page_path = path if page == 1 else f"{path}&page={page}"
+        page_path, asked = (path if page == 1 else f"{path}&page={page}"), time.time()
         def read():
             return fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
         items, error, cut = (gh_paging.later_page(read, what, page) if keep_partial
@@ -603,7 +603,7 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
             return None, f"{what} page {page}: {error}"
         result.extend(items)
         if progress is not None:
-            progress.setdefault("pages", []).append((len(result), time.time()))
+            progress.setdefault("pages", []).append((len(result), asked))
         if len(items) < REVIEW_PAGE_SIZE or _older_than(items[-1], created_floor):
             return result, ""
     raise AssertionError("unreachable: the probe page always returns")
@@ -701,7 +701,7 @@ def open_prs(loop: dict, errors: list | None = None, read_at: dict | None = None
     The watchdog treats this as its scheduling view; a repository with more than 100 open PRs
     read as "the first 100" would silently never scan or drain the rest. Pass ``errors`` to
     receive why (the watchdog alerts on a failed listing like on any failed read), and
-    ``read_at`` to receive when each PR's page came back, by number (#2626).
+    ``read_at`` to receive when each PR's page was requested, by number (#2626).
     """
     pages: dict = {}
     result, error = open_prs_read(loop, pages)
