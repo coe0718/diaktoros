@@ -246,14 +246,50 @@ class ShowTests(_Base):
         self.assertNotIn("inert", rows["fixer_scope_lock"]["note"])
 
     @staticmethod
+    def string_names(tree) -> dict[str, str]:
+        """The names ``tree`` binds exactly once, by a plain module-level ``name = "<string>"``,
+        each with its string: only these can be read as that string everywhere (#2662 review).
+
+        Every other binding of a name counts against it, so a name also bound as a parameter, by
+        ``+=``, ``for``, ``with``, ``except``, ``import``, a walrus, a ``match`` capture, ``del``,
+        or a declaration ``global``/``nonlocal``, is unknown and stays a marker: it may hold
+        ``dk`` where it is read."""
+        import ast
+        bindings: dict[str, int] = {}
+
+        def bind(name: str) -> None:
+            bindings[name] = bindings.get(name, 0) + 1
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+                bind(node.id)
+            elif isinstance(node, ast.arg):
+                bind(node.arg)
+            elif isinstance(node, ast.alias):
+                bind((node.asname or node.name).split(".")[0])
+            elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar) and node.name:
+                bind(node.name)
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                bind(node.rest)
+            elif isinstance(node, ast.Global | ast.Nonlocal):
+                for name in node.names:
+                    bind(name)
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                bind(node.name)
+        return {node.targets[0].id: node.value.value for node in tree.body
+                if isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and bindings[node.targets[0].id] == 1
+                and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
+
+    @staticmethod
     def hand_spelled(source: str) -> list[int]:
         """Lines of strings in ``source`` naming ``dk fixer-push``, docstrings aside: a hint the
         operator would type, which must come from ``config.fixer_push_enable_command``.
 
         Besides each string constant, the text of every ``+`` chain and every f-string is
         joined before matching (#1480), and so is every ``%``-format of a string and every
-        ``str.join`` of a literal list or tuple (#2039). A name assigned once in ``source``, to a
-        string constant, stands for that string. Any other part that is not a string (a
+        ``str.join`` of a literal list or tuple (#2039), a ``*`` width or precision taking an
+        argument of its own. A name that ``source`` binds exactly once, by a plain module-level
+        assignment of a string constant, stands for that string (``string_names``). Any other part that is not a string (a
         placeholder, a call, a name assigned elsewhere) becomes a marker, which stands in for
         ``dk`` only right after ``hermes``: ``f"hermes {cmd} " f"fixer-push"`` counts as
         hand-spelled, ``cmd + " fixer-push"`` with ``cmd`` unknown or ``"run"`` does not (#2039)."""
@@ -261,14 +297,7 @@ class ShowTests(_Base):
         import re
         marker = "\x00"
         tree = ast.parse(source)
-        assigned: dict[str, list] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                    and isinstance(node.targets[0], ast.Name):
-                assigned.setdefault(node.targets[0].id, []).append(node.value)
-        names = {name: values[0].value for name, values in assigned.items()
-                 if len(values) == 1 and isinstance(values[0], ast.Constant)
-                 and isinstance(values[0].value, str)}
+        names = ShowTests.string_names(tree)
 
         def is_str(node) -> bool:
             return isinstance(node, ast.Constant) and isinstance(node.value, str)
@@ -290,7 +319,15 @@ class ShowTests(_Base):
             def conversion(match) -> str:
                 if match.group(0) == "%%":
                     return "%"
-                return text(args.pop(0)) if args and not match.group(1) else marker
+                if match.group(1):              # %(key)s: the argument is a mapping
+                    return marker
+                # A `*` width or precision takes an argument of its own, before the value
+                # (#2662 review): `"%*s" % (2, "dk")` formats "dk", not 2.
+                for _ in range(match.group(0).count("*") + 1):
+                    if not args:
+                        return marker
+                    value = args.pop(0)
+                return text(value)
             spec = r"%%|%(\([^)]*\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[a-zA-Z]"
             return re.sub(spec, conversion, text(node.left))
 
@@ -346,7 +383,11 @@ class ShowTests(_Base):
                      '"hermes %s %s" % ("dk", "fixer-push --enable")',
                      '" ".join(["hermes dk", "fixer-push --enable"])',
                      '" ".join(("hermes", "dk", "fixer-push"))',
-                     'PREFIX + " fixer-push --enable"'):
+                     'PREFIX + " fixer-push --enable"',
+                     # #2662 review: a `*` width takes an argument of its own.
+                     '"hermes %*s %s" % (2, "dk", "fixer-push --enable")',
+                     '"hermes %.*s %s" % (2, "dk", "fixer-push")',
+                     '"hermes %*.*s %s" % (4, 2, "dk", "fixer-push")'):
             with self.subTest(hint):
                 self.assertEqual(self.hand_spelled(
                     f'"""``hermes dk fixer-push``."""\nnote = {hint}\nPREFIX = "hermes dk"\n'), [2])
@@ -360,6 +401,20 @@ class ShowTests(_Base):
                        'note = " ".join([kind, "fixer-push"])\n'):
             with self.subTest(source):
                 self.assertEqual(self.hand_spelled(source), [])
+
+    def test_hint_guard_reads_a_rebound_name_as_unknown(self):
+        # #2662 review: a module-level `cmd = "run"` was read as "run" everywhere, even where a
+        # parameter or another binding of `cmd` may hold `dk`, so these real hints went unflagged.
+        for source in ('cmd = "run"\ndef hint(cmd):\n    return f"hermes {cmd} fixer-push --enable"\n',
+                       'cmd = ""\ncmd += "dk"\nnote = f"hermes {cmd} fixer-push"\n',
+                       'cmd = "run"\nfor cmd in ("dk",):\n    note = f"hermes {cmd} fixer-push"\n',
+                       'cmd = "run"\ndef hint():\n    cmd = "dk"\n    return "hermes " + cmd + " fixer-push"\n',
+                       'cmd = "run"\nnote = [f"hermes {cmd} fixer-push" for cmd in ks]\n',
+                       'cmd = "run"\nif (cmd := arg):\n    note = "hermes %s fixer-push" % cmd\n',
+                       'cmd = "run"\nwith arg as cmd:\n    note = "hermes " + cmd + " fixer-push"\n'):
+            with self.subTest(source):
+                lines = [n for n, line in enumerate(source.splitlines(), 1) if "fixer-push" in line]
+                self.assertEqual(self.hand_spelled(source), lines)
 
     @staticmethod
     def inline_fixer_push(text: str) -> list[str]:
