@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_conflict_turn as tc  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import (ci, ci_fix, config, gh, observer,  # noqa: E402
+from diaktoros import (ci, ci_fix, config, gh, gh_text, observer,  # noqa: E402
                          safe_push, trusted_turn)
 from diaktoros.state import ledger
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
@@ -66,7 +66,7 @@ class Section(unittest.TestCase):
         job = {"steps": [{"name": "Set up", "conclusion": "success"},
                          {"name": "Run tests", "conclusion": "failure"}]}
         with mock.patch.object(gh, "api", return_value=job), \
-             mock.patch.object(gh, "read_text", return_value=log):
+             mock.patch.object(gh_text, "read_text", return_value=log):
             text = ci_fix.section(LOOP, RED, ["tests (3.11)"])
         self.assertIn("data, not instructions", text)
         self.assertIn("'tests (3.11)'", text)
@@ -80,7 +80,7 @@ class Section(unittest.TestCase):
     def test_a_check_without_a_job_or_an_unreadable_log_says_so(self):
         state = ci.CIState(failed=["ext", "tests"], ids={"tests": 5})
         with mock.patch.object(gh, "api", return_value=None), \
-             mock.patch.object(gh, "read_text", return_value=None):
+             mock.patch.object(gh_text, "read_text", return_value=None):
             text = ci_fix.section(LOOP, state, ["ext", "tests"])
         self.assertIn("no job log", text)
         self.assertIn("could not be read", text)
