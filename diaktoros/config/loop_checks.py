@@ -7,7 +7,7 @@ core and calls them as ``loop_checks.<name>``. Each step reaches the core throug
 from __future__ import annotations
 
 
-from .. import config
+from .. import config, util
 from ..config import blocks, credentials, lists, prices
 
 
@@ -23,8 +23,11 @@ def _check_lists_and_modes(loop: dict, where: str) -> None:
         raise config.ConfigError(f"{where}: 'ingress' must be one of {', '.join(config.INGRESS_MODES)}")
     loop["ingress_app"] = str(loop.get("ingress_app") or "").strip()
     if loop["ingress"] == "app-webhook":
-        app = loop["ingress_app"].lower()
-        if not config.APP_LOGIN.match(app) or app not in {str(k).lower() for k in loop.get("apps") or {}}:
+        # Validated on ``lower()`` (``APP_LOGIN`` is ASCII-only), looked up in ``apps`` by
+        # ``util.login_entry``, the rule every credential-map lookup uses (#1940).
+        app = loop["ingress_app"]
+        mapped = {str(k): True for k in loop.get("apps") or {}}
+        if not config.APP_LOGIN.match(app.lower()) or not util.login_entry(mapped, app):
             raise config.ConfigError(f"{where}: 'ingress' app-webhook needs 'ingress_app': the bot login "
                               "of a GitHub App mapped in 'apps' (its webhook delivers this loop's "
                               "events)")
