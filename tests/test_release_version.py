@@ -13,7 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import diaktoros  # noqa: E402
 
-RELEASE = "0.6.1"
+RELEASE = "0.7.0"
 
 
 def _field(path: pathlib.Path) -> str:
