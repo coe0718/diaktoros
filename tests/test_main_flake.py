@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_main_check import COMPARE, FakeState  # noqa: E402
-from diaktoros import ci, ci_tests, doctor, gh, main_check, main_flake, observer  # noqa: E402
+from diaktoros import ci, ci_tests, doctor, gh, gh_text, main_check, main_flake, observer  # noqa: E402
 from diaktoros.doctor import identity_checks  # noqa: E402
 
 HEAD = "b" * 40
@@ -181,7 +181,7 @@ class Flake(unittest.TestCase):
         tail = lambda _loop, _path, login=None, limit=0: whole[-limit:]  # noqa: E731  as gh keeps
         job = {"run_id": 77, "conclusion": "failure"}
         with mock.patch.object(ci_tests, "_job_at_head", return_value=job), \
-                mock.patch.object(gh, "read_text", side_effect=tail):
+                mock.patch.object(gh_text, "read_text", side_effect=tail):
             self.assertIsNone(main_flake.flake(LOOP, red(), HEAD))
             whole = TIMEOUT_LOG
             self.assertEqual(main_flake.flake(LOOP, red(), HEAD)["why"], "timed out")

@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import ci, ci_tests, gh  # noqa: E402
+from diaktoros import ci, ci_tests, gh, gh_text  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
 
 HEAD = pv.HEAD
@@ -317,7 +317,7 @@ class CITestsBroker(pv.Broker):
         patch = mock.patch.object(gh, "api", side_effect=self.api)
         patch.start()
         self.addCleanup(patch.stop)
-        patch = mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: LOG_OK)
+        patch = mock.patch.object(gh_text, "read_text", side_effect=lambda *a, **k: LOG_OK)
         patch.start()
         self.addCleanup(patch.stop)
         files = mock.patch.object(gh, "pr_files_read", return_value=(
@@ -391,7 +391,7 @@ class CITestsBroker(pv.Broker):
         failed = LOG_OK.replace("test_it_parses_as_an_es_module (test_desktop.Surface) ... ok",
                                 "test_it_parses_as_an_es_module (test_desktop.Surface) ... FAIL")
         logs = {"/actions/jobs/11/logs": failed, "/actions/jobs/12/logs": LOG_OK}
-        with mock.patch.object(gh, "read_text", side_effect=lambda loop, path, **k: next(
+        with mock.patch.object(gh_text, "read_text", side_effect=lambda loop, path, **k: next(
                 text for end, text in logs.items() if path.endswith(end))):
             reply, _ = self.block("test_it_parses_as_an_es_module")
         self.assertTrue(reply["ok"], reply)
@@ -399,7 +399,7 @@ class CITestsBroker(pv.Broker):
 
     def log_reads(self):
         """Count the job-log reads of the prompt's read, then the broker's refusal check (#1805)."""
-        with mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: LOG_OK) as reads:
+        with mock.patch.object(gh_text, "read_text", side_effect=lambda *a, **k: LOG_OK) as reads:
             required = ["tests (3.14)"]
             got = ci_tests.read(self.loop, ci.read(self.loop, HEAD), required, HEAD)
             reply, _ = self.block("test_it_parses_as_an_es_module")
@@ -420,7 +420,7 @@ class CITestsBroker(pv.Broker):
     def test_an_empty_log_is_not_kept_for_the_next_read(self):
         logs = iter(["", LOG_OK])           # GitHub can publish a completed job's log late
         state = ci.CIState(passed=["tests (3.14)"], ids={"tests (3.14)": 11})
-        with mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: next(logs)):
+        with mock.patch.object(gh_text, "read_text", side_effect=lambda *a, **k: next(logs)):
             first = ci_tests.read(self.loop, state, ["tests (3.14)"], HEAD)
             second = ci_tests.read(self.loop, state, ["tests (3.14)"], HEAD)
         self.assertEqual(first, {})
@@ -430,7 +430,7 @@ class CITestsBroker(pv.Broker):
         state = ci.CIState(passed=["tests (3.14)"], ids={"tests (3.14)": 11})
         for bad in (None, "5", True):
             self.job_run_id = bad
-            with mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: LOG_OK) as reads:
+            with mock.patch.object(gh_text, "read_text", side_effect=lambda *a, **k: LOG_OK) as reads:
                 got = ci_tests.read(self.loop, state, ["tests (3.14)"], HEAD)
             self.assertEqual(got, {}, bad)
             self.assertEqual(reads.call_count, 0, bad)
@@ -532,7 +532,7 @@ class CITestsUnit(unittest.TestCase):
 
         state = ci.CIState(passed=list(names), ids=ids)
         with mock.patch.object(gh, "api", side_effect=api), \
-             mock.patch.object(gh, "read_text", side_effect=log):
+             mock.patch.object(gh_text, "read_text", side_effect=log):
             got = ci_tests.read(LOOP, state, names, HEAD)
         self.assertEqual(set(got), {f"test_m.C.test_j{i}" for i in ids.values()})
         self.assertEqual(sum(p.endswith("/actions/runs/7") for p in calls), 1)
@@ -554,7 +554,7 @@ class CITestsUnit(unittest.TestCase):
 
         state = ci.CIState(passed=list(names), ids=ids)
         with mock.patch.object(gh, "api", side_effect=api), \
-             mock.patch.object(gh, "read_text", side_effect=log):
+             mock.patch.object(gh_text, "read_text", side_effect=log):
             return ci_tests.read(LOOP, state, names, HEAD)
 
     def test_a_failure_in_one_required_job_is_not_erased_by_anothers_ok(self):
