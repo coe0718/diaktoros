@@ -26,6 +26,7 @@ from diaktoros.gate import shims as gate_shims
 
 LOOP = {"id": "w", "repo": "acme/widgets", "base": "main", "read_token": "reader",
         "required_checks": ["tests", "lint"], "merge_check": "off", "protection_webhook": True}
+MISSING = object()                                 # a payload with no ``action`` key at all
 
 
 def ruleset(include=("~DEFAULT_BRANCH",), exclude=(), target="branch", action="edited", **extra):
@@ -160,6 +161,26 @@ class Handler(unittest.TestCase):
             self.assertEqual(decision, "accepted", (reason, payload))
             self.assertTrue(self.reads, payload)
             self.assertIn("main does not require lint", self.notices[0][1]["outcome"])
+
+    def test_an_unknown_or_missing_action_off_the_base_is_read(self):
+        """Review of #2660: only ``created`` and ``deleted`` say the rule's targets are all it ever
+        had. The gates route by payload shape, not action, so an unknown or missing action with
+        no ``changes`` is unsure, read, and the lost check named."""
+        self.rules = [checks_rule("tests")]
+        for action in ("other", None, "", "Created", MISSING):
+            for payload in (ruleset(include=("refs/heads/dev",), action=action),
+                            ruleset(include=("~ALL",), exclude=("refs/heads/main",), action=action),
+                            ruleset(target="tag", action=action),
+                            classic(name="dev", action=action)):
+                if action is MISSING:
+                    payload.pop("action")
+                self.reads.clear()
+                self.notices.clear()
+                self.st.kv_set(self.st.dir / protection_event.FILE, [])
+                reason, decision = self.deliver(payload)
+                self.assertEqual(decision, "accepted", (reason, payload))
+                self.assertTrue(self.reads, payload)
+                self.assertIn("main does not require lint", self.notices[0][1]["outcome"])
 
     def test_a_rule_that_may_cover_the_base_is_read(self):
         self.rules = []
