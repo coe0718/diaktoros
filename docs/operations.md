@@ -309,7 +309,8 @@ notice's move is to merge the base by hand, and the watchdog queues no new confl
 head for a day. A decline only counts once its comment was posted or its POST's outcome is
 unknown: when the comment is definitely not posted (authorization denied, or its answers record
 could not be written), the decline row is withdrawn, no notice is sent, `explain` names no decline
-and the run fails.
+and the run fails. When the POST's outcome is unknown, `explain` names the decline and says so
+(#2036): the reason may not be on the PR, so check it there.
 
 By default the watchdog sweep notices a red check, so a CI-fix turn or a `main_red` notice
 can wait up to a sweep interval. With `ci_webhook` on (#681), GitHub's `check_suite` event
@@ -613,7 +614,9 @@ receipt, a push intent or confirmation, a ruling, a dispute, a CI-fix decline, a
 answers comment, a triage result, an issue fix, or a
 reviewer-filed issue whose outcome is unknown) prohibits retry, as does current
 uncertainty or an operator-reconciliation/post-write quarantine history. It is not webhook replay.
-Even a broker record marked denied or nothing is a record, not permission to re-arm.
+Even a broker record marked denied or nothing is a record, not permission to re-arm, except a
+fixer's answers comment or a reviewer-filed issue marked denied: authorization failed before any
+POST, so nothing was written (#2320); a re-armed fixer's answers replace its denied record.
 
 ### Reconcile an uncertain run only after inspection
 

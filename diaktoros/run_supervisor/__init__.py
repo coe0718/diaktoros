@@ -102,7 +102,7 @@ LIMIT_WAIT_MAX = 6 * 3600.0
 # notice prints only the last ``DETAIL_SHOWN_BYTES`` of it, and ``explain`` its last 6 lines,
 # each cut to 200 characters. The fixture's file tail and the production capture hand
 # ``output_detail`` ``DETAIL_MARGIN`` times what it stores of each stream, so its redaction sees a
-# token split by the final cut whole (#2083).
+# token split by the final cut whole (#2083); one split by that window's own edge is dropped (#2176).
 DETAIL_STDOUT_BYTES = 8192
 DETAIL_STDERR_BYTES = 2048
 DETAIL_BYTES = DETAIL_STDOUT_BYTES + DETAIL_STDERR_BYTES
@@ -361,8 +361,7 @@ def backoff(retries: int) -> float:
 
 def tail(text: object, limit: int = DETAIL_BYTES) -> str:
     """The last ``limit`` bytes of a turn's output, printable, for the ledger and notices."""
-    if isinstance(text, bytes):
-        text = text.decode(errors='replace')
+    text = text.decode(errors='replace') if isinstance(text, bytes) else text
     text = text if isinstance(text, str) else ''
     text = ''.join(ch if ch in '\n\t' or ch.isprintable() else '?' for ch in text).strip()
     data = text.encode()
@@ -370,18 +369,19 @@ def tail(text: object, limit: int = DETAIL_BYTES) -> str:
 
 
 def output_detail(stdout: object, stderr: object) -> str | None:
-    """What ``runs.detail`` stores of a turn's output: the last ``DETAIL_STDERR_BYTES`` of
-    stderr and ``DETAIL_STDOUT_BYTES`` of stdout, each passed through the selftest's token
-    redaction (``selftest.Redactor``) before it is kept. Redacted before the final cut, so a
-    token is matched whole rather than as a prefix-less fragment at the tail's edge."""
+    """What ``runs.detail`` stores of a turn's output: the last ``DETAIL_STDERR_BYTES`` of stderr
+    and ``DETAIL_STDOUT_BYTES`` of stdout, redacted (``selftest.Redactor``) before the final cut,
+    so a token is matched whole. A run of token characters the margin window's edge starts with is
+    dropped, a prefix-less fragment no pattern matches, unless it is all of the window (#2176)."""
     from .. import selftest
-    redact = selftest.Redactor()
-    parts = []
+    redact, parts = selftest.Redactor(), []
     for name, value, limit in (('stderr', stderr, DETAIL_STDERR_BYTES),
                                ('stdout', stdout, DETAIL_STDOUT_BYTES)):
-        text = tail(redact(tail(value, DETAIL_MARGIN * limit)), limit)
-        if text:
-            parts.append(f'{name}: {text}')
+        window = tail(value, DETAIL_MARGIN * limit)      # not empty: value is str or bytes
+        if window and len(value.encode() if isinstance(value, str) else value) >= DETAIL_MARGIN * limit:
+            window = '[…]' + re.sub(r'\A[\w.~+/=-]+(?=[^\w.~+/=-])', '', window.removeprefix('[…]'))
+        text = tail(redact(window), limit)
+        parts += [f'{name}: {text}'] if text else []
     return '\n'.join(parts) or None
 
 
@@ -586,10 +586,9 @@ def write_records(con, run_id: str) -> str | None:
     - ``disputes``: a recorded dispute
     - ``declines``: a CI fix's or a conflict turn's recorded decline (#1526, #2034; its answers
       comment follows it, and the row is withdrawn when that comment was definitely not posted)
-    - ``fixer_answers``: a fixer's answers comment, in any state ('posting' is committed
-      before the POST; 'uncertain' means its outcome is unknown: reconcile, never replay,
-      #1052). An answers-only run (a dispute, a partial view) holds no push intent, so this
-      row is its only write-ahead record
+    - ``fixer_answers``: a fixer's answers comment, but not one 'denied' before any POST (#2320):
+      'posting' precedes the POST, 'uncertain' is an unknown outcome (reconcile, never replay,
+      #1052). It is an answers-only run's (a dispute, a partial view) only write-ahead record
     - ``triage_results``: a triage result (triage; its labels and comment follow it)
     - ``issue_fixes``: a recorded issue fix
     - ``filed_issues``: a reviewer-filed issue whose outcome is ambiguous ('recorded' or
@@ -611,7 +610,8 @@ def write_records(con, run_id: str) -> str | None:
         return 'dispute recorded'
     if con.execute('SELECT 1 FROM declines WHERE run_id=?', (run_id,)).fetchone():
         return 'CI-fix decline recorded'
-    answers = con.execute('SELECT state FROM fixer_answers WHERE run_id=?', (run_id,)).fetchone()
+    answers = con.execute("SELECT state FROM fixer_answers WHERE run_id=? AND state!='denied'",
+                          (run_id,)).fetchone()
     if answers is not None:
         return f"fixer answers {answers['state']}"
     if con.execute('SELECT 1 FROM triage_results WHERE run_id=?', (run_id,)).fetchone():

@@ -399,18 +399,18 @@ def clear_hold(loop: dict, seat: str, *, ledger=None) -> dict:
     switching its model or once its provider is back. The account key has no model in it, so
     a switch alone does not end the hold.
 
-    Clears every hold on the seat's profile, a 429's too, with its counts
-    (``pacing.clear_holds``); makes this loop's runs held on a closed account due now, on every
-    seat of that profile; and starts a worker for them. ``cleared`` lists the accounts that
-    were still held, ``rearmed`` how many runs are due.
+    Clears every hold on the seat's profile, a 429's too, with its counts (``pacing.clear_holds``);
+    makes this loop's runs held on a closed account due now, on every seat of that profile; and
+    starts a worker for them. ``cleared`` lists the accounts that were still held, ``reset`` the
+    others it reset (a lapsed hold, strikes or a count, #2148), ``rearmed`` how many runs are due.
     """
     if seat not in SEATS:
         raise ValueError(f"seat must be one of {', '.join(SEATS)}")
     profile = config.seat_profile(loop, seat)
     if not profile:                     # triage on a loop without it: no account to reopen
-        return {"profile": "", "cleared": [], "rearmed": 0, "worker": ""}
-    out = {"profile": profile, "cleared": pacing.clear_holds({profile}), "rearmed": 0,
-           "worker": ""}
+        return {"profile": "", "cleared": [], "reset": [], "rearmed": 0, "worker": ""}
+    held, reset = pacing.clear_holds({profile})
+    out = {"profile": profile, "cleared": held, "reset": reset, "rearmed": 0, "worker": ""}
     ledger = config.host_path("ledger") if ledger is None else ledger
     if not ledger.exists():
         return out
