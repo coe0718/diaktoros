@@ -11,7 +11,6 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-import test_call_volume_bound as bound
 import test_retryable_turns as retryable
 from diaktoros import run_supervisor
 from diaktoros.state import ledger
@@ -499,7 +498,8 @@ class ThirtyHeldPRsSeatFree(_Workload):
               f"{unlocked[1]} reads; with it {locked[2]}, {locked[0]}, {locked[1]}")
         self.assertEqual(locked[2], 1)                      # one poller
         self.assertGreater(unlocked[2], 10)                 # every holder lingering
-        bound.assert_no_more_calls(self, locked, unlocked)  # started and reads, each on its own
+        self.assertLessEqual(locked[0], unlocked[0])        # no more started and no more reads,
+        self.assertLessEqual(locked[1], unlocked[1])        # each on its own, not as a tuple (#2635)
 
 
 if __name__ == '__main__':
