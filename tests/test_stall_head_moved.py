@@ -41,9 +41,11 @@ class HeadMovedIsNotAStall(fg.Base):
 
     def turn(self, state, error="", head=fg.HEAD, seat="reviewer", now=False):
         """A reviewer turn at the listed head, ended as the worker leaves it: before the sweep,
-        or (``now``) during it, after its listing was read."""
+        or (``now``) at a point during it."""
         self.n += 1
-        when = time.time() + self.n / 1e6 if now else time.time() - 100 + self.n
+        if now:
+            time.sleep(0.002)           # strictly ordered after what the sweep stamped before
+        when = time.time() if now else time.time() - 100 + self.n
         with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, attempts, "
                         "error, created, updated, turn_key, push_admitted, retries) "
@@ -51,24 +53,24 @@ class HeadMovedIsNotAStall(fg.Base):
                         (f"r{self.n}", f"d{self.n}", fg.REPO, 7, head, seat, state, error,
                          when, when, f"k{self.n}"))
 
-    def sweep(self, *during, before=()):
-        """One sweep; ``during``: turns ``(state, error)`` the worker ends after its listing read;
-        ``before``: ones it ends once the sweep began, but before that read (#2694 review F1)."""
-        def listing(*_a, **_kw):
-            for state, error in during:
-                self.turn(state, error, now=True)
-            return [fg.LIVE]
-
-        def armed(c, hooks_armed=watchdog._hooks_armed):
-            for state, error in before:
-                self.turn(state, error, now=True)
-            time.sleep(0.01)            # the listing is read after these, as the sweep does
-            return hooks_armed(c)
+    def sweep(self, *after, inflight=(), before=()):
+        """One sweep; turns ``(state, error)`` the worker ends once its listing came back
+        (``after``), while that listing is being read (``inflight``), or once the sweep began but
+        before the read (``before``, #2694 review F1)."""
+        def ending(turns, step):
+            def run(*args, **kw):
+                for state, error in turns:
+                    self.turn(state, error, now=True)
+                return step(*args, **kw)
+            return run
         with mock.patch.object(watch_mode, "TEST", True), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
-                mock.patch.object(watchdog, "_hooks_armed", side_effect=armed), \
+                mock.patch.object(watchdog, "_hooks_armed", side_effect=ending(
+                    before, watchdog._hooks_armed)), \
+                mock.patch.object(watchdog, "_heal_and_redrive", side_effect=ending(
+                    after, watchdog._heal_and_redrive)), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
-                mock.patch.object(gh, "open_prs", side_effect=listing), \
+                mock.patch.object(gh, "open_prs", side_effect=ending(inflight, lambda *_a, **_k: [fg.LIVE])), \
                 mock.patch.object(gh, "reviews", return_value=[]), \
                 mock.patch.object(watchdog.review_kick, "kick", return_value=False), \
                 mock.patch.object(watchdog, "retry_pending_breaches"), \
@@ -86,18 +88,17 @@ class HeadMovedIsNotAStall(fg.Base):
 
     def test_a_head_move_hides_the_stall_only_from_a_listing_read_before_it(self):
         self.arm_long_ago()
-        # The cancellation lands after this sweep read its listing: that listing is stale.
+        # The cancellation lands after this sweep's listing came back: that listing is stale.
         self.assertNotIn(STALL, self.sweep(("cancelled", MOVED)))
         # The next sweep's listing, read after it, still shows the head: it moved away and came
         # back. A failed review at the head in between redelivers nothing, so this is a stall.
         self.turn("failed", "reviewer crashed", head="c" * 40)
         self.assertIn(STALL, self.sweep())
-
-    def test_a_head_that_came_back_before_its_listing_still_stalls(self):
-        # #2694 review F1: cancelled after the sweep began, but before its listing was read. That
-        # listing shows the head again (moved away and back): nothing says it is stale.
-        self.arm_long_ago()
-        self.assertIn(STALL, self.sweep(before=[("cancelled", MOVED)]))
+        # #2694 review F1: cancelled once the sweep began, or while its listing was being read,
+        # the head may have come back before GitHub listed it: nothing says it is stale.
+        for when in ("before", "inflight"):
+            with self.subTest(when):
+                self.assertIn(STALL, self.sweep(**{when: [("cancelled", MOVED)]}))
 
     def test_no_turn_or_another_ending_still_stalls(self):
         self.arm_long_ago()

@@ -346,8 +346,8 @@ def _app_flag_unknown(c: _Sweep) -> bool:
 def _read_listing(c: _Sweep) -> None:
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so that a listing
     # GitHub refuses counts as a failed read this sweep (a working /user probe must not say "reads work again").
-    c.listed_at = watch_mode.now()      # #2626: the listing's own time, not the sweep's start
     c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
+    c.listed_at = watch_mode.now()      # #2626: once read; a cancellation before it proves nothing
     if not watch_mode.TEST:
         # The listed heads let a gate's failed PR read that a live turn covers stay quiet (#1959).
         heads = {p["number"]: (p.get("head") or {}).get("sha") for p in c.prs or []
@@ -799,7 +799,7 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                 f"the review queued at {moved[:7]} was cancelled when the head moved — delivered "
                 "it for this head" if moved else "a pending review request had started no review "
                 "— delivered it to the reviewer gate"))
-    # #2626: a turn cancelled for a head move once the listing was read proves that listing stale.
+    # #2626: only a turn cancelled for a head move after the listing came back proves it stale.
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
             and not watch_health.live_turn(loop, number, head, "reviewer")
             and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer", c.listed_at)):
