@@ -850,18 +850,23 @@ class Package(unittest.TestCase):
                          "y = 1..in / a;  t = `x`;\n")
 
     def test_guards_fail_on_a_keyword_after_a_number_dot_2656(self):
-        # Through the guards: `1. instanceof /'/` hides nothing from them; they fail closed.
+        # Through the guards: `1. instanceof /'/` (a number's dot, then a keyword) and `x1.in / a`
+        # (a property after a digit) both end in a digit and a dot; neither hides the code after
+        # the comment from the guards, which fail closed. Before #1974 `x1.in / a` read as a
+        # regex and both guards passed silently on it.
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(temp.cleanup)
         plugin = pathlib.Path(temp.name) / "plugin.js"
-        plugin.write_text("false && (1. instanceof /'/); /* it's // prose */ document.title = `x`;\n"
-                          "// otherStates(s) 'other' cleanLine(counts, checks.length)\n")
-        for case in (Package("test_first_render_findings_641"),
-                     Surface("test_stays_inside_the_sdk_surface")):
-            with self.subTest(case=case.id()), mock.patch(f"{__name__}.PLUGIN_JS", plugin):
-                result = unittest.TestResult()
-                case.run(result)
-                self.assertFalse(result.wasSuccessful())
+        for line in ("false && (1. instanceof /'/);", "y = x1.in / a;"):
+            plugin.write_text(f"{line} /* it's // prose */ document.title = `x`;\n"
+                              "// otherStates(s) 'other' cleanLine(counts, checks.length)\n")
+            for case in (Package("test_first_render_findings_641"),
+                         Surface("test_stays_inside_the_sdk_surface")):
+                with self.subTest(line=line, case=case.id()), \
+                        mock.patch(f"{__name__}.PLUGIN_JS", plugin):
+                    result = unittest.TestResult()
+                    case.run(result)
+                    self.assertFalse(result.wasSuccessful())
 
     def test_guards_see_code_after_a_division_by_a_keyword_property_1974(self):
         # Through the guards: `obj.return / a` is a division, so the code after the comment
