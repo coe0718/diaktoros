@@ -1083,7 +1083,7 @@
         </article>
         <article class="proof-point">
           <h3>Secrets in their place.</h3>
-          <p>As the Hermes catalog review recommended, Diaktoros reads profile secrets through Hermes&rsquo;s <code>agent.secret_scope</code> instead of loading a profile&rsquo;s <code>.env</code> into the environment, so under a multiplexing gateway one profile&rsquo;s keys never reach another&rsquo;s turns. The loop also makes fewer GitHub calls, and waits out a spent rate limit instead of failing its turns.</p>
+          <p>As the Hermes catalog review recommended, Diaktoros reads profile secrets through Hermes&rsquo;s <code>agent.secret_scope</code> instead of loading a profile&rsquo;s <code>.env</code> into the environment, so under a multiplexing gateway one profile&rsquo;s keys never reach another&rsquo;s turns. A Hermes without the scope keeps the old <code>.env</code> load. The loop also makes fewer GitHub calls, and a turn whose start is refused by a spent rate limit waits for the reset, for up to six hours, instead of spending its retries.</p>
           <p><a href="https://github.com/coe0718/diaktoros/issues/2374" target="_blank" rel="noopener noreferrer">See #2374</a></p>
         </article>
       </div>
