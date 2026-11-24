@@ -1,12 +1,18 @@
 """`hermes dk show` (#555): every setting, its value and where it came from."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
+import pathlib
+import sys
 import unittest
 
 from diaktoros import config, observer, show
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from test_token_file_settings import TokenFileSettingsTests as _Base, SENTINEL
+
+# The hint scan lives in tools/hint_spelling.py, outside tests/, so the host's base-failure proof
+# runs the tests below against the base's scan, not this PR's (#1973, #2662 review F3).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
 
 
 class ShowTests(_Base):
@@ -247,40 +253,11 @@ class ShowTests(_Base):
 
     @staticmethod
     def hand_spelled(source: str) -> list[int]:
-        """Lines of strings in ``source`` naming ``dk fixer-push``, docstrings aside: a hint the
-        operator would type, which must come from ``config.fixer_push_enable_command``.
-
-        Besides each string constant, the text of every ``+`` chain and every f-string is
-        joined before matching (#1480). Any part that is not a string (a placeholder, a name)
-        becomes a marker that may stand in for ``dk``, so ``"hermes dk " + "fixer-push"`` and
-        ``f"hermes {cmd} " f"fixer-push"`` count as hand-spelled too."""
-        import ast
-        import re
-        marker = "\x00"
-
-        def text(node) -> str:
-            """The string ``node`` builds, with a marker for each part not known here."""
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                return node.value
-            if isinstance(node, ast.JoinedStr):
-                return "".join(text(part) for part in node.values)
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-                return text(node.left) + text(node.right)
-            return marker
-
-        def built(node) -> bool:
-            """Whether ``node`` builds a string: a constant, an f-string or a ``+`` chain."""
-            return (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    or isinstance(node, ast.JoinedStr)
-                    or isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add))
-
-        tree = ast.parse(source)
-        docs = {id(node.body[0].value) for node in ast.walk(tree)
-                if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-                and node.body and isinstance(node.body[0], ast.Expr)}
-        pattern = re.compile(f"(?:dk|{marker})[\\s{marker}]*fixer-push")
-        return sorted({node.lineno for node in ast.walk(tree)
-                       if built(node) and id(node) not in docs and pattern.search(text(node))})
+        """Lines of strings in ``source`` naming ``dk fixer-push``: ``tools/hint_spelling.py``,
+        outside ``tests/`` so the host's base-failure proof runs these tests against the base's
+        scan (#1973, #2662 review F3)."""
+        import hint_spelling
+        return hint_spelling.hand_spelled(source)
 
     def test_no_hint_spells_the_fixer_push_command_by_hand(self):
         import pathlib
@@ -295,9 +272,76 @@ class ShowTests(_Base):
                      '"hermes dk " "fixer-push --enable"',
                      # #1480: a `+` chain, and an f-string split around a placeholder.
                      '"hermes dk " + "fixer-push --enable"',
-                     'f"hermes {cmd} " f"fixer-push --loop {x}"'):
+                     'f"hermes {cmd} " f"fixer-push --loop {x}"',
+                     # #2039: a `%`-format and a `str.join`, and a name holding the prefix.
+                     '"hermes dk %s" % "fixer-push --enable"',
+                     '"hermes %s %s" % ("dk", "fixer-push --enable")',
+                     '" ".join(["hermes dk", "fixer-push --enable"])',
+                     '" ".join(("hermes", "dk", "fixer-push"))',
+                     'PREFIX + " fixer-push --enable"',
+                     # #2662 review: a `*` width takes an argument of its own.
+                     '"hermes %*s %s" % (2, "dk", "fixer-push --enable")',
+                     '"hermes %.*s %s" % (2, "dk", "fixer-push")',
+                     '"hermes %*.*s %s" % (4, 2, "dk", "fixer-push")'):
             with self.subTest(hint):
-                self.assertEqual(self.hand_spelled(f'"""``hermes dk fixer-push``."""\nnote = {hint}\n'), [2])
+                self.assertEqual(self.hand_spelled(
+                    f'"""``hermes dk fixer-push``."""\nnote = {hint}\nPREFIX = "hermes dk"\n'), [2])
+
+    def test_hint_guard_does_not_read_any_name_as_dk(self):
+        # #2039: a name or placeholder in dk's position counted as `dk`, so these were flagged.
+        for source in ('cmd = "run"\nnote = cmd + " fixer-push --loop x"\n',
+                       'note = arg + " fixer-push --loop x"\n',
+                       'note = f"{kind} fixer-push"\n',
+                       'note = "%s fixer-push" % kind\n',
+                       'note = " ".join([kind, "fixer-push"])\n'):
+            with self.subTest(source):
+                self.assertEqual(self.hand_spelled(source), [])
+
+    def test_hint_guard_reads_a_rebound_name_as_unknown(self):
+        # #2662 review: a module-level `cmd = "run"` was read as "run" everywhere, even where a
+        # parameter or another binding of `cmd` may hold `dk`, so these real hints went unflagged.
+        for source in ('cmd = "run"\ndef hint(cmd):\n    return f"hermes {cmd} fixer-push --enable"\n',
+                       'cmd = ""\ncmd += "dk"\nnote = f"hermes {cmd} fixer-push"\n',
+                       'cmd = "run"\nfor cmd in ("dk",):\n    note = f"hermes {cmd} fixer-push"\n',
+                       'cmd = "run"\ndef hint():\n    cmd = "dk"\n    return "hermes " + cmd + " fixer-push"\n',
+                       'cmd = "run"\nnote = [f"hermes {cmd} fixer-push" for cmd in ks]\n',
+                       'cmd = "run"\nif (cmd := arg):\n    note = "hermes %s fixer-push" % cmd\n',
+                       'cmd = "run"\nwith arg as cmd:\n    note = "hermes " + cmd + " fixer-push"\n'):
+            with self.subTest(source):
+                lines = [n for n, line in enumerate(source.splitlines(), 1) if "fixer-push" in line]
+                self.assertEqual(self.hand_spelled(source), lines)
+
+    def test_hint_guard_applies_the_format(self):
+        # #2662 review F4/F5: a known string was substituted unformatted, so a precision that
+        # cuts "dkjunk" to "dk" went unflagged. A format is applied as Python applies it, and an
+        # unknown value or spec stays the marker.
+        flagged = ('cmd = "dkjunk"\nnote = f"hermes {cmd:.2} fixer-push"\n',
+                   'cmd = "dkjunk"\nnote = f"hermes {cmd!s:.2} fixer-push"\n',
+                   'cmd = "dk"\nnote = f"hermes {cmd:<4} fixer-push"\n',
+                   'cmd = "dkjunk"\nnote = f"hermes {cmd:{w}} fixer-push"\n',
+                   'note = f"hermes {arg:.2} fixer-push"\n',
+                   'note = "hermes %.2s %s" % ("dkjunk", "fixer-push")\n',
+                   'note = "hermes %-4s fixer-push" % "dk"\n',
+                   'note = "hermes %.*s %s" % (2, "dkjunk", "fixer-push")\n',
+                   'note = "hermes %.*s %s" % (n, "dkjunk", "fixer-push")\n',
+                   'note = "hermes %.2s fixer-push" % arg\n')
+        clean = ('cmd = "rundk"\nnote = f"hermes {cmd:.2} fixer-push"\n',
+                 'cmd = "dk"\nnote = f"hermes {cmd!r} fixer-push"\n',
+                 'note = "hermes %.2s %s" % ("rundk", "fixer-push")\n',
+                 'note = "hermes %r %s" % ("dk", "fixer-push")\n',
+                 'note = "hermes %3d fixer-push" % 7\n')
+        for source, flags in [*((s, True) for s in flagged), *((s, False) for s in clean)]:
+            with self.subTest(source):
+                lines = [len(source.splitlines())] if flags else []
+                self.assertEqual(self.hand_spelled(source), lines)
+
+    def test_a_base_proof_tests_the_base_hint_scan(self):
+        # #2662 review F3: the scan lives off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs the tests above against the base's scan. It fails if
+        # the scan goes back into this module, where it was.
+        import _base_proof
+        import hint_spelling
+        _base_proof.assert_taken_from_the_base(self, hint_spelling.__file__)
 
     @staticmethod
     def inline_fixer_push(text: str) -> list[str]:

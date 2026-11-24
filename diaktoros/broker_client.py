@@ -34,7 +34,7 @@ from . import envnames
 DEFAULT_SOCKET = '/run/review-loop/broker/broker.sock'
 SOCKET = envnames.get('BROKER_SOCKET', DEFAULT_SOCKET)
 TRIAGE_COMMENT_MAX = 1000          # run_supervisor.issue_inputs.TRIAGE_COMMENT_MAX; runs standalone
-DECLINE_KINDS = ('size-limit', 'not-this-pr')   # ci_decline.KINDS (#1526); runs standalone
+DECLINE_KINDS = ('size-limit', 'not-this-pr', 'needs-a-person')   # ci_decline.KINDS; standalone
 MAX_FRAME = 768 * 1024           # broker_ipc.MAX_PUSH_REQUEST
 # A push or review is several GitHub calls plus git fetch/push (each up to 90s), all
 # host-side. Wait for the answer instead of timing out mid-write; the turn deadline is
@@ -349,7 +349,9 @@ def _parser() -> argparse.ArgumentParser:
                         help='request_review, on a CI-fix turn, with --answers-file and no push: '
                              'no push of this PR fixes the failure (size-limit: only a file over '
                              'its size limit fails; not-this-pr: a flaky job, an outage, a '
-                             'workflow problem). Posted once; the turn ends, never retried')
+                             'workflow problem); on a conflict turn, needs-a-person: a file '
+                             'you cannot resolve honestly. Posted once; the turn ends, never '
+                             'retried')
     parser.add_argument('--title', help='open_pr: the PR title; file_issue: the issue title '
                                         '(one line)')
     parser.add_argument('--repro', nargs='+', default=[],

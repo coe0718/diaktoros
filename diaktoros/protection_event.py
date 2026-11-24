@@ -9,8 +9,10 @@ rulesets and its classic protection, as ``doctor`` reads them) and held against 
 expects of it: every check in ``required_checks``, and ``diaktoros/review`` when the loop posts it.
 
 An expected check the base does not require is named in one ``protection`` notice. The same
-checks are not named twice: ``FILE`` keeps them until the base requires them all again. A change
-whose rule cannot cover the base (another branch's pattern, a tag or push ruleset) reads nothing.
+checks are not named twice: ``FILE`` keeps them until the base requires them all again. A created
+or deleted rule that cannot cover the base (another branch's pattern, a tag or push ruleset) reads
+nothing; any other change (an edit, an unknown or missing action) is always read, since the rule
+may have covered the base before (#2030).
 Organization rulesets may send no repository event at all, so ``doctor`` stays the check of record,
 and the rest of what it checks (a merge check pinned to the wrong App, required approvals) is left
 to it: this only runs the requirement check sooner.
@@ -25,6 +27,9 @@ from . import ci, config, observer, protection
 from .util import log, silence
 
 FILE = "protection-lost.json"     # the expected checks the last notice named, while still lost
+# The only actions whose payload is the rule's whole history: a rule created or deleted never
+# targeted anything but what it carries. Any other action (edited, unknown, missing) is read.
+NO_HISTORY = ("created", "deleted")
 
 
 def gate(loop: dict, st, payload: dict) -> None:
@@ -65,15 +70,21 @@ def gate(loop: dict, st, payload: dict) -> None:
 
 
 def covers(payload: dict, base: str) -> bool:
-    """Whether the changed rule may cover ``base``. Unsure is yes: only a rule that plainly targets
-    something else (a pattern ``base`` misses, a tag or push ruleset, an excluded ``base``) is no."""
+    """Whether the changed rule may cover ``base``. Unsure is yes: only a created or deleted rule
+    that plainly targets something else (a pattern ``base`` misses, a tag or push ruleset, an
+    excluded ``base``) is no. Anything else is unsure (#2030): an edit, since the payload carries
+    the rule as it is now, not whole as it was, so a rule narrowed off ``base`` (a new pattern,
+    ``include`` or ``exclude``) may have been what required its checks, whatever ``changes`` names;
+    and an unknown or missing action, since the gates route by payload shape, not by action, and
+    nothing then says the rule's targets are all it ever had."""
+    if payload.get("action") not in NO_HISTORY or payload.get("changes"):
+        return True
     repo = payload.get("repository") if isinstance(payload.get("repository"), dict) else {}
-    changes = payload.get("changes") if isinstance(payload.get("changes"), dict) else {}
     rule = payload.get("rule")
     if isinstance(rule, dict):               # classic: one fnmatch pattern for branch names
         name = rule.get("name")
-        if not isinstance(name, str) or "name" in changes or "pattern" in changes:
-            return True                      # an edited pattern may have covered it before
+        if not isinstance(name, str):
+            return True
         return fnmatch.fnmatchcase(base, name)
     ruleset = payload.get("repository_ruleset")
     if not isinstance(ruleset, dict):
@@ -82,8 +93,8 @@ def covers(payload: dict, base: str) -> bool:
         return False
     refs = (ruleset.get("conditions") or {}).get("ref_name") \
         if isinstance(ruleset.get("conditions"), dict) else None
-    if "conditions" in changes or not isinstance(refs, dict):
-        return True                          # its old targets are not in the payload
+    if not isinstance(refs, dict):
+        return True
     ref, default = f"refs/heads/{base}", repo.get("default_branch")
 
     def names(pattern, loose: bool) -> bool:

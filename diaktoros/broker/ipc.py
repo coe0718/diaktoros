@@ -834,17 +834,25 @@ class RunBroker(broker_issues.IssueWrites):
                                   head=self.scope.head, ledger_db=self.scope.ledger_db)
 
     def _decline_kind(self, operation: str, verdict: object) -> str:
-        """The kind a fixer's request declines a CI fix with (#1526), ``""`` for none. Only a
-        CI-fix turn that pushed nothing may decline; any other use is refused before anything is
-        read or spent."""
+        """The kind a fixer's request declines a CI fix (#1526) or a conflict resolution (#2034)
+        with, ``""`` for none. Only a turn that pushed nothing may decline, and only with a kind
+        of its own scope (``ci_decline.refusal``: a CI-fix kind on a CI-fix turn, a conflict kind
+        on a conflict turn, whose scope carries ``merge``); any other use is refused before
+        anything is read or spent."""
         if operation != "request_review":
             return ""
         try:
             name = ci_decline.kind(verdict)
         except ValueError as exc:
             raise ProtocolError(f"{exc}; nothing was written, resubmit") from None
-        if name and (not self.scope.ci_fix or self._pushed_head):
-            raise ProtocolError("only a CI-fix turn that pushed nothing may decline")
+        if not name:
+            return ""
+        refused = ci_decline.refusal(name, ci_fix=self.scope.ci_fix,
+                                     conflict=bool(self.scope.merge))
+        if refused:
+            raise ProtocolError(f"{refused}; nothing was written")
+        if self._pushed_head:
+            raise ProtocolError("only a turn that pushed nothing may decline")
         return name
 
     def _answers_only(self, head: str, body: str, dispute: bool, decline: str) -> dict:
@@ -873,12 +881,26 @@ class RunBroker(broker_issues.IssueWrites):
                     comment_id=self._answers_comment_id, error=self._answers_error)
             except Exception:
                 pass  # stays 'posting'; a finished run's notice then says uncertain
+        delivered = self.answers_outcome in ("posted", "uncertain")
         if decline:
-            ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
-        if self.answers_outcome not in ("posted", "uncertain"):
+            self._settle_decline(head, decline, body, delivered)
+        if not delivered:
             raise ProtocolError(f"answers comment {self.answers_outcome}")
         self.completed = True
         return {"answers": self.answers_outcome}
+
+    def _settle_decline(self, head: str, decline: str, body: str, delivered: bool) -> None:
+        """After a decline's answers POST (#1526, #2034). A reason that reached (or may have
+        reached) the PR is a decline: its one ``ci_declined`` notice and, for a conflict kind, the
+        person record. One definitely not posted ('denied', 'unrecorded': no POST was made) is no
+        decline at all: its write-ahead row is withdrawn (``ci_decline.forget``), so ``explain``
+        names no decline and no notice tells a maintainer to act on a reason nobody can read; the
+        run fails with the comment's outcome."""
+        if not delivered:
+            ci_decline.forget(self.scope.ledger_db, self.scope.run_id)
+            return
+        ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
+        ci_decline.remember(self._loop, self.scope.number, head, decline, body)
 
     def _publish_answers(self, head: str, text: str, dispute: bool = False) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.
