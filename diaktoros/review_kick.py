@@ -95,28 +95,49 @@ def _record_handoff(loop: dict, number: object, head: str, requested_at: float) 
         st.kv_set(path, record)
 
 
-def prune(st, open_numbers, listed_at: float) -> None:
+PRUNE_CONFIRMS_PER_SWEEP = 20
+
+
+def _confirmed_closed(loop: dict, number: str) -> bool:
+    """Whether a fresh read of PR ``number`` says it is closed (merged or not; #1946, Vex F1 on
+    #2654). A failed or malformed read, or another PR's answer, confirms nothing: unknown keeps
+    the entry."""
+    from . import gh
+    try:
+        wanted = int(number)
+    except (TypeError, ValueError):
+        return False
+    live = gh.pr(loop, wanted)
+    return (isinstance(live, dict) and live.get("number") == wanted
+            and live.get("state") == "closed")
+
+
+def prune(loop: dict, st, open_numbers) -> list[str]:
     """Drop the handoff record of every PR no longer open (#1946), as ``conflict_person.prune``
-    does; the watchdog's sweep passes the open PR numbers its listing already read, and
-    ``listed_at``, the time it started reading that listing.
+    does with the open PR numbers the watchdog's sweep already listed; returns those dropped.
 
     The listing is older than the prune, so a PR opened or reopened since is missing from it
-    (Vex F1 on #2654). An entry holding a head whose delivery was requested at or after
-    ``listed_at`` is kept whatever the listing says; a later sweep's listing decides it. An
-    entry in an earlier format has no request times and goes when its PR is not listed."""
+    (Vex F1 on #2654), whether or not a handoff was written for it in between. A PR missing from
+    the listing is only a candidate: its entry goes once a fresh read of that PR
+    (``_confirmed_closed``) says it is closed, and only if the entry is unchanged since the
+    candidates were taken (a handoff written meanwhile keeps it for a later sweep). At most
+    ``PRUNE_CONFIRMS_PER_SWEEP`` PRs are read per call; the rest wait for a later sweep."""
     from . import state as state_mod
     keep = {str(n) for n in open_numbers}
-
-    def stays(number: str, entry: object) -> bool:
-        return number in keep or any(t >= listed_at for t in _requested_at(entry).values())
-
-    if all(stays(k, v) for k, v in state_mod.read_record(st, HANDOFFS).items()):
-        return
+    current = state_mod.read_record(st, HANDOFFS)
+    candidates = [k for k in current if k not in keep][:PRUNE_CONFIRMS_PER_SWEEP]
+    closed = {k: current[k] for k in candidates if _confirmed_closed(loop, k)}
+    if not closed:
+        return []
     path = st.dir / HANDOFFS
     with st.locked():
         record = st.kv_get(path, {})
-        if isinstance(record, dict):
-            st.kv_set(path, {k: v for k, v in record.items() if stays(k, v)})
+        if not isinstance(record, dict):
+            return []
+        dropped = [k for k, v in closed.items() if k in record and record[k] == v]
+        if dropped:
+            st.kv_set(path, {k: v for k, v in record.items() if k not in dropped})
+    return dropped
 
 
 def app_handoff_delivered(loop: dict, number: int, head: str) -> bool:

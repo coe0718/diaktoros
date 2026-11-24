@@ -278,7 +278,6 @@ class _Sweep:
         self.listing_errors: list[str] = []
         self.pr_failures: list[tuple[int, str]] = []  # per-PR review reads that failed
         self.prs = None
-        self.listed_at = self.now          # taken again just before the listing is read
 
     def due(self, key: str) -> bool:
         """The cooldown map (#77): ``marks`` is when each still-standing stall last alerted. A
@@ -348,7 +347,6 @@ def _read_listing(c: _Sweep) -> None:
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so
     # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
     # that works must not announce "reads work again" while the listing is still refused).
-    c.listed_at = watch_mode.now()  # #1946: a handoff requested after this is not pruned by it
     c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
     if not watch_mode.TEST:
         c.health = watch_health.read_health(c.loop, c.st, c.watch, c.now, c.armed, c.armed_error,
@@ -915,8 +913,9 @@ def _best_effort_sweeps(c: _Sweep) -> None:
     except Exception as exc:
         log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
     try:                                          # #1946: a closed PR's review handoffs go
-        review_kick.prune(st, [p.get("number") for p in prs if isinstance(p, dict)],
-                          c.listed_at)
+        for number in review_kick.prune(loop, st, [p.get("number") for p in prs
+                                                   if isinstance(p, dict)]):
+            log(f"#{number}: review handoffs dropped (GitHub says the PR is closed)")
     except Exception as exc:
         log(f"review handoff prune failed: {type(exc).__name__}: {exc}")
 
