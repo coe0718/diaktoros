@@ -124,8 +124,7 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log, reviews=None) -> bool
     if any(settled):
         return True                                    # an uncertain step, settled from GitHub
     row = next((r for r in rows if r["ruling"] == run), {})
-    if row.get("dismiss", "pending") != "pending" or row.get("approve") in (
-            "denied", "uncertain", "posting"):
+    if row.get("dismiss", "pending") != "pending" or row.get("approve") in ("denied", "uncertain", "posting"):
         return False                                   # done, left for a person, or being written
     step = "approve" if row.get("approve", "pending") == "pending" else "dismiss"
     wait, deny = _wait_or_deny(loop, st, number, head, checks=step == "approve")
@@ -144,7 +143,10 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log, reviews=None) -> bool
                                            overruled=found["id"])
         if not _approve(loop, sup, ruling, number, branch, found["id"], log):
             return False
-        _dismiss_now(loop, st, sup, pr, ruling, log)       # the same sweep (#2619)
+        try:                                           # the same sweep (#2619), best effort:
+            _dismiss_now(loop, st, sup, pr, ruling, log)
+        except Exception as exc:  # noqa: BLE001 - the approval moved: its refresh stands
+            log(f"#{number}: the same-sweep dismissal failed: {type(exc).__name__}: {exc}")
         return True
     if not gate.is_ruled_approval(latest, loop):
         if latest is None:
@@ -158,9 +160,8 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log, reviews=None) -> bool
 
 
 def _dismiss_now(loop: dict, st, sup, pr: dict, ruling: dict, log) -> None:
-    """Right after a posted approval, the dismissal in the same sweep (#2619), by every check
-    ``_act`` takes for it, once the approval reads back; else the next sweep takes it, as before.
-    An approval left uncertain or denied never gets here: those wait for a later sweep."""
+    """Right after a posted approval, the dismissal in the same sweep (#2619), by every check ``_act``
+    takes for it, once the approval reads back; else (or on an error) the next sweep takes it."""
     number, run = int(pr["number"]), ruling["run_id"]
     row = next((r for r in sup.ruled_approvals(loop["repo"], number, ruling["head"])
                 if r["ruling"] == run), {})

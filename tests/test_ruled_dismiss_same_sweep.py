@@ -10,6 +10,7 @@ test_ruled_approval_sweep; here an approval reads back at once unless a test say
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import sqlite3
 import sys
 import unittest
 from pathlib import Path
@@ -18,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_ruled_approval as tra  # noqa: E402
 import test_ruled_approval_sweep as ras  # noqa: E402
-from diaktoros import broker, merge_check  # noqa: E402
+from diaktoros import broker, merge_check, ruled_approval  # noqa: E402
 
 CHANGES, TUCK = tra.CHANGES, tra.TUCK
 
@@ -104,6 +105,21 @@ class SameSweep(ras.Base):
         self.approve.assert_called_once()
         self.dismiss.assert_not_called()
         self.assertEqual(self.steps(), ("posted", "pending"))
+
+    def test_a_failed_dismissal_still_refreshes_the_posted_approval(self):
+        # The approval posted; an error in the opportunistic dismissal must not cost its refresh.
+        real, calls = ruled_approval._wait_or_deny, []
+        def second_fails(*a, **kw):
+            calls.append(1)
+            if len(calls) == 2:
+                raise sqlite3.OperationalError("database is locked")
+            return real(*a, **kw)
+        with mock.patch.object(ruled_approval, "_wait_or_deny", side_effect=second_fails):
+            self.assertEqual(self.sweep(), [7])
+        self.assertEqual(self.steps(), ("posted", "pending"))   # the next sweep dismisses
+        self.assertEqual(self.green_at_refresh, [False])          # but the check is refreshed
+        self.assertEqual(self.sweep(), [7])
+        self.assertEqual(self.steps(), ("posted", "posted"))
 
 
 if __name__ == "__main__":
