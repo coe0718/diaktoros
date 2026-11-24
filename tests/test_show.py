@@ -251,34 +251,79 @@ class ShowTests(_Base):
         operator would type, which must come from ``config.fixer_push_enable_command``.
 
         Besides each string constant, the text of every ``+`` chain and every f-string is
-        joined before matching (#1480). Any part that is not a string (a placeholder, a name)
-        becomes a marker that may stand in for ``dk``, so ``"hermes dk " + "fixer-push"`` and
-        ``f"hermes {cmd} " f"fixer-push"`` count as hand-spelled too."""
+        joined before matching (#1480), and so is every ``%``-format of a string and every
+        ``str.join`` of a literal list or tuple (#2039). A name assigned once in ``source``, to a
+        string constant, stands for that string. Any other part that is not a string (a
+        placeholder, a call, a name assigned elsewhere) becomes a marker, which stands in for
+        ``dk`` only right after ``hermes``: ``f"hermes {cmd} " f"fixer-push"`` counts as
+        hand-spelled, ``cmd + " fixer-push"`` with ``cmd`` unknown or ``"run"`` does not (#2039)."""
         import ast
         import re
         marker = "\x00"
+        tree = ast.parse(source)
+        assigned: dict[str, list] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                assigned.setdefault(node.targets[0].id, []).append(node.value)
+        names = {name: values[0].value for name, values in assigned.items()
+                 if len(values) == 1 and isinstance(values[0], ast.Constant)
+                 and isinstance(values[0].value, str)}
+
+        def is_str(node) -> bool:
+            return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+        def is_format(node) -> bool:
+            """Whether ``node`` is ``<string> % <args>``."""
+            return isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and built(node.left)
+
+        def is_join(node) -> bool:
+            """Whether ``node`` is ``<string>.join(<one argument>)``."""
+            return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "join" and built(node.func.value)
+                    and len(node.args) == 1 and not node.keywords)
+
+        def formatted(node) -> str:
+            """The text of ``<string> % <args>``, each conversion replaced by its argument."""
+            args = list(node.right.elts) if isinstance(node.right, ast.Tuple) else [node.right]
+
+            def conversion(match) -> str:
+                if match.group(0) == "%%":
+                    return "%"
+                return text(args.pop(0)) if args and not match.group(1) else marker
+            spec = r"%%|%(\([^)]*\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[a-zA-Z]"
+            return re.sub(spec, conversion, text(node.left))
 
         def text(node) -> str:
             """The string ``node`` builds, with a marker for each part not known here."""
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if is_str(node):
                 return node.value
+            if isinstance(node, ast.Name) and node.id in names:
+                return names[node.id]
             if isinstance(node, ast.JoinedStr):
                 return "".join(text(part) for part in node.values)
+            if isinstance(node, ast.FormattedValue):
+                return text(node.value)
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
                 return text(node.left) + text(node.right)
+            if is_format(node):
+                return formatted(node)
+            if is_join(node) and isinstance(node.args[0], ast.List | ast.Tuple):
+                return text(node.func.value).join(text(item) for item in node.args[0].elts)
             return marker
 
         def built(node) -> bool:
-            """Whether ``node`` builds a string: a constant, an f-string or a ``+`` chain."""
-            return (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    or isinstance(node, ast.JoinedStr)
-                    or isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add))
+            """Whether ``node`` builds a string: a constant, an f-string, a ``+`` chain, a
+            ``%``-format or a ``str.join``."""
+            return (is_str(node) or isinstance(node, ast.JoinedStr)
+                    or isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
+                    or is_format(node) or is_join(node))
 
-        tree = ast.parse(source)
         docs = {id(node.body[0].value) for node in ast.walk(tree)
                 if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
                 and node.body and isinstance(node.body[0], ast.Expr)}
-        pattern = re.compile(f"(?:dk|{marker})[\\s{marker}]*fixer-push")
+        gap = f"[\\s{marker}]*"
+        pattern = re.compile(f"(?:dk|hermes{gap}{marker}){gap}fixer-push")
         return sorted({node.lineno for node in ast.walk(tree)
                        if built(node) and id(node) not in docs and pattern.search(text(node))})
 
@@ -295,9 +340,26 @@ class ShowTests(_Base):
                      '"hermes dk " "fixer-push --enable"',
                      # #1480: a `+` chain, and an f-string split around a placeholder.
                      '"hermes dk " + "fixer-push --enable"',
-                     'f"hermes {cmd} " f"fixer-push --loop {x}"'):
+                     'f"hermes {cmd} " f"fixer-push --loop {x}"',
+                     # #2039: a `%`-format and a `str.join`, and a name holding the prefix.
+                     '"hermes dk %s" % "fixer-push --enable"',
+                     '"hermes %s %s" % ("dk", "fixer-push --enable")',
+                     '" ".join(["hermes dk", "fixer-push --enable"])',
+                     '" ".join(("hermes", "dk", "fixer-push"))',
+                     'PREFIX + " fixer-push --enable"'):
             with self.subTest(hint):
-                self.assertEqual(self.hand_spelled(f'"""``hermes dk fixer-push``."""\nnote = {hint}\n'), [2])
+                self.assertEqual(self.hand_spelled(
+                    f'"""``hermes dk fixer-push``."""\nnote = {hint}\nPREFIX = "hermes dk"\n'), [2])
+
+    def test_hint_guard_does_not_read_any_name_as_dk(self):
+        # #2039: a name or placeholder in dk's position counted as `dk`, so these were flagged.
+        for source in ('cmd = "run"\nnote = cmd + " fixer-push --loop x"\n',
+                       'note = arg + " fixer-push --loop x"\n',
+                       'note = f"{kind} fixer-push"\n',
+                       'note = "%s fixer-push" % kind\n',
+                       'note = " ".join([kind, "fixer-push"])\n'):
+            with self.subTest(source):
+                self.assertEqual(self.hand_spelled(source), [])
 
     @staticmethod
     def inline_fixer_push(text: str) -> list[str]:
