@@ -1070,21 +1070,21 @@
     <section class="shell section" aria-labelledby="release-title">
       <div class="section-head">
         <div>
-          <div class="section-index">05 / New in v0.6.0</div>
-          <h2 id="release-title">Proof at every head.<br>A cost for every seat.</h2>
+          <div class="section-index">05 / New in v0.7.0</div>
+          <h2 id="release-title">First light on Mac.<br>Secrets in their place.</h2>
         </div>
-        <p class="section-intro">v0.6.0 hands the reviewer proof instead of the fixer&rsquo;s word, and makes every turn earn its tokens.</p>
-        <p class="section-intro">v0.6.1 is a patch on top of that: <code>hermes dk update</code> is now read-only — update with <code>hermes plugins update diaktoros</code> — and <code>update_behind</code> no longer strands an adjudicator&rsquo;s ruling. <a href="https://github.com/coe0718/diaktoros/releases/tag/v0.6.1" target="_blank" rel="noopener noreferrer">Read the v0.6.1 notes</a></p>
+        <p class="section-intro">v0.7.0 brings an experimental native macOS backend, and reads every seat&rsquo;s secrets the way Hermes intends. <a href="https://github.com/coe0718/diaktoros/releases/tag/v0.7.0" target="_blank" rel="noopener noreferrer">Read the v0.7.0 notes</a></p>
       </div>
       <div class="proof-points">
         <article class="proof-point">
-          <h3>Proof at every head.</h3>
-          <p>With <code>change_proof</code> on, the host runs the tests a PR adds or changes before every review, in the seat&rsquo;s network-less sandbox: on the merge base, where they should fail, and at the head, where they should pass. The reviewer reads the result as a fact. The seats also see the live state of every issue a PR names, and an adjudicator that rules for the fixer can approve the head itself.</p>
-          <p><a href="https://github.com/coe0718/diaktoros/releases/tag/v0.6.0" target="_blank" rel="noopener noreferrer">Read the v0.6.0 notes</a></p>
+          <h3>First light on Mac.</h3>
+          <p>A native macOS backend, contributed by @vitaliy-blprnt, runs turns under Seatbelt on fixed-size APFS images with its own process supervision: no VM, and no unsandboxed fallback. It&rsquo;s a development opt-in, off unless the host sets <code>DIAKTOROS_NATIVE_MACOS=1</code>. The catalog install stays Linux-only until the backend meets its acceptance bar, and reports from Mac users help it get there.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/blob/main/docs/native-macos.md" target="_blank" rel="noopener noreferrer">Read the macOS guide</a></p>
         </article>
         <article class="proof-point">
-          <h3>A cost for every seat.</h3>
-          <p>The shadow review runs by risk, GitHub reads that haven&rsquo;t changed are free, and CI results and maintainer replies arrive by webhook instead of the next sweep. Give the loop your models&rsquo; <code>prices</code>, and <code>hermes dk stats</code> estimates what each seat costs, showing subscription seats at API rates beside the spend. <code>hermes dk history</code> replays any PR&rsquo;s review cycle.</p>
+          <h3>Secrets in their place.</h3>
+          <p>As the Hermes catalog review recommended, Diaktoros reads profile secrets through Hermes&rsquo;s <code>agent.secret_scope</code> instead of loading a profile&rsquo;s <code>.env</code> into the environment, so under a multiplexing gateway one profile&rsquo;s keys never reach another&rsquo;s turns. It does so when Hermes provides both the scope and its profile-source hydration; otherwise it keeps the old <code>.env</code> load. The loop also makes fewer GitHub calls.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/issues/2374" target="_blank" rel="noopener noreferrer">See #2374</a></p>
         </article>
       </div>
     </section>

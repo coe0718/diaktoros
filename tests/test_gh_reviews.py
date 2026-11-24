@@ -116,6 +116,51 @@ class ReviewPaginationTest(unittest.TestCase):
         self.assertTrue(gh.persistent_failure(got[1]))
 
 
+class CreatedFloorTest(unittest.TestCase):
+    """#1871: what may end a ``created_floor`` listing (#1147) early, and what may not."""
+    FLOOR = "2026-01-10T00:00:00Z"
+
+    def issue(self, n: int, created) -> dict:
+        item = {"number": n}
+        if created is not None:
+            item["created_at"] = created
+        return item
+
+    def read(self, pages):
+        with mock.patch.object(gh, "fetch", side_effect=[(p, "") for p in pages]) as fetch:
+            got = gh._read_pages(LOOP, PATH, "open issue", 5, keep_partial=True,
+                                 created_floor=gh.epoch(self.FLOOR))
+        return got, fetch.call_count
+
+    def test_unreadable_created_at_on_a_full_page_never_ends_the_listing(self):
+        newer = "2026-01-11T00:00:00Z"
+        last = [self.issue(300, newer)]
+        for stamp in (None, "", "not a date"):
+            with self.subTest(created_at=stamp):
+                first = [self.issue(i, newer) for i in range(100)]
+                second = [self.issue(100 + i, newer) for i in range(99)] + [
+                    self.issue(199, stamp)]
+                got, calls = self.read([first, second, last])
+                self.assertEqual(got, (first + second + last, ""))
+                self.assertEqual(calls, 3)       # page 3 was read: the stamp did not stop it
+
+    def test_an_item_created_exactly_at_the_floor_does_not_end_the_listing(self):
+        first = [self.issue(i, "2026-01-11T00:00:00Z") for i in range(99)] + [
+            self.issue(99, self.FLOOR)]
+        last = [self.issue(100, "2026-01-09T00:00:00Z")]
+        got, calls = self.read([first, last])
+        self.assertEqual(got, (first + last, ""))
+        self.assertEqual(calls, 2)
+
+    def test_a_full_page_ending_older_than_the_floor_ends_the_listing(self):
+        # The control: the same pages do stop when the last stamp is a second before the floor.
+        first = [self.issue(i, "2026-01-11T00:00:00Z") for i in range(99)] + [
+            self.issue(99, "2026-01-09T23:59:59Z")]
+        got, calls = self.read([first, [self.issue(100, "2026-01-09T00:00:00Z")]])
+        self.assertEqual(got, (first, ""))
+        self.assertEqual(calls, 1)
+
+
 class NoLooseApprovalPredicateTest(unittest.TestCase):
     def test_gate_has_no_unordered_approval_predicate(self):
         # #1061: ``approved_at_head`` was any(APPROVED at head), with no chronology: a later
