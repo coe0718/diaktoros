@@ -103,7 +103,9 @@ class Workflows(unittest.TestCase):
                 (stubs / name).chmod(0o755)
             env = {**os.environ, "STUB_DIR": str(stubs),
                    "PATH": f"{stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
-            for where, _, body in steps_running_the_script():
+            found = steps_running_the_script()
+            self.assertGreaterEqual(len(found), 4, "no step runs the script: nothing was executed")
+            for where, _, body in found:
                 block = stubs / "step.sh"
                 block.write_text(body + "\n")
                 for apt_ok in ("0", "1"):
