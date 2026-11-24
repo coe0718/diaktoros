@@ -96,5 +96,45 @@ class SeatFlagTable(unittest.TestCase):
                 self.assertIn(f"{row.flag}={n}", init_argv)
 
 
+class InstallNotePlaceholders(unittest.TestCase):
+    """#2041: an install note's ``{key}`` is filled even when the caller passes no settings
+    form, so a call site that omits ``d`` cannot crash the parser build."""
+
+    def setUp(self):
+        from diaktoros.cli import seat_flags
+        from diaktoros.config import settings_form
+        self.seat_flags = seat_flags
+        self.defaults = settings_form.settings_defaults(None)
+
+    def test_every_placeholder_is_a_settings_key(self):
+        import string
+        for row in self.seat_flags.TABLE:
+            for _text, key, _spec, _conv in string.Formatter().parse(row.install_note):
+                if key is not None:
+                    with self.subTest(flag=row.flag, key=key):
+                        self.assertIn(key, self.defaults, "an install note's placeholder must "
+                                      "name a SETTINGS_SCHEMA key")
+
+    def test_add_without_the_settings_form_builds_every_install_parser(self):
+        placeholders = [row for row in self.seat_flags.TABLE if "{" in row.install_note]
+        self.assertTrue(placeholders)
+        for command in self.seat_flags.INSTALL:
+            with self.subTest(command=command):
+                parser = argparse.ArgumentParser()
+                self.seat_flags.add(parser, command)   # no d: the schema defaults fill the notes
+                helps = {s: a.help for a in parser._actions for s in a.option_strings}
+                for row in placeholders:
+                    if command in row.commands:
+                        self.assertNotIn("{", helps[row.flag])
+                        self.assertIn(str(self.defaults[row.dest]), helps[row.flag])
+
+    def test_a_partial_form_keeps_its_own_values(self):
+        row = next(r for r in self.seat_flags.TABLE if r.flag == "--fixer-concurrency")
+        text = self.seat_flags.help_for(row, "init", {"fixer_concurrency": 7})
+        self.assertTrue(text.endswith("(default: the loop's, settings 7)"), text)
+        text = self.seat_flags.help_for(row, "init", {"cap": 3})   # the key missing from d
+        self.assertIn(f"settings {self.defaults['fixer_concurrency']})", text)
+
+
 if __name__ == "__main__":
     unittest.main()
