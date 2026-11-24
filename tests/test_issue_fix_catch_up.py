@@ -1,8 +1,9 @@
 """#2591: an issue fix whose base moved during the turn opens up to date.
 
-The fix commit is built on the base the turn started from; with ``update_behind`` on, the host
-merges the base's tip into it before the push when that merge is clean and brings no workflow
-change, so the PR opens on a head that is not behind. Real local bare Git, no network.
+The fix commit is built on the base the turn started from; when the base moved meanwhile, the
+host merges the base's tip into it before the push, on every loop (``update_behind`` or not, #2606),
+when that merge is clean and brings no workflow change, so the PR opens on a head that is not
+behind. Real local bare Git, no network.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
@@ -104,7 +105,7 @@ class CatchUp(Fixture):
 
     def test_the_fix_alone_is_pushed_when_the_merge_would_not_be_clean_or_safe(self):
         # A conflict, or workflow changes a push without the `workflow` scope cannot carry: the
-        # branch opens as before, and review and update_behind take it from there.
+        # branch opens as before, behind its base (#2606).
         for case, change in (("conflict", {"a.txt": "a moved\n"}),
                              ("workflow change", {".github/workflows/ci.yml": "on: [push]\n"})):
             with self.subTest(case=case):
@@ -181,6 +182,28 @@ class OpenBranchCatchesUp(Fixture):
         head = result["new_head"]
         self.assertEqual((result["outcome"], self.parents(head)[1]), ("published", tip))
         self.assertEqual([row["new_head"] for row in audit], [head, head])
+
+
+class Doctor(unittest.TestCase):
+    """#2602: on a base that never reports a PR ``behind``, ``update_behind``'s sweep merges
+    nothing, but the catch-up above still runs, so the doctor does not say the host merges nothing."""
+    LOOP = {"id": "w", "repo": REPO, "base": "main", "update_behind": True,
+            "unattended_fixer_push": True, "seats": {"fixer": {"login": "fix"}}}
+
+    def detail(self, **loop):
+        from diaktoros import doctor, gh
+        from diaktoros.doctor import identity_checks
+        with mock.patch.object(gh, "api", return_value={"permissions": {"push": True}}), \
+                mock.patch.object(doctor, "base_requires_up_to_date", return_value=(False, "")):
+            check = identity_checks.check_update_behind({**self.LOOP, **loop})
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        return check.detail
+
+    def test_a_base_not_requiring_up_to_date_branches_still_leaves_the_issue_fix_catch_up(self):
+        on = self.detail(triage={"route": "w-t", "fix_label": "fix-me"})
+        self.assertIn("merges nothing into an open loop PR", on)
+        self.assertIn("an issue fix still merges a moved base if clean and workflow-free", on)
+        self.assertNotIn("issue fix still merges", self.detail())   # issue fixes off: no such clause
 
 
 if __name__ == "__main__":
