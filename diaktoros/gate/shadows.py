@@ -476,7 +476,8 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         return "not approved"
     if stale_approval.is_stale(st.watch(), number, head):
         return "not approved"             # the one test ``ready`` and ``explain`` apply
-    marker = st.breach_get(number)
+    from . import shadow_retired      # #2688 review F1: a ruling run that found it agreeing
+    marker = shadow_retired.reconcile(loop, st, number, head, st.breach_get(number), db)
     read = _shadow_review_and_ruling(loop, number, head, marker, db)
     if read is None:
         return "ledger unreadable"
@@ -496,8 +497,7 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
             loop, st, number, head, rounds + 1, reason,
             escalated={"by": gate.SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
         return "new" if outcome == "retry" else outcome     # breach() delivers the re-armed one
-    # A wake that failed leaves the marker delivery-pending: retry it here, since the sweep's
-    # own delivery retry skips approved heads and every shadow escalation is at one.
+    # A failed wake leaves the marker delivery-pending: retried here, as the sweep's skips approved heads.
     retry = (isinstance(marker, dict) and marker.get("status") == "delivery-pending"
              and (marker.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION)
     if gate.escalated(marker, head) and not retry:

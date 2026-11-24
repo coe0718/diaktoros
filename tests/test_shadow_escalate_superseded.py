@@ -156,6 +156,55 @@ class Superseded(ser.Base):
         self.assertEqual(self.adjudicator_row()["state"], "pending")      # re-armed for its ruling
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
 
+    def test_a_hold_a_delivery_parks_while_the_agreeing_run_ends_still_goes(self):
+        # #2688 review F1 (round 4): a delivery of the same marker is in flight while the run
+        # finishes, so its finish cannot clear it, and the delivery then parks it on the failed
+        # run. The next gate pass drops it: with the shadow agreeing, no hold; with a later
+        # dissent, a fresh escalation that re-arms the run for its ruling.
+        import threading
+        from diaktoros import gate, gh, observer
+        self.superseded()
+        self.own_review("APPROVE", "agrees now")
+        sent, release, outcome = threading.Event(), threading.Event(), {}
+        wake = gate.wake_adjudicator
+
+        def held_wake(*args):
+            woken = wake(*args)                # the real enqueue: "duplicate running"
+            sent.set()
+            release.wait(10)                   # finalized only after the run has finished
+            return woken
+
+        def deliver():
+            outcome["breach"] = gate.breach(self.loop, self.st, 7, fg.HEAD, 1, "r",
+                                            escalated={"by": gate.SHADOW_ESCALATION, "at": "now"})
+
+        def during():
+            self.mark_escalated(status="delivery-pending")     # its first wake failed
+            thread = threading.Thread(target=deliver)
+            thread.start()
+            sent.wait(10)
+            return thread
+        sup = run_supervisor.Supervisor(self.db, fixture_mode=True)
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(run_supervisor.Supervisor, "_spawn"), \
+                mock.patch.object(gate, "wake_adjudicator", side_effect=held_wake), \
+                mock.patch.object(gh, "pr", return_value=dict(fg.LIVE)), \
+                mock.patch.object(observer, "notify", return_value=True):
+            thread = self.run_turn(during)["during"]
+            self.assertEqual(self.adjudicator_row()["state"], "failed")
+            self.assertEqual(self.st.breach_get(7)["status"], "delivery-pending")   # in flight
+            release.set()
+            thread.join(10)
+        self.assertEqual(outcome["breach"], "retry")
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")   # parked
+        self.assertEqual(self.escalate_for_real(), "shadow agrees")
+        self.assertEqual(self.st.breach_get(7), {})               # ...and dropped on the next pass
+        self.mark_escalated(status="awaiting-adjudication")      # parked again, then a dissent
+        self.reviewer("reconsider:2", time.time())
+        self.own_review("REQUEST_CHANGES", "F3: a later dissent", key="reconsider:2")
+        self.assertEqual(self.escalate_for_real(), "new")
+        self.assertEqual(self.adjudicator_row()["state"], "pending")      # re-armed for its ruling
+
     def test_only_this_rounds_shadow_escalation_awaiting_its_ruling_is_cleared(self):
         clear = self.st.breach_clear_pending
         for status, by, rounds, cleared in (("awaiting-adjudication", "shadow", 1, True),
