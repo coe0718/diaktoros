@@ -26,7 +26,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import app_tokens, gh, gh_cache, gh_calls, github_app, hostdirs  # noqa: E402
+from diaktoros import app_tokens, gh, gh_cache, gh_calls, gh_text, github_app, hostdirs  # noqa: E402
 
 REPO, BOT, APP_ID = "acme/widgets", "acme-reader[bot]", 5416187
 OTHER = "acme-other[bot]"
@@ -177,7 +177,7 @@ class Shared(Fixture):
         self.assertEqual(gh.token(self.loop, BOT), sent[1])          # the replacement is shared
 
     def test_a_401_to_a_log_read_drops_the_token_but_a_storage_hosts_does_not(self):
-        # Review of #1781, F7: gh.read_text sends the token on a request of its own. GitHub's
+        # Review of #1781, F7: gh_text.read_text sends the token on a request of its own. GitHub's
         # 401 drops it; a 401 from the storage host it redirected to is not about the token.
         sent = []
         path = f"/repos/{REPO}/actions/jobs/5/logs"
@@ -186,12 +186,12 @@ class Shared(Fixture):
             req.answered = {"x-ratelimit-used": "1"}  # GitHub answered with its redirect
             _http_error(401, sent)(req, timeout)
         with _patches(storage):
-            self.assertIsNone(gh.read_text(self.loop, path))
-            self.assertIsNone(gh.read_text(self.loop, path))
+            self.assertIsNone(gh_text.read_text(self.loop, path))
+            self.assertIsNone(gh_text.read_text(self.loop, path))
         self.assertEqual(sent[0], sent[1])             # kept: the storage host's refusal
         with _patches(_http_error(401, sent)):
-            self.assertIsNone(gh.read_text(self.loop, path))
-            self.assertIsNone(gh.read_text(self.loop, path))
+            self.assertIsNone(gh_text.read_text(self.loop, path))
+            self.assertIsNone(gh_text.read_text(self.loop, path))
         self.assertEqual(sent[2], sent[1])
         self.assertNotEqual(sent[3], sent[2])          # GitHub's 401: the retry has a new one
 

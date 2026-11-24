@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import gh  # noqa: E402
+from diaktoros import gh, gh_text  # noqa: E402
 
 LOOP = {"repo": "owner/one", "read_token": "reader"}
 SECRET = "ghp_not_a_real_token"
@@ -72,7 +72,7 @@ class ReadText(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def read(self):
-        return gh.read_text(LOOP, "/repos/owner/one/actions/jobs/9/logs")
+        return gh_text.read_text(LOOP, "/repos/owner/one/actions/jobs/9/logs")
 
     def test_the_log_is_read_and_the_token_stays_on_the_api_host(self):
         self.assertEqual(self.read(), "line one\nthe failing line\n")
@@ -82,13 +82,35 @@ class ReadText(unittest.TestCase):
         self.assertFalse(any(SECRET in str(v) for v in storage.values()), storage)
 
     def test_a_redirect_from_https_down_to_http_is_not_followed(self):
-        handler = gh._TokenlessRedirect()
-        req = gh.urllib.request.Request("https://api.github.com/x",
-                                        headers={"Authorization": f"token {SECRET}"})
-        with self.assertRaises(gh.urllib.error.HTTPError) as refused:
+        handler = gh_text._TokenlessRedirect()
+        req = gh_text.urllib.request.Request("https://api.github.com/x",
+                                             headers={"Authorization": f"token {SECRET}"})
+        with self.assertRaises(gh_text.urllib.error.HTTPError) as refused:
             handler.redirect_request(req, None, 302, "Found", {}, self.target)
         refused.exception.close()
         self.assertIn("leaves https", str(refused.exception))
+
+
+class OneBinding(unittest.TestCase):
+    """The text read lives in ``gh_text`` only, split out of ``gh`` at its size ceiling: ``gh`` keeps
+    no second binding a patch could miss, and no caller still names the old path."""
+
+    MOVED = ("read_text", "_TokenlessRedirect", "_TEXT_OPENER", "_count_failed_text")
+
+    def test_gh_no_longer_holds_the_text_read(self):
+        for name in self.MOVED:
+            self.assertFalse(hasattr(gh, name), name)
+            self.assertTrue(hasattr(gh_text, name), name)
+
+    def test_no_caller_names_the_old_path(self):
+        import re
+        root = Path(__file__).resolve().parents[1]
+        old = re.compile(r"\bgh\.(%s)\b|\(gh, [\"'](%s)[\"']" % ("|".join(self.MOVED), "|".join(self.MOVED)))
+        found = [f"{path.relative_to(root)}:{n}" for top in ("diaktoros", "scripts", "tests")
+                 for path in sorted((root / top).rglob("*.py")) if "__pycache__" not in path.parts
+                 for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                 if old.search(line) and path.name != "test_gh_read_text.py"]
+        self.assertEqual(found, [])
 
 
 if __name__ == "__main__":
