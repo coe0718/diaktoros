@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .. import claimant, run_supervisor, runtime_detect, state as state_mod, util
+from .. import claimant, run_supervisor, runtime_detect, util
 from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
@@ -1209,7 +1209,7 @@ class ClaimAndLaunch:
                     raise run_supervisor.RetryableError("waiting on the active reviewer turn's shadow review")
                 if shadow is None:      # #1145: a ruling on none records '': wait for a read
                     raise run_supervisor.RetryableError('shadow review unreadable before launch')
-                if str(shadow[2]) != 'REQUEST_CHANGES':  # it agrees now: no ruling (its hold: finish)
+                if str(shadow[2]) != 'REQUEST_CHANGES':  # agrees now: no ruling (shadow_retired drops its hold)
                     raise ValueError(SHADOW_AGREES)
                 extra = {'shadow': shadow}
             if row['seat'] == 'adjudicator':
@@ -1333,19 +1333,17 @@ class ClaimAndLaunch:
             detail=run_supervisor.output_detail(observed.get('stdout'), observed.get('stderr')),
             paced_until=turn.paced_until, cancel=turn.cancel, recorded=recorded)
         waits.note(self, run_id)               # a paced, held or backed-off turn (#2080)
-        try:
-            if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
-                # It marked the breach 'adjudicating' and made no ruling: hand the marker back for a re-claim.
+        if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
+            # This run marked the breach 'adjudicating' and made no ruling: hand the
+            # marker back so its retry (or a re-arm) can claim it again.
+            try:
                 with self._connect() as con:
                     unwritten = run_supervisor.write_records(con, run_id) is None
                 if unwritten:
                     turn.breach[0].breach_resume(turn.row['pr'], turn.row['head'], turn.breach[1],
                                                  attempt=turn.breach[2])
-            elif state == 'failed' and SHADOW_AGREES in (turn.error or ''):   # once failed (#2688 F1)
-                state_mod.state_for(turn.loop).breach_clear_pending(
-                    turn.row['pr'], turn.row['head'], pr_facts.breach_rounds(turn.row['turn_key']))
-        except Exception:
-            pass
+            except Exception:
+                pass
         claims.release_seat(turn.claim, state)
         # The merge check reads the run's state from the ledger, so it is refreshed once that
         # state is written (#1786 for a shadow, #1163 for its recorded verdict, #753 for a turn

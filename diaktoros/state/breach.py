@@ -104,18 +104,20 @@ class Breaches:
         return "new" if new else "retry"
 
 
-    def breach_clear_pending(self, number: int, head: str, shadow_rounds: int | None = None) -> bool:
+    def breach_clear_pending(self, number: int, head: str, shadow_rounds: int | None = None,
+                             expect: dict | None = None, still: Callable[[], bool] | None = None) -> bool:
         """Drop a ``delivery-pending`` marker at ``head`` that no longer holds it (a raised cap
         or a dismissed verdict). Only that status, that head, and no delivery in flight. With
         ``shadow_rounds``: only a shadow escalation of that round, awaiting its ruling too, whose
-        shadow review agrees by the ruling's launch (#2688), so a later dissent escalates anew. Its
-        run clears it only once the ledger shows that run failed (#2688 review F1): a dissent that
-        escalates after that re-arms the run, and one before it finds this marker ("already"), so
-        none is parked on a run that was already ending."""
+        shadow review agrees by the ruling's launch (#2688, ``gate.shadow_retired``). ``expect``
+        is the marker the caller read and ``still()`` re-reads its failed run, both under the lock
+        (#2688 review F1, round 5): a re-escalation since (a new marker, the run re-armed) stays."""
         key = f"{self.loop['repo']}#{number}"
         with self.breach_lock():
             data = _state._mapping(self._load(self.breach, {}))
             marker = _state._mapping(data.get(key))
+            if expect is not None and marker != expect:
+                return False
             statuses = ("delivery-pending",)
             if shadow_rounds is not None:
                 if ((marker.get("escalated") or {}).get("by") != "shadow"
@@ -123,7 +125,7 @@ class Breaches:
                     return False
                 statuses += ("awaiting-adjudication",)
             if (marker.get("head") != head or marker.get("status") not in statuses
-                    or _state._delivery_in_flight(marker)):
+                    or _state._delivery_in_flight(marker) or (still is not None and not still())):
                 return False
             data.pop(key)
             self._breach_save(data)

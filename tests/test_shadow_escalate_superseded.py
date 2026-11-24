@@ -5,8 +5,8 @@ same head (``review --reconsider`` queues one) leaves the ledger readable but wi
 that turn yet. The launch waits for it within the retry backoff, saying what it waits on rather
 than "shadow review unreadable", so the turn's own review, landing minutes later, is still ruled
 on with nobody involved (#2688); one that agrees is not ruled on, as the gate would not escalate
-it, and its escalation is cleared once that run has failed, so a later dissent escalates anew and
-re-arms it (#2688 review F1). An unreadable ledger still waits as before (#1145).
+it, and the next gate pass once that run has failed drops its escalation, so a later dissent
+escalates anew and re-arms it (#2688 review F1; races: test_shadow_retire_race.py). An unreadable ledger still waits as before (#1145).
 Driven through the real launch (``_prepare_launch``) on a real run ledger.
 """
 from __future__ import annotations
@@ -31,7 +31,6 @@ ROW = {"repo": fg.REPO, "pr": 7, "head": fg.HEAD}
 
 class Superseded(ser.Base):
     claim = ser.Between.claim          # the real launch; not a subclass, so its tests run once
-    explain_and_ready = ser.Between.explain_and_ready
     escalate = ser.Trigger.escalate
 
     def reviewer(self, key, at):
@@ -134,9 +133,9 @@ class Superseded(ser.Base):
         self.assertEqual(self.escalate()[0], "shadow agrees")
 
     def test_a_later_dissent_is_ruled_on_even_while_the_agreeing_run_ends(self):
-        # #2688 review F1: the hold stays until the ledger shows the agreeing run failed. A
-        # dissent before then finds it ("already"), not a fresh marker parked on that run's key;
-        # one after re-arms the failed run through the real delivery, so it is ruled on.
+        # #2688 review F1: the hold stays while the agreeing run is not failed. A dissent before
+        # then finds it ("already"), not a fresh marker parked on that run's key; the next gate
+        # pass after drops it and escalates anew, re-arming the run through the real delivery.
         self.superseded()
         self.own_review("APPROVE", "agrees now")
 
@@ -149,9 +148,8 @@ class Superseded(ser.Base):
         row = self.adjudicator_row()
         self.assertEqual(row["state"], "failed")
         self.assertIn(run_supervisor.turns.SHADOW_AGREES, row["error"])
-        self.assertEqual(self.st.breach_get(7), {})     # its hold went with it, once it failed
-        _marker, blockers, why = self.explain_and_ready()
-        self.assertFalse(any(w.startswith("escalated:") for w in [*blockers, *why]), (blockers, why))
+        # Its finish leaves the hold to the gate (round 5: a late clear could drop a replacement).
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
         self.assertEqual(self.escalate_for_real(), "new")
         self.assertEqual(self.adjudicator_row()["state"], "pending")      # re-armed for its ruling
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
