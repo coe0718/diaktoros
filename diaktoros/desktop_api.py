@@ -855,7 +855,9 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         stamp = {row["id"]: (row["created"], row["updated"]) for row in con.execute(
             "SELECT id, created, updated FROM runs WHERE repo=? AND pr=?", (repo, pr))}
         # The host's own "what moves it" line, for the runs that are actually not moving.
-        for row in views.runs_view(con, repo, pr):
+        # A run on a PR the watchdog's fresh listing shows closed is history, as ``status`` and
+        # ``explain`` print it (``split_history``, #1364); an uncertain run always stays.
+        for row in views.open_runs(con, loop, pr):
             created, _ = stamp.get(row["id"], (None, None))
             view["stuck"].append({"seat": row["seat"], "head": stats.recorded_head(row["head"]),
                                   "state": row["state"], "since": created,
