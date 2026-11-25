@@ -61,13 +61,49 @@ def dispute_choices(loop_id: str, pr: int) -> str:
             f"escalate --loop {loop_id} --pr {pr}`, or merge on its evidence")
 
 
+# How many rows ``runs_view`` lists without a ``head``; ``attention_view`` counts past it.
+RUNS_CAP = 100
+
+
 def runs_view(con, repo: str | None = None, pr: int | None = None,
-              head: str | None = None) -> list[dict]:
-    """The newest 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled
-    runs, oldest first, or with ``head`` all of that head's, uncapped: no other turn, at that
-    head or another, pushes a current head's turn out of its reader's list (#2613 review, F10).
+              head: str | None = None, listing: dict | None = None) -> list[dict]:
+    """With ``listing`` (a ``fresh_listing``), rows ``closed_history`` calls history are left
+    out before the cap. The newest ``RUNS_CAP`` failed, waiting, uncertain, push-policy-cancelled and
+    operator-cancelled runs, oldest first, plus every uncertain one past the cap (#1364: it holds
+    its seat until reconciled); or with ``head`` all of that head's, uncapped: no other turn, at
+    that head or another, pushes a current head's turn out of its reader's list (#2613 review,
+    F10). Which rows count is ``attention_where``'s rule (a superseded failed or cancelled run is
+    left out); ``attention_view`` is the uncapped list the cap cuts.
     Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
+    where, args = attention_where(repo, pr, head)
+    if listing is not None:
+        # Closed-PR rows leave before the cap, so they never push an open PR's row out (#1364).
+        where, args = f"{where} AND NOT {CLOSED_SQL}", args + closed_args(listing)
+    # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
+    # them; a read-only view never migrates.
+    columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
+    budget = 'r.budget' if 'budget' in columns else 'NULL AS budget'
+    deps = 'r.deps' if 'deps' in columns else 'NULL AS deps'
+    if head is None:
+        # The newest under the cap, and every uncertain row whatever its age (#1364).
+        where, args = (f"{where} AND (r.state='uncertain' OR r.id IN (SELECT r.id FROM runs r "
+                       f"WHERE {where} ORDER BY r.created DESC,r.id DESC LIMIT {RUNS_CAP}))",
+                       args + args)
+    rows = [dict(row) for row in con.execute(
+        "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,r.created,"
+        f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
+        "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
+        " ORDER BY r.created,r.id", args)]
+    for row in rows:
+        row['write'] = run_supervisor.write_evidence(con, row['id'])
+    return rows
+
+
+def attention_where(repo: str | None = None, pr: int | None = None,
+                    head: str | None = None) -> tuple[str, list]:
+    """The one rule for which ledger rows need a person, shared by ``runs_view`` and
+    ``attention_view``: an SQL condition on ``runs r`` and its arguments."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
     # cancellation (head moved, PR closed) is not: a fixer's new head gets its own turn, and the
@@ -86,6 +122,7 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
     where += " AND r.seat != 'shadow'"
+    where += superseded_where(head is None)
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
@@ -95,19 +132,58 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
     if head is not None:
         where += ' AND r.head=?'
         args.append(head)
-    # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
-    # them; a read-only view never migrates.
-    columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
-    budget = 'r.budget' if 'budget' in columns else 'NULL AS budget'
-    deps = 'r.deps' if 'deps' in columns else 'NULL AS deps'
-    rows = [dict(row) for row in con.execute(
-        "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
-        f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
-        "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
-        " ORDER BY r.created DESC,r.id DESC" + ("" if head else " LIMIT 100"), args)][::-1]
+    return where, args
+
+
+def superseded_where(across_heads: bool) -> str:
+    """``attention_where``'s supersession rule (#1364), as an SQL condition on ``runs r``.
+
+    A failed or cancelled run is superseded once a newer run (created later) of the same repo,
+    PR (or issue) and seat exists: that run is the one that moves it now. An uncertain run is
+    never dropped, it holds its seat until reconciled; a waiting one is still due to start.
+
+    A newer run at the same head always supersedes. With ``across_heads`` (a listing that is
+    not scoped to one head), a newer run at another head does too, unless the old run's head is
+    still the seat's current head in the ledger: the head of its most recently updated row,
+    the same ``newest`` rule ``retry_action`` targets. A head that came back after a force-push
+    re-arms its old row, which bumps ``updated``, so that row stays listed and ``retry`` can
+    act on it. A head-scoped reader (``explain``'s current head) asks for one head it already
+    knows is current, so only same-head runs supersede there (#2613 review, F10)."""
+    newer = ("s.repo=r.repo AND s.pr=r.pr AND s.seat=r.seat AND "
+             "(s.created>r.created OR (s.created=r.created AND s.id>r.id))")
+    if not across_heads:
+        return (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
+                f"WHERE {newer} AND s.head=r.head))")
+    current = ("(SELECT c.head FROM runs c WHERE c.repo=r.repo AND c.pr=r.pr AND c.seat=r.seat "
+               "ORDER BY c.updated DESC, c.id DESC LIMIT 1)")
+    return (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
+            f"WHERE {newer} AND (s.head=r.head OR r.head IS NOT {current})))")
+
+
+def attention_view(con, repo: str | None = None) -> list[dict]:
+    """Every row ``runs_view`` lists, uncapped, as ``{id, repo, pr, seat, state, error}``,
+    oldest first: the total the capped list is a part of (#1364)."""
+    where, args = attention_where(repo)
+    return [dict(row) for row in con.execute(
+        "SELECT r.id,r.repo,r.pr,r.seat,r.state,r.error,r.created FROM runs r WHERE " + where +
+        " ORDER BY r.created,r.id", args)]
+
+
+# ``attention_counts``'s kinds, in the order the selftest line names them.
+ATTENTION_KINDS = ('uncertain', 'failed', 'waiting', 'held by policy', 'cancelled')
+
+
+def attention_counts(rows: list[dict]) -> dict[str, int]:
+    """How many of ``rows`` are of each ``ATTENTION_KINDS`` kind, zero kinds left out. A run
+    cancelled by the push or issue-fix policy is ``held by policy``; any other listed cancelled
+    run (an operator's cancel, a stop for an owed shadow) is ``cancelled``."""
+    counts: dict[str, int] = {}
     for row in rows:
-        row['write'] = run_supervisor.write_evidence(con, row['id'])
-    return rows
+        kind = row['state']
+        if kind == 'cancelled' and run_supervisor.policy_cancelled(row.get('error')):
+            kind = 'held by policy'
+        counts[kind] = counts.get(kind, 0) + 1
+    return {kind: counts[kind] for kind in ATTENTION_KINDS if kind in counts}
 
 
 # The watchdog sweeps every 15 minutes; a listing older than that is not trusted alone to say a
@@ -131,17 +207,56 @@ def open_listing(loop: dict) -> dict | None:
             'numbers': {n for n in raw['numbers'] if isinstance(n, int) and not isinstance(n, bool)}}
 
 
+def fresh_listing(listing: dict | None, now: float | None = None) -> dict | None:
+    """``listing`` when it is recent enough to say alone that a PR is closed (no older than
+    ``WATCH_INTERVAL_S``, the bound ``retry_action.pr_open`` trusts it to), else None. A sweep
+    that stopped running leaves a listing that says nothing about PRs opened or reopened since,
+    so a stale one is unknown openness, never evidence that a PR is closed (#1364 review, F3)."""
+    now = time.time() if now is None else now
+    if listing is None or now - listing['at'] > WATCH_INTERVAL_S:
+        return None
+    return listing
+
+
 def closed_history(row: dict, listing: dict | None) -> bool:
-    """Whether a failed run is history: its PR is absent from the last complete open listing.
-    Issue seats are keyed by issue number and never judged by it. No listing: False."""
-    return (listing is not None and row.get('state') == 'failed'
-            and row.get('seat') not in run_supervisor.ISSUE_SEATS and row.get('pr') not in listing['numbers'])
+    """Whether a listed run is history: its PR is absent from a fresh complete open listing
+    (``fresh_listing``; the caller passes one). Failed, waiting and cancelled runs are judged
+    (#1364): a closed or merged PR has nothing left for them to move. An uncertain run never
+    is: it holds its seat until reconciled. Issue seats are keyed by issue number and never
+    judged by a PR listing (closed issues: #2709). No listing: False."""
+    # A run created after the listing was read is unknown, not closed: the PR may have been
+    # opened or reopened since that sweep (#1364 review, F3).
+    return (listing is not None and row.get('state') != 'uncertain'
+            and row.get('seat') not in run_supervisor.ISSUE_SEATS and row.get('pr') not in listing['numbers']
+            and row.get('created') is not None and float(row['created']) <= listing['at'])
+
+
+# ``closed_history`` as SQL on ``runs r``, for ``runs_view`` to apply before its cap; its
+# arguments are ``closed_args(listing)``. The two must say the same thing.
+CLOSED_SQL = ("(r.state!='uncertain' AND r.seat NOT IN (SELECT value FROM json_each(?)) AND "
+              "r.pr NOT IN (SELECT value FROM json_each(?)) AND r.created<=?)")
+
+
+def closed_args(listing: dict) -> list:
+    """``CLOSED_SQL``'s arguments for a fresh ``listing``."""
+    return [json.dumps(list(run_supervisor.ISSUE_SEATS)), json.dumps(sorted(listing['numbers'])),
+            listing['at']]
+
+
+def open_runs(con, loop: dict, pr: int | None = None) -> list[dict]:
+    """``runs_view`` of ``loop``'s repo with closed-PR rows left out, before the cap when the
+    watchdog's listing is fresh (``fresh_listing``): the Desktop's stuck list."""
+    listing = fresh_listing(open_listing(loop))
+    return split_history(runs_view(con, loop['repo'], pr, listing=listing), loop)[0]
 
 
 def split_history(rows: list[dict], loop: dict) -> tuple[list[dict], list[dict], bool]:
-    """(rows still to act on, failed rows on closed PRs, whether openness is unknown) for
-    ``runs_view`` rows. Nothing is written: ``report`` and ``stats`` still count them failed."""
-    listing = open_listing(loop)
+    """(rows still to act on, rows on closed PRs, whether openness is unknown) for ``runs_view``
+    rows: the one closed-PR rule ``status``, ``explain``, selftest's ``ledger:attention`` and the
+    Desktop's stuck list apply. Openness is unknown when no sweep recorded a listing or the last
+    one is stale (``fresh_listing``); then nothing is split off. Nothing is written: ``report``
+    and ``stats`` still count the rows in their states."""
+    listing = fresh_listing(open_listing(loop))
     history = [row for row in rows if closed_history(row, listing)]
     return [row for row in rows if row not in history], history, listing is None
 
@@ -167,7 +282,7 @@ def read_only_connect(db: str | Path):
 
 
 def read_only_view(db: str | Path, repo: str, pr: int | None = None,
-                   head: str | None = None) -> list[dict] | None:
+                   head: str | None = None, listing: dict | None = None) -> list[dict] | None:
     """``runs_view`` without writing anything — no schema migration, no WAL creation — for
     ``status``/``explain``. None when the ledger is absent or unreadable."""
     try:
@@ -175,7 +290,7 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None,
         if con is None:
             return None
         try:
-            return runs_view(con, repo, pr, head)
+            return runs_view(con, repo, pr, head, listing)
         finally:
             con.close()
     except sqlite3.Error:

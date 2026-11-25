@@ -391,21 +391,23 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
     if rows is None:
         print(f"{prefix}run ledger unreadable ({ledger})")
         return []
-    # A failed run on a PR the watchdog's last complete listing does not show open is history
-    # (#723): counted apart, never offered for re-arm. The ledger rows are not touched.
+    # A run (not an uncertain one) on a PR the watchdog's fresh complete listing does not show
+    # open is history (#723, #1364): counted apart, never offered for re-arm. The ledger rows
+    # are not touched.
     rows, history, unknown = views.split_history(rows, loop)
     if history:
         if pr is None:
-            print(f"{prefix}{len(history)} failed turn(s) on closed PRs, history "
+            kinds = ", ".join(f"{count} {kind}" for kind, count in views.attention_counts(history).items())
+            print(f"{prefix}{kinds} turn(s) on closed PRs, history "
                   f"(#{', #'.join(str(n) for n in sorted({r['pr'] for r in history}))}): nothing "
                   "to re-arm")
         else:
             for row in history:
-                print(f"{prefix}{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} failed — "
+                print(f"{prefix}{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — "
                       f"{row['error'] or 'no reason recorded'}; PR #{pr} is not open (merged or "
                       "closed): history, nothing to re-arm")
-    if unknown and any(r["state"] == "failed" for r in rows):
-        print(f"{prefix}note: no open-PR listing from the watchdog yet — whether these PRs are "
+    if unknown and any(r["state"] != "uncertain" for r in rows):
+        print(f"{prefix}note: no fresh open-PR listing from the watchdog — whether these PRs are "
               "still open is unknown")
     for row in rows[-limit:]:
         print(prefix + views.describe_run(row, loop["id"]))
