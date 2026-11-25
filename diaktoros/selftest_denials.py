@@ -20,7 +20,8 @@ DENIAL_FIX = {
     "cannot verify live PR": "check the PR number and that the read token can see it",
     # The broker re-reads the PR: these are its head as that read found it.
     "stale PR head": "the PR's head moved after the selftest read it; run the selftest again",
-    "wrong destination branch": "the PR's head branch must be named and must not start with '-'",
+    "wrong destination branch": ("the PR's head branch changed after the selftest read it, or its name is "
+                                 "empty or starts with '-'; run the selftest again"),
     # The seat and read mapping check, then broker._verify_identities' wording with the names
     # ``authorize`` passes it: each is a fact step 4 checks per identity.
     "explicit seat and read credential mappings required": _IDENTITIES,
