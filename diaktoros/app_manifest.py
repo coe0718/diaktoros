@@ -256,6 +256,18 @@ def code_from(text: str, state: str) -> str:
     return (query.get("code") or [""])[0]
 
 
+def refuse_unrecorded_key(key_dir: Path, prefix: str, role: str) -> None:
+    """Checked before the click: a key this run did not record (a lost session, or a run stopped
+    between the key and the session) is never overwritten, and an App made now would have nowhere
+    to put its key."""
+    key_path = key_dir / f"{slug_of(app_name(prefix, role))}.pem"
+    if key_path.exists():
+        raise WizardError(f"{key_path} already exists, but this run has no record of making "
+                          f"{app_name(prefix, role)}: if it is that App's key, map it by hand "
+                          "(its App id is on the App's settings page); otherwise move it "
+                          "aside and rerun")
+
+
 def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Path,
            browser: bool = True, emit=print, ask=input, open_url=None, post=None,
            wait_s: float = WAIT_S, hook_active: bool = True) -> dict:
@@ -273,16 +285,10 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
     for role in roles:
         if role in made:
             emit(f"  {role}: {made[role]['slug']} (made earlier, key {made[role]['key_file']})")
+            if role == "reader":
+                emit_resumed_hook(made[role], hook_active, emit)
             continue
-        # Checked before the click: a key this run did not record (a lost session, or a run
-        # stopped between the key and the session) is never overwritten, and an App made now
-        # would have nowhere to put its key.
-        key_path = key_dir / f"{slug_of(app_name(prefix, role))}.pem"
-        if key_path.exists():
-            raise WizardError(f"{key_path} already exists, but this run has no record of making "
-                              f"{app_name(prefix, role)}: if it is that App's key, map it by hand "
-                              "(its App id is on the App's settings page); otherwise move it "
-                              "aside and rerun")
+        refuse_unrecorded_key(key_dir, prefix, role)
         state = secrets.token_urlsafe(32)
         action = new_app_url(owner, org, state)
         if browser:
@@ -320,6 +326,10 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
                               "key on its settings page") from exc
         made[role] = {"slug": app["slug"], "id": app["id"], "login": f"{app['slug']}[bot]",
                       "key_file": str(key), "made_at": int(time.time())}
+        if role == "reader":
+            # What its manifest asked for, so a rerun reports the App it resumes, not the one this
+            # run would have made (#1623): GitHub reads hook_attributes only at creation.
+            made[role]["hook_active"] = bool(hook_active)
         runs[this] = {"apps": made, "owner": owner, "org": org, "prefix": prefix, "host": host}
         session["runs"] = runs
         save_session(key_dir, session)
@@ -327,11 +337,37 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
     return made
 
 
-def next_steps(made: dict, owner: str, org: bool, loop_id: str | None,
-               hook_active: bool = True) -> list[str]:
-    """What the operator runs next: install each App, then map the identities. With the reader's
-    webhook made inactive (a repo-hooks loop, ``reader_hook_active``), the switch to App ingress
-    is not offered as a step: it first needs that webhook made active in the App's settings."""
+def reader_hook_made_active(rec: dict) -> bool | None:
+    """Whether the reader App this record describes was made with an active webhook: True or
+    False as its manifest asked (``create`` records it), None when the record does not say (a
+    session written before #1623). It is the state at creation: the operator can change it in the
+    App's settings later, and nothing here reads it back from GitHub."""
+    value = rec.get("hook_active")
+    return value if isinstance(value, bool) else None
+
+
+def emit_resumed_hook(rec: dict, hook_active: bool, emit) -> None:
+    """Say when the reader a rerun resumes was made with another webhook state than this run asks
+    for, or with none recorded (#1623): GitHub reads ``hook_attributes`` only at creation, so the
+    resumed App keeps its own, and ``next_steps`` follows that one."""
+    was = reader_hook_made_active(rec)
+    settings = f"{GITHUB}/settings/apps/{rec['slug']}"
+    if was is None:
+        emit(f"  reader: {rec['slug']} was made before its webhook state was recorded: check "
+             f"Active in {settings}")
+    elif was != bool(hook_active):
+        emit(f"  reader: {rec['slug']} was made with its webhook "
+             f"{'active' if was else 'inactive'}, and a rerun does not change it: set it "
+             f"{'Active' if hook_active else 'inactive'} in {settings} if this loop needs that")
+
+
+def next_steps(made: dict, owner: str, org: bool, loop_id: str | None) -> list[str]:
+    """What the operator runs next: install each App, then map the identities. The App ingress
+    steps follow the reader App as it was made (``reader_hook_made_active``), which a resumed run
+    may have made with another state than this run asks for. With its webhook made inactive (a
+    repo-hooks loop, ``reader_hook_active``) the switch is not offered: it first needs that
+    webhook set Active in the App's settings. With its state unrecorded, the steps say to check
+    it first."""
     steps = ["install each App on the repository (only that one): " +
              " · ".join(f"{GITHUB}/apps/{rec['slug']}/installations/new" for rec in made.values())]
     if loop_id:
@@ -339,11 +375,17 @@ def next_steps(made: dict, owner: str, org: bool, loop_id: str | None,
             seat = "read" if role == "reader" else role
             steps.append(f"hermes dk identity --loop {loop_id} --seat {seat} --app "
                          f"\"{rec['login']}={rec['id']}:{rec['key_file']}\"")
-        if "reader" in made and not hook_active:
-            steps.append(f"the reader's webhook is inactive (this loop's events come through repo "
-                         f"hooks); to move to App ingress later, first set it Active in "
-                         f"{GITHUB}/settings/apps/{made['reader']['slug']}")
-        elif "reader" in made:
+        reader = made.get("reader")
+        settings = f"{GITHUB}/settings/apps/{reader['slug']}" if reader else ""
+        if reader and reader_hook_made_active(reader) is False:
+            steps.append(f"the reader's webhook was made inactive (this loop's events come "
+                         f"through repo hooks); to move to App ingress later, first set it "
+                         f"Active in {settings}")
+        elif reader:
+            if reader_hook_made_active(reader) is None:
+                steps.append(f"check that the reader's webhook is Active in {settings} (this "
+                             "App's record does not say): the next two steps deliver nothing "
+                             "while it is inactive")
             steps += [f"hermes dk set --loop {loop_id} --ingress app-webhook --ingress-app "
                       f"\"{made['reader']['login']}\"",
                       f"hermes dk app-webhook --loop {loop_id} --set"]

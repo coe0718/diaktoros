@@ -326,8 +326,7 @@ def cmd_create_apps(args) -> int:
         print(f"stopped: {exc}")
         return 1
     print("next:")
-    for step in app_manifest.next_steps(made, args.owner, args.org, loop["id"] if loop else None,
-                                        hook_active):
+    for step in app_manifest.next_steps(made, args.owner, args.org, loop["id"] if loop else None):
         print(f"  {step}")
     return 0
 
