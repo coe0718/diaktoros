@@ -1033,10 +1033,10 @@ class LockInventory(unittest.TestCase):
     }
 
     # Every place that builds a ``*.lock`` name at runtime (``x + ".lock"``, ``f"{x}.lock"``,
-    # ``with_suffix(".lock")``), keyed ``(module, enclosing function, expression)``: the scan
+    # ``with_suffix(".lock")``), keyed ``(module, qualified scope, expression)``: the scan
     # cannot read such a name, so each site is accounted for here by hand (#1740). A new site
-    # fails until it is listed with a reason, even in a module that already has one listed
-    # (review F1 on #2604: a module-wide entry let any later site in that module through).
+    # fails until it is listed with a reason, even in a module or scope with one listed (review
+    # F1 on #2604), and an entry covers exactly one site (#2618: ``A.f`` passed as ``B.f``).
     RUNTIME = {
         ("diaktoros.state.migrate", "lock_path", 'marker_path().with_suffix(".lock")'):
             "the migration marker's lock, in the home's state/ root",
@@ -1070,14 +1070,14 @@ class LockInventory(unittest.TestCase):
 
     @staticmethod
     def scopes(tree):
-        """Each node of ``tree`` with the name of the function or class it sits in
-        (``<module>`` at the top level), so a runtime-built site is keyed by where it is."""
+        """Each node of ``tree`` with the qualified name of its scope (``Class.method``,
+        ``outer.inner``; ``<module>`` at the top level): a site is keyed by where it is (#2618)."""
         stack = [(tree, "<module>")]
         while stack:
             node, scope = stack.pop()
             yield node, scope
-            inner = (node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                                    ast.ClassDef)) else scope)
+            inner = (f"{scope}.{node.name}".removeprefix("<module>.") if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else scope)
             stack.extend((child, inner) for child in ast.iter_child_nodes(node))
 
     @staticmethod
@@ -1128,11 +1128,11 @@ class LockInventory(unittest.TestCase):
         return found
 
     def built(self, *roots):
-        """The sites that build a lock name at runtime, each with its line numbers."""
+        """The sites that build a lock name at runtime, each with a line number per occurrence."""
         found = {}
         for _module, node, _complete, built, site in self.lock_strings(roots or self.ROOTS):
             if built:
-                found.setdefault(site, set()).add(node.lineno)
+                found.setdefault(site, []).append(node.lineno)
         return found
 
     def fresh_lock_names(self, package_parent):
@@ -1156,13 +1156,13 @@ class LockInventory(unittest.TestCase):
 
     def test_every_runtime_built_lock_name_is_accounted_for(self):
         """#1740: a name built at runtime is invisible to the name scan, so each module that
-        builds one must be listed in ``RUNTIME``, site by site; and a listed site that no longer
-        exists is dropped from the list, so it cannot hide a later one."""
+        builds one must be listed in ``RUNTIME``, site by site, one occurrence each (#2618); and a
+        listed site that no longer exists is dropped from the list, so it cannot hide a later one."""
         found = self.built()
         unlisted = {site: sorted(lines) for site, lines in found.items()
-                    if site not in self.RUNTIME}
-        self.assertEqual(unlisted, {}, "sites build a *.lock name at runtime: register it, "
-                                       "or list the site in LockInventory.RUNTIME with why")
+                    if site not in self.RUNTIME or len(lines) > 1}
+        self.assertEqual(unlisted, {}, "sites build a *.lock name at runtime: register it, or "
+                                       "list each site once in LockInventory.RUNTIME with why")
         self.assertEqual(set(self.RUNTIME) - set(found), set(), "stale RUNTIME entries")
 
     def test_a_runtime_built_lock_in_a_new_module_is_flagged(self):
@@ -1178,8 +1178,8 @@ class LockInventory(unittest.TestCase):
                 "def other(directory, name):\n"
                 "    return pathlib.Path(directory) / f'{name}-x.lock'\n")
             self.assertEqual(self.built(package), {
-                ("diaktoros.runtime_lock", "lock_path", "'runtime-thing' + '.lock'"): {3},
-                ("diaktoros.runtime_lock", "other", "f'{name}-x.lock'"): {5}})
+                ("diaktoros.runtime_lock", "lock_path", "'runtime-thing' + '.lock'"): [3],
+                ("diaktoros.runtime_lock", "other", "f'{name}-x.lock'"): [5]})
             self.assertEqual(self.named(package), {})
         self.assertFalse(any(site[0] == "diaktoros.runtime_lock" for site in self.RUNTIME))
 

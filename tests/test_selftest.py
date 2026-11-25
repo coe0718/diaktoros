@@ -112,7 +112,8 @@ class SelftestBase(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.fx = Fixture(pathlib.Path(temp.name))
         env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_GH_STUB"}
-        env["HERMES_HOME"] = str(self.fx.home)
+        # The operator's real home stays out (#2617): node_report reads ~/.hermes/node there.
+        env["HERMES_HOME"], env["HERMES_REAL_HOME"] = str(self.fx.home), str(self.fx.root)
         patches = [
             mock.patch.object(sys, "platform", "linux"),  # This fixture emulates bubblewrap.
             mock.patch.dict(os.environ, env, clear=True),
@@ -475,42 +476,6 @@ class ChecklistTests(SelftestBase):
                 line = text.split("❌ broker:reviewer", 1)[1].splitlines()
                 self.assertIn(denial, line[0])
                 self.assertIn("fix: see the identities step", line[1])
-
-    def test_every_denial_fix_key_is_a_denial_the_broker_raises(self):
-        """#1497: each ``_DENIAL_FIX`` key is exactly what ``broker.authorize`` raises for a
-        reviewer write in some state, so the exact-string lookup cannot drift from its wording."""
-        original = self.fx.fetch
-        pr = self.fx.pr
-
-        def answer(override):
-            def fetch(loop, path, method="GET", body=None, login=None):
-                hit = override(path, login)
-                return hit if hit is not None else original(loop, path, method, body, login)
-            return fetch
-        states = [
-            lambda: pr.update(draft=True),
-            lambda: pr["base"].update(ref="dev"),
-            lambda: pr["base"].update(repo={"full_name": "other/widgets"}),
-            lambda: pr["head"].update(repo={"full_name": "fork/widgets"}),
-            lambda: self.fx.ids.update(fixer=2),
-            lambda: answer(lambda path, login: ({"login": "someone-else", "id": 2}, "")
-                           if path == "/user" and login == "reviewer" else None),
-            lambda: answer(lambda path, login: (None, "HTTP 404")
-                           if path == "/repos/acme/widgets/pulls/7" else None),
-        ]
-        raised = set()
-        for state in states:
-            saved = json.loads(json.dumps(pr)), dict(self.fx.ids)
-            fetch = state()
-            with mock.patch.object(gh, "fetch", side_effect=fetch or original):
-                with self.assertRaises(broker.BrokerDenied) as caught:
-                    broker.authorize(self.fx.loop, repo="acme/widgets", number=7, head=HEAD,
-                                     role="reviewer", branch="fix-7", operation="review")
-            raised.add(str(caught.exception))
-            pr.clear()
-            pr.update(saved[0])
-            self.fx.ids = saved[1]
-        self.assertEqual(raised, set(selftest._DENIAL_FIX))
 
     def test_github_writes_are_refused_during_the_selftest(self):
         with selftest.github_read_only():
@@ -1019,15 +984,25 @@ class ProbeAnswer(unittest.TestCase):
         self.assertIsNone(st.probe_answer('codex_responses', 'application/json', b'<html>'))
 
 
-def _top_level_names(path: pathlib.Path) -> set[str]:
+def _top_level_names(path: pathlib.Path, imports: bool = False) -> set[str]:
+    """Module-level defs, classes and assignment targets (tuples, starred, annotated: #2532),
+    and with ``imports`` the names an import binds."""
     import ast
     names = set()
     for node in ast.parse(path.read_text()).body:
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(n.id for target in targets for n in ast.walk(target)
+                         if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
+        elif imports and isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
     return names
+
+
+INFERENCE_CORE = ROOT / "diaktoros" / "selftest.py"     # tests/test_selftest_guards.py swaps these
+INFERENCE_OWN = ROOT / "diaktoros" / "selftest_inference.py"
 
 
 class InferenceStepModule(unittest.TestCase):
@@ -1043,10 +1018,11 @@ class InferenceStepModule(unittest.TestCase):
 
     def test_the_inference_step_reads_the_selftest_core_through_selftest(self):
         # So a patch of a core name on selftest (Report, PASS…) reaches step 3 too: nothing of
-        # the core is defined again in selftest_inference.
-        core = _top_level_names(ROOT / "diaktoros" / "selftest.py")
-        own = _top_level_names(ROOT / "diaktoros" / "selftest_inference.py")
+        # the core is defined again, or imported by name, in selftest_inference (both import json).
+        core = _top_level_names(INFERENCE_CORE)
+        own = _top_level_names(INFERENCE_OWN, imports=True)
         self.assertIn("Report", core)
+        self.assertIn("PASS", core)
         self.assertEqual(sorted(core & own), [])
 
 

@@ -44,6 +44,47 @@ def top_level(path: pathlib.Path, imports: bool = False) -> set[str]:
     return names
 
 
+HOME = ("diaktoros", "explain")
+
+
+def _source(path: pathlib.Path, node: ast.ImportFrom) -> tuple[str, ...]:
+    """The absolute module ``node`` imports from, resolving a relative import from ``path``."""
+    module = tuple(node.module.split(".")) if node.module else ()
+    if not node.level:
+        return module
+    package = path.relative_to(ROOT).with_suffix("").parts[:-1]   # a module's, or __init__'s
+    return package[:len(package) - (node.level - 1)] + module
+
+
+def copies(path: pathlib.Path) -> set[str]:
+    """The moved names ``path`` keeps a copy of (#2074): bound at module level, a ``def`` or
+    ``class`` or an assignment at any depth, or imported under a moved name from anywhere but
+    explain's home (resolved, not by basename). Binding the module ``diaktoros.explain`` as
+    ``explain`` and ``from <home> import X`` read the one home, so neither is a copy. A local
+    ``explain`` is not one either: the name is the module's and a common local or argument."""
+    names = top_level(path)
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign | ast.NamedExpr):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names |= {n.id for t in targets for n in ast.walk(t)
+                      if isinstance(n, ast.Name) and n.id != "explain"}
+        elif isinstance(node, ast.Import):
+            names |= {a.asname for a in node.names
+                      if a.asname and (a.name, a.asname) != (".".join(HOME), "explain")}
+        elif isinstance(node, ast.ImportFrom):
+            source = _source(path, node)
+            for a in node.names:
+                bound = a.asname or a.name
+                if source == HOME and bound == a.name:
+                    continue                            # reads the one home
+                if source + (a.name,) == HOME and bound == "explain":
+                    continue                            # binds the module itself
+                names.add(bound)
+    return names & set(MOVED)
+
+
 GATE = ROOT / "diaktoros/gate/__init__.py"
 # #1502: the alias forms the first scan missed (it saw only def/class and plain assignments).
 # gate is the package ``diaktoros.gate`` now, so ``..explain`` is ``diaktoros/explain.py``.
@@ -125,11 +166,38 @@ class OneHome(unittest.TestCase):
     def test_no_other_module_keeps_its_own_copy_of_a_moved_name(self):
         # #1503: scripts/watchdog.py kept a narrower LIVE_TURN of its own, one question answered
         # two ways. The watchdog reads run_supervisor.NOT_ENDED, as explain's live part does.
-        for path in (ROOT / "scripts/watchdog.py", *sorted((ROOT / "diaktoros").rglob("*.py"))):
-            if path.name == "explain.py" and path.parent.name == "diaktoros":
+        # Every script is read, not the watchdog alone (#2074).
+        for path in sorted([*(ROOT / "scripts").rglob("*.py"), *(ROOT / "diaktoros").rglob("*.py")]):
+            if path == ROOT / "diaktoros/explain.py":
                 continue
             with self.subTest(path.relative_to(ROOT).as_posix()):
-                self.assertEqual(sorted(top_level(path) & set(MOVED)), [])
+                self.assertEqual(sorted(copies(path)), [])
+
+    def test_the_one_copy_guard_fails_on_each_shape_of_copy(self):
+        # #2074: a copy in another script, nested in a function or bound by an aliased import
+        # left the guard green; reading explain's home or binding the module stays allowed.
+        import sys
+        import tempfile
+        from unittest import mock
+        shapes = {"scripts/other.py": "LIVE_TURN = ('started',)\n",
+                  "diaktoros/nested.py": "def f():\n    def _minutes_since():\n        pass\n",
+                  "diaktoros/local.py": "def f():\n    LIVE_TURN = ('started',)\n    return LIVE_TURN\n",
+                  "diaktoros/alias.py": "from .gate import seat_capacity as explain_facts\n",
+                  "scripts/elsewhere.py": "from unrelated.explain import LIVE_TURN\n",
+                  "diaktoros/sub/near.py": "from .explain import LIVE_TURN\n"}   # sub.explain
+        fine = ("from . import explain\nfrom .explain import LIVE_TURN\nfrom diaktoros import explain\n"
+                "import diaktoros.explain as explain\ndef f(explain):\n    explain = explain or 1\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for rel, text in {**shapes, "diaktoros/explain.py": "", "diaktoros/fine.py": fine}.items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text)
+            result = unittest.TestResult()
+            with mock.patch.object(sys.modules[__name__], "ROOT", root):
+                OneHome("test_no_other_module_keeps_its_own_copy_of_a_moved_name").run(result)
+        self.assertEqual(sorted(rel for test, _ in result.failures for rel in shapes
+                                if rel in str(test)), sorted(shapes))
+        self.assertEqual(len(result.failures + result.errors), len(shapes))
 
     def test_nothing_reaches_a_moved_name_through_gate(self):
         moved = "|".join(MOVED)
