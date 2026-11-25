@@ -514,10 +514,10 @@ Every check `selftest --no-model` can fail belongs to a stage (#1718): a ❌ in 
 watchdog's cron shim or job (`cron:*`) or the observer route records `loop` as `failed`, and a
 ❌ in a seat's model (`seat:*`, which `--no-model` still resolves) records `model` as `failed`
 rather than `skipped` (#2588), so the next `setup` runs step 4 again. Only `inputs:changed` is
-not a stage's check: it marks the stage whose inputs changed as failed instead. Each entry also
-keeps a hash of the rules that judged it (which checks count for its stage); an entry written
-under other rules, or by a diaktoros from before #2588, reads `stale`, so the first `setup` after
-an upgrade runs step 4 (and asks about arming) once again.
+not a stage's check: it marks the stage whose inputs changed as failed instead. An entry judged
+under other rules or before #2588 (each entry keeps a hash of which checks count for its stage),
+or fingerprinted over other inputs by an older diaktoros (#2122: #1689 added each role's login),
+reads `stale`: the first `setup` after an upgrade runs step 4 (and asks about arming) once again.
 What does make the record stale (#1714): a change to the loop's own settings (a `set` or an
 edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_check`, ...)
 makes `loop` stale, and a new token or App key written into the same credential file makes

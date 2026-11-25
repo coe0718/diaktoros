@@ -167,7 +167,7 @@ def _check_tokens(loop: dict, where: str) -> None:
         raise config.ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
                           "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
                           "own account, with its own entry in 'tokens' or 'apps'. `hermes dk set` "
-                          f"writes both: {credentials.reader_fix(loop, 'LOGIN')}; "
+                          f"writes both: {credentials.reader_fix(loop, stand_in='LOGIN')}; "
                           f"{config.FOUR_IDENTITY_RULE}")
 
 

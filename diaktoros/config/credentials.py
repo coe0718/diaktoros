@@ -138,29 +138,26 @@ def reader_problem(loop: dict) -> str:
     return ""
 
 
-def reader_fix(loop: dict, login: str = "") -> str:
+def reader_fix(loop: dict, login: str = "", *, stand_in: str = "") -> str:
     """The command that moves a loop's reader onto its own account, or — with ``login``, a reader
-    that has no credential yet — gives that login one.
-
-    The reader's credential is a PAT file or a GitHub App identity (#1163): both are named, so
-    every refusal and doctor line that points at this fix says the same thing.
-    """
-    reader = login or "<its own login>"
-    account = login or "<that login>"
+    that has no credential yet — gives that login one; with none, ``stand_in`` (``LOGIN``) is
+    shown in its place. A PAT file and a GitHub App identity (#1163) are both named, so every
+    refusal and doctor line that points at this fix says the same thing."""
+    reader = login or stand_in or "<its own login>"
+    account = login or stand_in or "<that login>"
     return (f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token {reader} "
-            f"--token {account}=/path/to/pat (or {reader_app_alternative(login)})")
+            f"--token {account}=/path/to/pat (or {reader_app_alternative(login, stand_in)})")
 
 
-def reader_app_alternative(login: str = "") -> str:
+def reader_app_alternative(login: str = "", stand_in: str = "") -> str:
     """The GitHub App half of a reader fix for ``login`` (#1912).
 
     ``set --app`` takes only an App's bot login (``<app-slug>[bot]``), so the same-login
-    alternative is offered only when ``login`` is one, or is a placeholder (empty or ``LOGIN``).
-    A concrete login that is not a bot (a person's account) cannot hold an App identity: moving
-    that reader to an App means naming the App's bot login as the reader too, so the alternative
-    changes ``--read-token`` as well.
-    """
-    return app_alternative(login, "reader", "--read-token", placeholder=True)
+    alternative is offered only when ``login`` is one, or is empty (shown as ``stand_in``). A
+    concrete login that is not a bot (a person's account, even one spelled ``LOGIN``, #2450)
+    cannot hold an App identity: moving that reader to an App means naming the App's bot login
+    as the reader too, so the alternative changes ``--read-token`` as well."""
+    return app_alternative(login, "reader", "--read-token", placeholder=stand_in or "<that login>")
 
 
 def adjudicator_app_alternative(login: str) -> str:
@@ -169,14 +166,14 @@ def adjudicator_app_alternative(login: str) -> str:
     return app_alternative(login, "adjudicator", "--adjudicator-login")
 
 
-def app_alternative(login: str, role: str, flag: str, *, placeholder: bool = False) -> str:
+def app_alternative(login: str, role: str, flag: str, *, placeholder: str | None = None) -> str:
     """``--app`` for ``login`` when ``set --app`` would take it (a bot login, or with
-    ``placeholder`` an empty or ``LOGIN`` stand-in), else the form that renames ``role`` (through
-    ``flag``) to the App's bot login (#1912). Only the reader's advice uses the stand-in: an
-    adjudicator's login is always a real configured one, even one spelled ``LOGIN`` (#2560
-    review F2)."""
-    if (placeholder and login in ("", "LOGIN")) or config.APP_LOGIN.match(login.lower()):
-        return f"--app {login or '<that login>'}=APP_ID:/abs/key.pem for a GitHub App {role}"
+    ``placeholder`` an empty login, shown as that word), else the form that renames ``role``
+    (through ``flag``) to the App's bot login (#1912). Only the reader's advice has a stand-in:
+    an adjudicator's login is always a real configured one. A login is never a stand-in by its
+    spelling: one named ``LOGIN`` is as concrete as any other (#2560 review F2, #2450)."""
+    if (placeholder is not None and not login) or config.APP_LOGIN.match(login.lower()):
+        return f"--app {login or placeholder}=APP_ID:/abs/key.pem for a GitHub App {role}"
     return (f"for a GitHub App {role}, name its bot login instead: {flag} <app-slug>[bot] "
             f"--app <app-slug>[bot]=APP_ID:/abs/key.pem — {login!r} is not an App's bot login")
 
