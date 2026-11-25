@@ -114,12 +114,14 @@ class Split(unittest.TestCase):
 
     def test_every_cli_module_is_listed(self):
         # A new cli module must join one of the lists above (#1457), or none of these guards
-        # ever reads it.
+        # ever reads it. A module in a subpackage is named by its path ("sub/mod"), which no
+        # list holds, so a subpackage fails here until the guards learn to read it (#2063).
         listed = set(MODULES + SHARED + PARSERS)
-        for path in sorted(PACKAGE.glob("*.py")):
-            if path.stem != "__init__":
-                with self.subTest(module=path.stem):
-                    self.assertIn(path.stem, listed, "add it to MODULES, SHARED or PARSERS")
+        for path in sorted(PACKAGE.rglob("*.py")):
+            name = path.relative_to(PACKAGE).with_suffix("").as_posix()
+            if name != "__init__":
+                with self.subTest(module=name):
+                    self.assertIn(name, listed, "add it to MODULES, SHARED or PARSERS")
 
     def test_no_command_module_imports_the_package(self):
         # A submodule may import its siblings (`from . import common`), never the package's own

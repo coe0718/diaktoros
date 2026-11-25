@@ -61,6 +61,40 @@ def webp_header(path: pathlib.Path) -> tuple[int, int, bool]:
     return width, height, has_alpha
 
 
+class ImageParser(HTMLParser):
+    """Every image path an HTML page or README loads: each ``<img src>`` and ``<source srcset>``."""
+
+    def __init__(self):
+        super().__init__()
+        self.paths = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "img" and a.get("src"):
+            self.paths.append(a["src"])
+        elif tag == "source" and a.get("srcset"):
+            self.paths += [item.split()[0] for item in a["srcset"].split(",") if item.strip()]
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+
+class EveryImageResolves(unittest.TestCase):
+    def test_each_image_in_the_readme_and_the_site_is_a_repository_file(self):
+        # #2250: only the hero <picture> was checked, so a moved README logo shipped broken.
+        # README sits at the root, and the page is published there with docs/ beside it, so a
+        # relative path on either is a path from the repository root. data: URIs load nothing.
+        for page in (ROOT / "README.md", PAGE):
+            parser = ImageParser()
+            parser.feed(page.read_text(encoding="utf-8"))
+            local = [src for src in parser.paths if not src.startswith("data:")]
+            self.assertTrue(local, f"no image found in {page.name}: the scan reads nothing")
+            for src in local:
+                with self.subTest(page=page.name, src=src):
+                    self.assertNotIn("://", src, "a remote image is not checked: ship it")
+                    self.assertTrue((ROOT / src).is_file(), f"{src} is missing")
+
+
 class SiteHeroLogoTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
