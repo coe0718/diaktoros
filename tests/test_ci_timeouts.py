@@ -41,6 +41,9 @@ class Timeouts(unittest.TestCase):
             "flow.yml": "on: push\njobs: {runaway: {runs-on: x}}\n",
             "quoted.yml": 'on: push\n"jobs":\n  runaway:\n    runs-on: x\n',
             "anchored.yml": "on: push\njobs: &all\n  runaway:\n    runs-on: x\n",
+            # F4: a quoted '#' before runs-on in flow style; a first-'#' cut hid the whole job.
+            "flow_hash.yml": ('on: push\njobs: {runaway: {name: "build #1", runs-on: x, '
+                              'steps: [{run: echo hi}]}}\n'),
         }
         bounded = "on: push\njobs: # every job below\n  fine:\n    runs-on: x\n    timeout-minutes: 5\n"
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:
@@ -55,6 +58,14 @@ class Timeouts(unittest.TestCase):
                     found = workflow_jobs.problems(folder.glob("*.yml"))
                     (folder / name).unlink()
                     self.assertTrue(any(line.startswith(f"{name}:") for line in found), found)
+
+    def test_a_comment_naming_runs_on_fails_closed(self):
+        # The cost of counting raw text (F4): a comment that mentions the key is an unreadable
+        # workflow until reworded, a false red, never a false green.
+        text = ("on: push\njobs:\n  fine:\n    runs-on: x  # runs-on: y was the old runner\n"
+                "    timeout-minutes: 5\n")
+        self.assertEqual(missing(text), [])
+        self.assertTrue(workflow_jobs.unvouched(text))
 
     def test_a_job_the_check_must_not_miss(self):
         # #1415 review F1: a header with an inline comment is a job too, never part of the one

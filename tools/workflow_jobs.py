@@ -5,7 +5,7 @@ YAML parser. It lives outside tests/ so the host's base-failure proof sees a cha
 YAML form (an indented root, flow style, a quoted or anchored ``jobs`` key), so ``unvouched``
 cross-checks it: every ``runs-on`` key in the file must belong to a job the reader found. A
 workflow with one it didn't is reported as unreadable, never passed as "no unbounded job"
-(reviews of #2700, F1 and F3). ``problems`` is the guard the tests run over every workflow.
+(reviews of #2700, F1, F3 and F4). ``problems`` is the guard the tests run over every workflow.
 """
 from __future__ import annotations
 
@@ -57,9 +57,14 @@ def missing(text: str) -> list[str]:
 
 def unvouched(text: str) -> bool:
     """Whether the file has a ``runs-on`` key outside every job the reader found: a job in a form
-    the reader can't walk, so it can't say whether that job is bounded."""
-    code = [line.split("#", 1)[0] for line in text.splitlines()]
-    declared = sum(len(RUNS_ON.findall(line)) for line in code)
+    the reader can't walk, so it can't say whether that job is bounded.
+
+    The keys are counted in the raw text, comments and quoted strings included. Telling a comment
+    from a ``#`` inside a quoted scalar needs a YAML parser, and cutting at the first ``#`` hid a
+    flow-style job behind ``name: "build #1"`` (review of #2700, F4). Counting everything can only
+    over-count: a comment or string that mentions the key fails the guard (reword it), never
+    passes an unbounded job."""
+    declared = sum(len(RUNS_ON.findall(line)) for line in text.splitlines())
     walked = sum(1 for lines in jobs(text).values() if any(JOB_RUNS_ON.match(x) for x in lines))
     return declared != walked
 
