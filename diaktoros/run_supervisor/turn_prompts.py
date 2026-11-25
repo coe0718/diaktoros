@@ -545,12 +545,23 @@ def ask_section(loop: dict, number: int, issue: dict) -> str:
     return "".join(parts)
 
 
-def issue_fix_prompt(loop: dict, row) -> str:
-    """The issue-fix turn's prompt: host facts, then the issue's title and body as bounded data."""
-    from .. import issue_facts, prompts
-    from ..config import ISSUE_FIX_BRANCH
+def issue_fix_ready(loop: dict, row) -> dict:
+    """The live issue an issue-fix turn may still act on, its prerequisites met, or raise.
+
+    Read before anything else the launch does (#2248): a closed issue ends the turn here, with
+    no base-tip read and no log line but its one cancellation line."""
     issue = issue_inputs.issue_fix_issue(loop, row['pr'])
     issue_inputs.issue_fix_dependencies(loop, row['pr'])
+    return issue
+
+
+def issue_fix_prompt(loop: dict, row, issue: dict | None = None) -> str:
+    """The issue-fix turn's prompt: host facts, then the issue's title and body as bounded data.
+    ``issue`` is ``issue_fix_ready``'s read when the caller already made it."""
+    from .. import issue_facts, prompts
+    from ..config import ISSUE_FIX_BRANCH
+    if issue is None:
+        issue = issue_fix_ready(loop, row)
     url = issue.get('html_url')
     if not (isinstance(url, str) and url.startswith('https://')):
         url = f"https://github.com/{loop['repo']}/issues/{row['pr']}"

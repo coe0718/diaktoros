@@ -10,7 +10,7 @@ import pathlib
 import re
 
 from .. import config, util
-from ..config import lists
+from ..config import lists, number_settings
 
 
 def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
@@ -39,7 +39,7 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         seat["turn_budget_s"] = config.validate_budget(raw["turn_budget_s"],
                                               "seats.adjudicator.turn_budget_s", where)
     if raw.get("concurrency") not in (None, ""):
-        seat["concurrency"] = config._as_int(raw["concurrency"], "seats.adjudicator.concurrency",
+        seat["concurrency"] = number_settings._as_int(raw["concurrency"], "seats.adjudicator.concurrency",
                                       where)
         if seat["concurrency"] < 1:
             raise config.ConfigError(f"{where}: seats.adjudicator.concurrency must be >= 1 (1 = serialized)")
