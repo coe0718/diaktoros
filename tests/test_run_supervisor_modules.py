@@ -35,7 +35,7 @@ from submodule_shadows import shadowed_submodules as _shadowed_submodules  # noq
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs", "ledger_schema", "waits", "merge_hold", "shadow_turns",
               "shadow_records", "shadow_filings", "retry_terms", "shadow_owing", "recovery",
-              "poller")
+              "poller", "turn_holds")
 # ALL_SUBMODULES is every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES:
 # the package deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the
 # one-home rules check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a
@@ -250,9 +250,15 @@ class Split(unittest.TestCase):
         self.assertIn(turns.ClaimAndLaunch, Supervisor.__mro__)
         mixin = {name for name in vars(turns.ClaimAndLaunch) if not name.startswith("__")}
         for step in ("_claim", "_claim_commit", "_run_production", "_production_turn",
-                     "_pacing_hold", "_ci_hold", "_prepare_launch", "_budget_kill_error",
-                     "_production_finish"):
+                     "_prepare_launch", "_budget_kill_error", "_production_finish"):
             self.assertIn(step, mixin)
+        # The launch holds are turn_holds.TurnHolds, which ClaimAndLaunch inherits.
+        from diaktoros.run_supervisor import turn_holds
+        self.assertIn(turn_holds.TurnHolds, turns.ClaimAndLaunch.__mro__)
+        holds = {name for name in vars(turn_holds.TurnHolds) if not name.startswith("__")}
+        for step in ("_pacing_hold", "_ci_hold", "_ci_hold_reason", "_ci_poll", "_ci_poll_defers"):
+            self.assertIn(step, holds)
+        self.assertFalse(holds & mixin, "defined on both ClaimAndLaunch and TurnHolds")
         self.assertFalse(mixin & set(vars(Supervisor)), "defined on both Supervisor and the mixin")
         self.assertFalse(mixin & set(vars(records.LedgerRecords)), "defined on both mixins")
         # The state classes live in turns; the package re-exports the same objects.
@@ -265,9 +271,10 @@ class Split(unittest.TestCase):
         # The notice, intake and worker mixins (#1349) too: each method has one home, and neither
         # Supervisor nor another mixin defines it again.
         from diaktoros.run_supervisor import Supervisor, intake, notices, records, shadow_turns
-        from diaktoros.run_supervisor import turns, workers
-        mixins = (records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.ShadowTurns,
-                  notices.OperatorNotices, intake.RunIntake, workers.WorkerLifecycle)
+        from diaktoros.run_supervisor import turn_holds, turns, workers
+        mixins = (records.LedgerRecords, turns.ClaimAndLaunch, turn_holds.TurnHolds,
+                  shadow_turns.ShadowTurns, notices.OperatorNotices, intake.RunIntake,
+                  workers.WorkerLifecycle)
         own = {cls: {n for n in vars(cls) if not n.startswith("__")} for cls in mixins}
         for cls in mixins:
             self.assertIn(cls, Supervisor.__mro__)
