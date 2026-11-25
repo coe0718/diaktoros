@@ -88,6 +88,23 @@ class IssueFacts(unittest.TestCase):
         self.assertNotIn("NOTE-001", text)
         self.assertIn(f"NOTE-{issue_facts.COMMENTS_MAX + 1:03d}", text)
 
+    def test_pr_closing_no_issue_names_the_unread_source(self):
+        # #2311 (review F1): the PR-comments note names which source failed, both when another
+        # source was read and when nothing was; the referenced-issues warning does not.
+        self.fake.pr_body = "just a change"
+        note = "The maintainers' review bodies on the PR could not be read for this turn."
+        with mock.patch.object(gh, "reviews_read", return_value=(None, "boom")):
+            partial = issue_facts.section(LOOP, 7)
+            with mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
+                nothing = issue_facts.section(LOOP, 7)
+        for label, text in (("partial", partial), ("nothing", nothing)):
+            with self.subTest(label):
+                self.assertIn("Maintainers' comments on the PR #7", text)
+                self.assertIn(note, text)
+                self.assertNotIn("STRANGER-TEXT", text)
+        self.assertIn("MAINTAINER-REQ", partial)
+        self.assertNotIn("MAINTAINER-REQ", nothing)
+
     def test_missing_requirements_section_is_refused(self):
         self.assertIn("Requirements", issue_facts.check(LOOP, 7, "REQUEST_CHANGES", "F1: a.py: x"))
 
