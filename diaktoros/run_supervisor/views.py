@@ -43,17 +43,8 @@ def dispute_at(db: str | Path, repo: str, pr: int, head: str) -> float | None:
     """When the fixer's latest dispute (#401) at this head was recorded, if its answers comment
     was posted (or may have been: ``uncertain``); None otherwise or when the ledger can't be read.
     Read-only: the watchdog's sweep (#894) decides from it, the dispute's own notice is apart."""
-    try:
-        con = read_only_connect(db)
-        if con is None:
-            return None
-        try:
-            row = con.execute("SELECT MAX(created) FROM disputes WHERE repo=? AND pr=? AND head=? "
-                              "AND comment IN ('posted','uncertain')", (repo, pr, head)).fetchone()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
+    row = _one(db, "SELECT MAX(created) FROM disputes WHERE repo=? AND pr=? AND head=? "
+               "AND comment IN ('posted','uncertain')", (repo, pr, head))
     return float(row[0]) if row and row[0] is not None else None
 
 
@@ -225,26 +216,46 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
     None when the ledger is absent, unreadable or holds no such turn. The watchdog uses it to
     tell a ruling still in flight from a breach marker nobody is working on.
     """
+    row = _one(db, NEWEST_TURN, (repo, pr, head, seat))
+    return row[0] if row else None
+
+
+def moved_on(db: str | Path, repo: str, pr: int, head: str, seat: str, since: float) -> bool:
+    """Whether ``seat``'s newest turn at this PR head (the row ``turn_state`` reports) was cancelled
+    because the head moved before it started (``run_supervisor.REVIEW_HEAD_MOVED``) at or after
+    ``since`` (the listing's read): proof a listing read before it is stale (#2626). One older than
+    the listing says nothing, since the head can return to that SHA. False with no such turn, or a
+    ledger absent or unreadable."""
+    row = _one(db, "SELECT state, turn_key, error, updated FROM runs WHERE repo=? AND pr=? AND "
+               "head=? AND seat=? ORDER BY updated DESC, created DESC LIMIT 1", (repo, pr, head, seat))
+    return (bool(row) and row[0] == "cancelled" and row[2] == run_supervisor.REVIEW_HEAD_MOVED
+            and float(row[3] or 0) >= since)
+
+
+# ``(state, turn_key, error)`` of a seat's newest row at a PR head by ``updated``.
+NEWEST_TURN = ("SELECT state, turn_key, error FROM runs WHERE repo=? AND pr=? AND head=? AND "
+               "seat=? ORDER BY updated DESC, created DESC LIMIT 1")
+
+
+def newest_turn(con, repo: str, pr: int, head: str, seat: str):
+    """``(state, turn_key, error)`` of ``seat``'s newest row at this PR head by ``updated``, or None:
+    the row ``turn_state`` reports. ``explain`` reads its key too, to name which of several turns at
+    one head it shows (a shadow-fix, CI-fix or conflict row beside the verdict turn, #1615)."""
+    return con.execute(NEWEST_TURN, (repo, pr, head, seat)).fetchone()
+
+
+def _one(db: str | Path, sql: str, args: tuple):
+    """The first row of one read-only query, or None: no row, or a ledger absent or unreadable."""
     try:
         con = read_only_connect(db)
         if con is None:
             return None
         try:
-            row = newest_turn(con, repo, pr, head, seat)
-            return row[0] if row else None
+            return con.execute(sql, args).fetchone()
         finally:
             con.close()
     except sqlite3.Error:
         return None
-
-
-def newest_turn(con, repo: str, pr: int, head: str, seat: str):
-    """``(state, turn_key)`` of ``seat``'s newest row at this PR head by ``updated``, or None: the
-    row ``turn_state`` reports. ``explain`` reads its key too, to name which of several turns at one
-    head it shows (a shadow-fix, CI-fix or conflict row beside the verdict turn, #1615)."""
-    return con.execute("SELECT state, turn_key FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                       "seat=? ORDER BY updated DESC, created DESC LIMIT 1",
-                       (repo, pr, head, seat)).fetchone()
 
 
 def moved_review(db: str | Path, repo: str, pr: int, head: str) -> str | None:
@@ -253,18 +264,8 @@ def moved_review(db: str | Path, repo: str, pr: int, head: str) -> str | None:
     a review was asked for and never ran. None otherwise, or when the ledger cannot be read. A
     turn at ``head`` itself is newer and answers instead (#2468). Newest by creation: a waiting
     turn is retired after a newer one was queued or ran, so its update time can be the latest."""
-    try:
-        con = read_only_connect(db)
-        if con is None:
-            return None
-        try:
-            row = con.execute("SELECT head, state, error FROM runs WHERE repo=? AND pr=? AND "
-                              "seat='reviewer' ORDER BY created DESC, updated DESC LIMIT 1",
-                              (repo, pr)).fetchone()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
+    row = _one(db, "SELECT head, state, error FROM runs WHERE repo=? AND pr=? AND seat='reviewer' "
+               "ORDER BY created DESC, updated DESC LIMIT 1", (repo, pr))
     if row and row[0] != head and row[1] == "cancelled" and row[2] == run_supervisor.REVIEW_HEAD_MOVED:
         return row[0]
     return None
@@ -371,18 +372,9 @@ def ruling_row(db: str | Path, repo: str, pr: int) -> dict | None:
     comment, comment_id, head, run_id}``, or None. #905 acts on it only when its head is the PR's
     current one: a later ruling on another head voids an older one, even if the branch returns."""
     keys = ("verdict", "created", "comment", "comment_id", "head", "run_id")
-    try:
-        con = read_only_connect(db)
-        if con is None:
-            return None
-        try:
-            row = con.execute(f"SELECT {', '.join(keys)} FROM rulings WHERE repo=? AND pr=? "
-                              "ORDER BY created DESC LIMIT 1", (repo, pr)).fetchone()
-            return dict(zip(keys, row)) if row else None
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
+    row = _one(db, f"SELECT {', '.join(keys)} FROM rulings WHERE repo=? AND pr=? "
+               "ORDER BY created DESC LIMIT 1", (repo, pr))
+    return dict(zip(keys, row)) if row else None
 
 
 def ruling_saw(db: str | Path, run_id: str) -> frozenset[int] | None:

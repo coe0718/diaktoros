@@ -45,7 +45,7 @@ class NullGraceTest(unittest.TestCase):
         self.now = time.time()
 
     def sweep(self, hooks=(None, "HTTP 401 Bad credentials"), probe=DEAD):
-        def open_prs(loop, errors=None):
+        def open_prs(loop, errors=None, **_k):
             return None
         with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(watchdog.gate, "hooks_read", return_value=hooks), \

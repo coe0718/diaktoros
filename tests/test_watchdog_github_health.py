@@ -54,7 +54,7 @@ class Health(unittest.TestCase):
 
     def sweep(self, hooks=(None, "HTTP 401 Bad credentials"), probe=DEAD, at=None,
               listing_error=""):
-        def open_prs(loop, errors=None):      # None either way: nothing past the listing runs
+        def open_prs(loop, errors=None, **_k):      # None either way: nothing past the listing runs
             if listing_error and errors is not None:
                 errors.append(listing_error)
         with mock.patch.object(watch_mode, "TEST", False), \

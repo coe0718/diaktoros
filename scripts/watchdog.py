@@ -275,7 +275,7 @@ class _Sweep:
         self.now = watch_mode.now()
         self.cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
         self.health: watch_health.Health | None = None
-        self.listing_errors: list[str] = []
+        self.listing_errors, self.read_at = [], {}    # read_at: when each PR's page was requested (#2626)
         self.pr_failures: list[tuple[int, str]] = []  # per-PR review reads that failed
         self.prs = None
 
@@ -344,10 +344,10 @@ def _app_flag_unknown(c: _Sweep) -> bool:
 
 
 def _read_listing(c: _Sweep) -> None:
-    # With the hooks confirmed, the open-PR listing is read here, before the health check, so
-    # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
-    # that works must not announce "reads work again" while the listing is still refused).
-    c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
+    # With the hooks confirmed, the open-PR listing is read here, before the health check, so that a listing
+    # GitHub refuses counts as a failed read this sweep (a working /user probe must not say "reads work again").
+    c.listed_at = watch_mode.now()      # #2626: for a PR with no page time, the listing's start
+    c.prs = gh.open_prs(c.loop, errors=c.listing_errors, read_at=c.read_at)
     if not watch_mode.TEST:
         # The listed heads let a gate's failed PR read that a live turn covers stay quiet (#1959).
         heads = {p["number"]: (p.get("head") or {}).get("sha") for p in c.prs or []
@@ -759,8 +759,8 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                    observed_at: float | None, head_postdates_arming: bool) -> str:
     """No verdict at this head: deliver a pending request the gate never saw (#532), or a
     review a head move cancelled before it started (#2468), and say the reviewer's stall once
-    its grace is past."""
-    loop = c.loop
+    its grace is past, unless its review was cancelled because the head moved on (#2626)."""
+    loop, db = c.loop, config.host_path("ledger")
     mins = (c.now - observed_at) / 60 if observed_at is not None else 0.0
     # #532: a request GitHub never announced (the reviewer was already requested when the
     # fixer pushed) leaves the head with a pending request, no verdict and no run. After
@@ -782,8 +782,7 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
     # than that field (or an unreadable clock), from arming, as ``ready``'s grace does (#1232).
     seen = c.current_heads[str(number)].get("first_seen_at")
     seen = seen if seen is not None else watch_mode.valid_clock(c.watch.get("armed_since"), c.now)
-    moved = (run_supervisor.views.moved_review(config.host_path("ledger"), loop["repo"],
-                                               number, head)
+    moved = (run_supervisor.views.moved_review(db, loop["repo"], number, head)
              if fresh and not (due and requested) and (
                  watch_mode.TEST or (seen is not None and (c.now - seen) / 60 >= KICK_AFTER_MIN))
              else None)
@@ -797,15 +796,16 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
         if sent:
             c.kicks[str(number)] = head
             log(f"#{number} @ {head[:7]}: " + (
-                f"the review queued at {moved[:7]} was cancelled when the head moved — "
-                "delivered it for this head" if moved else
-                "a pending review request had started no review — delivered it to the "
-                "reviewer gate"))
+                f"the review queued at {moved[:7]} was cancelled when the head moved — delivered "
+                "it for this head" if moved else "a pending review request had started no review "
+                "— delivered it to the reviewer gate"))
+    # #2626: a head-move cancel once this PR's page was asked for may leave its row stale: the next sweep says.
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
-            and not watch_health.live_turn(loop, number, head, "reviewer")):
-        return (f"reviewer never posted a verdict — head {head[:7]} observed "
-                f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
-                f"review --loop {loop['id']} --pr {number}` asks for one)")
+            and not watch_health.live_turn(loop, number, head, "reviewer")
+            and not run_supervisor.views.moved_on(db, loop["repo"], number, head, "reviewer", c.read_at.get(number, c.listed_at))):
+        return (f"reviewer never posted a verdict — head {head[:7]} observed {mins / 60:.1f}h ago, "
+                f"0 verdicts at this head (`hermes dk review --loop {loop['id']} --pr {number}` "
+                "asks for one)")
     return ""
 
 
