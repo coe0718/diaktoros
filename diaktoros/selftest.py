@@ -816,16 +816,7 @@ def check_identities(report: Report, loop: dict) -> bool:
 
 # -- step 5: broker authorization dry run ------------------------------------------------------
 
-_DENIAL_FIX = {
-    "PR identity, state or draft status changed": "the PR must be open and not a draft",
-    "PR base branch mismatch": "the PR must target the loop's base branch",
-    "PR base repository mismatch": "the PR must be in the loop's repository",
-    "fork head not permitted for credentialed writes": "use a PR whose head branch is in the repository itself, not a fork",
-    # broker._verify_identities' wording, with the names ``authorize`` passes it (#1497).
-    "token principal cannot be verified": "see the identities step",
-    "read, reviewer and fixer tokens resolve to the same principal": "see the identities step",
-    "cannot verify live PR": "check the PR number and that the read token can see it",
-}
+# Each denial's hint is in selftest_denials, split from here at this file's size limit (#2067).
 
 
 def _gib(count: int) -> str:
@@ -896,7 +887,7 @@ def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
 
 def check_authorization(report: Report, loop: dict, number: int | None) -> dict | None:
     """Step 5: ``broker.authorize`` for a reviewer write — it only reads. Returns the live PR."""
-    from . import broker, review_receipt
+    from . import broker, review_receipt, selftest_denials
     step = "authorization"
     if number is None:
         report.add(step, "broker:reviewer", SKIP, "pass --pr N to dry-run the reviewer write checks")
@@ -915,7 +906,7 @@ def check_authorization(report: Report, loop: dict, number: int | None) -> dict 
                                  role="reviewer", branch=ref, operation="review")
     except broker.BrokerDenied as exc:
         report.add(step, "broker:reviewer", FAIL, f"a reviewer write would be denied: {exc}",
-                   _DENIAL_FIX.get(str(exc), "fix the reason above; the broker checks it before every write"))
+                   selftest_denials.fix_for(str(exc)))
         return None
     report.add(step, "broker:reviewer", PASS, f"a review at {head[:12]} would post as {login} (nothing posted)")
     try:
