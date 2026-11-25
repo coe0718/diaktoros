@@ -437,10 +437,12 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
         raise BrokerDenied("invalid issue number")
     login = config.triage_login(loop)
     reader = str(loop.get("read_token") or "")
-    if not login or login.casefold() == reader.casefold():
+    if not login:
         raise BrokerDenied("no triage identity distinct from the reader")
     if gh.credential_path(loop, login) is None:
         raise BrokerDenied("triage credential mapping required")
+    # Distinct from the reader in any case: ``_verify_identities`` is the one place that decides
+    # it, for triage as for every writer (#1499).
     _verify_identities(loop, (reader, login), "the reader and triage")
     try:
         issue_inputs.triage_issue(loop, number)

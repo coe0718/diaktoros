@@ -82,7 +82,12 @@ class Identities(unittest.TestCase):
                 self.assertEqual(call(self.loop), expected[writer])
 
     def test_a_login_shared_with_another_identity_in_any_case_is_denied(self):
-        # The seat writer compared logins exactly, so FIX and fix counted as two accounts.
+        # The seat writer compared logins exactly, so FIX and fix counted as two accounts. Triage
+        # checks only the reader and itself (sharing the reviewer seat's login is its default), so
+        # its arm collides with the reader, and the denial must be ``_verify_identities``' own: a
+        # triage-only pre-check used to answer first, so that function went untested here (#1499).
+        names = {"seat": "read, reviewer and fixer", "ruling": "read, reviewer, fixer and adjudicator",
+                 "triage": "the reader and triage", "issue fix": "read, reviewer and fixer"}
         for writer, (_, identities) in self.WRITERS.items():
             other = identities[-1]
             with self.subTest(writer):
@@ -94,8 +99,10 @@ class Identities(unittest.TestCase):
                     self.principals["READ"] = {"login": "READ", "id": IDS[other]}
                     self.tokens["READ"] = "DUMMY_upper"
                 else:
-                    self.loop["triage"]["login"] = "READ"
-                self.assertIn("distinct", self.denied(writer))
+                    # triage_login lower-cases, so the reader is the one spelled in upper case.
+                    self.loop["read_token"] = "READ"
+                    self.loop["triage"]["login"] = "read"
+                self.assertEqual(self.denied(writer), f"{names[writer]} must use distinct identities")
 
     def test_an_unmapped_or_shared_credential_file_is_denied(self):
         for writer, (_, identities) in self.WRITERS.items():
