@@ -112,7 +112,8 @@ class SelftestBase(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.fx = Fixture(pathlib.Path(temp.name))
         env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_GH_STUB"}
-        env["HERMES_HOME"] = str(self.fx.home)
+        # The operator's real home stays out (#2617): node_report reads ~/.hermes/node there.
+        env["HERMES_HOME"], env["HERMES_REAL_HOME"] = str(self.fx.home), str(self.fx.root)
         patches = [
             mock.patch.object(sys, "platform", "linux"),  # This fixture emulates bubblewrap.
             mock.patch.dict(os.environ, env, clear=True),
