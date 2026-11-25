@@ -1085,10 +1085,10 @@ def _retry_clear_hold(args, loop: dict) -> bool:
     if not result["profile"]:
         print(f"retry: the {args.seat} seat has no profile in loop {loop['id']}: no account to reopen")
         return True
-    for key in result["cleared"]:
-        provider = key.split("|", 1)[0]
-        print(f"[{loop['id']}] hold cleared: {provider} as profile {result['profile']}")
-    if not result["cleared"]:
+    for key in result["cleared"] + result["reset"]:   # reset: no live hold, its counts (#2148)
+        what = "hold cleared" if key in result["cleared"] else "no live hold; its counts reset"
+        print(f"[{loop['id']}] {what}: {key.split('|', 1)[0]} as profile {result['profile']}")
+    if not result["cleared"] and not result["reset"]:
         print(f"[{loop['id']}] no hold on profile {result['profile']}: nothing to clear")
     if result["rearmed"]:
         print(f"[{loop['id']}] {result['rearmed']} held run(s) due now · {result['worker']}")

@@ -1915,7 +1915,10 @@ event wrote to the reviewer queue meanwhile is left alone) and exits 2. Run it a
 cause is fixed. A dispute re-review held the same way has the same gap and isn't covered here.
 Your reason is stored for the turn's prompt only while that turn exists: when the gate queues no
 reconsider turn (refused, held, declined or crashed), the reason is taken back, so a reconsider
-that started nothing leaves nothing behind.
+that started nothing leaves nothing behind. If the head's verdict is gone by the time the gate
+reads it (deleted after the command's own check), the gate queues a plain review instead: the
+command says `review queued for the isolated worker as a plain review`, and since no prompt reads
+the reason, it is taken back too (#2023).
 
 <!-- flags:review -->
 | flag | value | default | what it does |
@@ -2155,6 +2158,9 @@ clears every hold on the seat's profile, a provider's own 429 window too, with t
 provider-failure counts behind it. Then it makes this loop's runs held on a closed account due
 now, on every seat of that profile, and starts a worker. A turn that meets the same outage or
 429 holds the account again. With `--pr` as well, that PR's run is then re-armed as usual.
+An account whose hold had already lapsed but whose outage strikes or failure count were still
+there is named too (`no live hold; its counts reset`, #2148): those counts would have doubled
+the next outage window or held the next failure at once. `nothing to clear` means there was none.
 
 ```bash
 hermes dk retry --loop "<loop-id>" --seat fixer --clear-hold
@@ -2183,10 +2189,10 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 
 - **Not started yet** (pending, blocked, waiting, claimed): cancelled at once, unless it already
   holds any write-ahead record: a review receipt, a push intent or confirmation, a ruling, a
-  dispute, a CI-fix decline, a fixer's answers comment, a triage result, an issue fix, or a
-  reviewer-filed issue whose outcome is unknown. Then it ends `uncertain` instead and is never
-  replayed, and the output says `after it may have written`. Inspect and reconcile it; don't
-  `retry` it.
+  dispute, a CI-fix decline, a fixer's answers comment (not one refused before its POST, #2320),
+  a triage result, an issue fix, or a reviewer-filed issue whose outcome is unknown. Then it
+  ends `uncertain` instead and is never replayed, and the output says `after it may have
+  written`. Inspect and reconcile it; don't `retry` it.
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.

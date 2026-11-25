@@ -87,15 +87,19 @@ def forget(db, run_id: str) -> None:
         pass
 
 
-def at_head(db, repo: str, pr: int, head: str) -> tuple[str, str] | None:
-    """``(kind, reason)`` of the newest decline at this head, or None (none, or no table yet)."""
+def at_head(db, repo: str, pr: int, head: str) -> tuple[str, str, str] | None:
+    """``(kind, reason, answers)`` of the newest decline at this head, or None (none, or no
+    table yet). ``answers`` is the state of its answers comment's record in ``fixer_answers``
+    ('posted'; 'posting' or 'uncertain' when the POST's outcome is unknown, #2036), or ``""``."""
     try:
         with ledger.connect(db, timeout=ledger.LOCK_WAIT_S) as con:
-            row = con.execute("SELECT kind, body FROM declines WHERE repo=? AND pr=? AND head=? "
-                              "ORDER BY created DESC LIMIT 1", (repo, pr, head)).fetchone()
+            row = con.execute("SELECT d.kind, d.body, a.state FROM declines d LEFT JOIN "
+                              "fixer_answers a ON a.run_id=d.run_id WHERE d.repo=? AND d.pr=? "
+                              "AND d.head=? ORDER BY d.created DESC LIMIT 1",
+                              (repo, pr, head)).fetchone()
     except Exception:  # noqa: BLE001 - an unreadable or older ledger has no decline to show
         return None
-    return (row[0], row[1]) if row else None
+    return (row[0], row[1], row[2] or "") if row else None
 
 
 def summary(name: str, body: str) -> str:
@@ -134,11 +138,15 @@ def remember(loop: dict, number: int, head: str, name: str, body: str) -> None:
 
 def line(db, repo: str, pr: int, head: str, short: str) -> str:
     """``explain``'s blocker for a declined CI fix or conflict resolution at this head, or
-    ``""``."""
+    ``""``. A decline whose comment's POST outcome is unknown says so (#2036): the reason may
+    not be on the PR, and nothing retries it."""
     found = at_head(db, repo, pr, head)
     if not found:
         return ""
+    name, body, answers = found
     waits = ("the PR waits for a person to merge the base (a new head)"
-             if found[0] in CONFLICT_KINDS else "the review waits for green or a new head")
-    return (f"the {_what(found[0])} at head {short} was {summary(*found)}; nothing retries it, "
-            f"and {waits}")
+             if name in CONFLICT_KINDS else "the review waits for green or a new head")
+    unknown = (f"; its PR comment's POST outcome is unknown (answers {answers}), so check the "
+               "PR for the reason" if answers in ("posting", "uncertain") else "")
+    return (f"the {_what(name)} at head {short} was {summary(name, body)}{unknown}; nothing "
+            f"retries it, and {waits}")

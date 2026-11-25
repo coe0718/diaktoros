@@ -216,8 +216,7 @@ class ConflictDecline(Decline):
                                    side_effect=base.broker_ipc.broker.BrokerDenied("not the fixer"))
         unrecorded = mock.patch.object(Supervisor, "begin_answers",
                                        side_effect=RuntimeError("ledger busy"))
-        for name, patch, wrote in (("denied", denied, "fixer answers denied"),
-                                   ("unrecorded", unrecorded, None)):
+        for name, patch in (("denied", denied), ("unrecorded", unrecorded)):
             with self.subTest(outcome=name):
                 self.setUp()
                 with patch, self.serving() as server:
@@ -227,11 +226,11 @@ class ConflictDecline(Decline):
                 self.assertEqual((self.fake.posts(), self.notices, self.declines()), ([], [], []))
                 self.assertEqual(self.explained(), [])
                 self.assertEqual(self.person(), "")
-                # The run fails, never succeeds as declined. A denied answers row stays a write
-                # record (#1052, as for any fixer answers); with none (unrecorded) an operator
-                # `retry` or a redelivery may re-arm it. A later base tip queues a new turn.
+                # The run fails, never succeeds as declined. No POST was made, so a denied answers
+                # row is no write record (#2320), nor is none (unrecorded): an operator `retry` or
+                # a redelivery may re-arm it. A later base tip queues a new turn.
                 state, records = self.finish()
-                self.assertEqual((state, records), ("failed", wrote))
+                self.assertEqual((state, records), ("failed", None))
                 self.sweep("f" * 40).assert_called_once()
 
     def test_an_uncertain_decline_is_still_a_decline(self):

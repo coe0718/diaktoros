@@ -192,9 +192,9 @@ class Reconsider(Harness):
         from diaktoros import run_supervisor
         from diaktoros.state import ledger
         t.reset(prs={"7": approved()})
-        # The reconsider check, the count before the gate, after it, and the reconsider turn the
-        # reason is kept for (#1384).
-        counts = iter([0, 0, 1, 1])
+        # The reconsider check, the count before the gate, after it, the reconsider turn the
+        # outcome names (#2023) and the one the reason is kept for (#1384).
+        counts = iter([0, 0, 1, 1, 1])
         with mock.patch.object(actions, "_reviewer_runs", side_effect=lambda *a: next(counts)):
             result = self.reconsider()
         self.assertEqual(result["code"], 0, result["lines"])

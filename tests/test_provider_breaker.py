@@ -315,7 +315,7 @@ class ClearHold(tp.ProductionBase):
         pacing.hold(unnamed, time.time() + 3600, "openai-codex answered 429")
         with mock.patch.object(gate, "resume_isolated") as resume:
             result = retry_action.clear_hold(self.loop, "triage", ledger=self.ledger)
-        self.assertEqual(result, {"profile": "", "cleared": [], "rearmed": 0, "worker": ""})
+        self.assertEqual(result, dict(profile="", cleared=[], reset=[], rearmed=0, worker=""))
         self.assertIsNotNone(pacing.held(unnamed))
         resume.assert_not_called()
 

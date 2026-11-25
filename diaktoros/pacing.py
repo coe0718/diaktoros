@@ -367,24 +367,24 @@ def reset_provider_failures(key: str) -> bool:
     return True
 
 
-def clear_holds(profiles: set[str], now: float | None = None) -> list[str]:
-    """``retry --clear-hold`` (#1155): drop every hold on an account of these seat profiles,
-    a provider's own 429 window too (a turn that meets it again holds it again), with the
-    outage strikes and provider failures counted there. Returns the accounts whose hold was
-    still closed."""
+def clear_holds(profiles: set[str], now: float | None = None) -> tuple[list[str], list[str]]:
+    """``retry --clear-hold`` (#1155): drop every hold on an account of these seat profiles, a
+    provider's own 429 window too (a turn that meets it again holds it again), with the outage
+    strikes and provider failures counted there. Returns ``(held, reset)``: the accounts whose
+    hold was still closed, and the others it dropped a lapsed hold, strikes or a count of (#2148)."""
     now = time.time() if now is None else now
-    cleared = []
+    cleared, dropped = [], {}
     with _locked() as file:
         data = _load(file)
         for section in ("holds", "unavailable", "provider_failures"):
             table = data.get(section) if isinstance(data.get(section), dict) else {}
             for key in [key for key in table if key.rsplit("|", 1)[-1] in profiles]:
-                entry = table.pop(key)
+                entry = dropped[key] = table.pop(key)
                 if (section == "holds" and isinstance(entry, dict)
                         and isinstance(entry.get("until"), (int, float)) and entry["until"] > now):
                     cleared.append(key)
         _save(file, data)
-    return sorted(cleared)
+    return sorted(cleared), sorted(set(dropped) - set(cleared))
 
 
 def clear_unavailable(key: str) -> bool:

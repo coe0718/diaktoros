@@ -40,9 +40,9 @@ class LedgerRecords(ShadowIssueRecords):
                       dispute: bool = False) -> None:
         """Durably record the fixer's one answers comment before (or instead of) its POST.
 
-        Only a running fixer run whose push was confirmed may record one, once: the run ID is the
-        primary key, so a second attempt is a refusal, never a second comment.
-        """
+        Only a running fixer run whose push was confirmed may record one, once (the run ID is the
+        primary key): a second attempt is a refusal, never a second comment. A 'denied' row (no
+        POST was made) is replaced, so a re-armed run can still answer (#2320)."""
         if state not in ('posting', 'denied') or not isinstance(body, str) or not body.strip():
             raise ValueError('invalid answers record')
         with self._connect() as con:
@@ -52,18 +52,18 @@ class LedgerRecords(ShadowIssueRecords):
             # Answers follow a confirmed push — or, when the host recorded that this fixer could
             # not see the whole change (#93, #110), replace it, at the head it was given.
             # A dispute (#401) likewise answers at the head it was given, with nothing pushed.
-            answers_only = bool(row is not None and (row['partial_view'] or dispute)
-                                and head == base)
+            answers_only = bool(row is not None and (row['partial_view'] or dispute) and head == base)
             if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
                     (repo, pr, base, 'fixer') or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')
                     or (row['push_confirmed'] is None and not answers_only)):
                 raise ValueError('answers run identity unavailable')
-            if con.execute('SELECT 1 FROM fixer_answers WHERE run_id=?', (run_id,)).fetchone():
+            if con.execute("SELECT 1 FROM fixer_answers WHERE run_id=? AND state!='denied'",
+                           (run_id,)).fetchone():
                 raise ValueError('answers already recorded')
             now = time.time()
-            con.execute('INSERT INTO fixer_answers(run_id,repo,pr,base,head,body,state,error,'
-                        'created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            con.execute('INSERT OR REPLACE INTO fixer_answers(run_id,repo,pr,base,head,body,state,'
+                        'error,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)',
                         (run_id, repo, pr, base, head, body, state, error, now, now))
             con.execute('COMMIT')
 

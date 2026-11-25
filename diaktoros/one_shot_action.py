@@ -569,14 +569,11 @@ def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = Non
     db = run_supervisor.production_ledger()
     if not db.exists():
         return 0
-    con = read_only(db)
+    con, keyed = read_only(db), "" if turn_key is None else " AND turn_key=?"
     try:
-        if turn_key is not None:
-            return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                               "seat='reviewer' AND turn_key=?",
-                               (repo, number, head, turn_key)).fetchone()[0]
         return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                           "seat='reviewer'", (repo, number, head)).fetchone()[0]
+                           f"seat='reviewer'{keyed}",
+                           (repo, number, head) + ((turn_key,) if keyed else ())).fetchone()[0]
     finally:
         con.close()
 
@@ -669,16 +666,20 @@ def _review_outcome(loop, args, st, key, head, before, queued, holds, reasons, e
     committed, a reconsider the gate held instead (#1369: only the row this call's gate wrote,
     from ``holds``, is ever touched), a plain review waiting in the seat queue, or a decline.
     ``before`` is the ledger count and queue row read before the gate ran."""
+    from .run_supervisor import RECONSIDER_KEY, record_operator_action
     reconsider = getattr(args, "reconsider", None)
     committed = _reviewer_runs(loop["repo"], args.pr, head) > before[0]
     if committed and reasons and "turn held:" in reasons[-1]:
         emit(f"#{args.pr} @ {head[:7]}: review not verified — {reasons[-1]}")
         return 2
     if committed:
-        from .run_supervisor import record_operator_action
+        # A verdict gone by the gate's own read (#2023) queues a plain review, without the reason.
+        plain = reconsider is not None and not _reviewer_runs(loop["repo"], args.pr, head, RECONSIDER_KEY)
         record_operator_action(loop["repo"], args.pr, "reconsider" if reconsider is not None
-                               else "review")
-        emit(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
+                               and not plain else "review")
+        note = ("as a plain review (the head had no verdict when the gate read it: your reason is "
+                "not in its prompt) " if plain else "")
+        emit(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker {note}"
               f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
     held = [h for h in holds if h.get("seat") == "reviewer" and h.get("key") == key]
@@ -686,7 +687,6 @@ def _review_outcome(loop, args, st, key, head, before, queued, holds, reasons, e
         return review_asks.reconsider_held(emit, st, held[-1], args, head, loop)
     waiting = queued()
     if reconsider is None and waiting and waiting != before[1]:
-        from .run_supervisor import record_operator_action
         record_operator_action(loop["repo"], args.pr, "review")
         reason = waiting.get("reason") or "the reviewer seat is busy"
         emit(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
