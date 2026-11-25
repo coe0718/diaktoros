@@ -51,8 +51,10 @@ def issue(n, state="open", reason=None, labels=(), title=None, pr=False):
 class Referenced(unittest.TestCase):
     def section(self, github):
         with mock.patch.object(gh, "api", side_effect=github.api), \
-                mock.patch.object(gh, "issue_comments_read", side_effect=github.comments):
-            return issue_facts.section(LOOP, 7)
+                mock.patch.object(gh, "issue_comments_read", side_effect=github.comments), \
+                mock.patch.object(gh, "reviews_read", return_value=([], "")), \
+                mock.patch.object(gh, "review_comments_read", return_value=([], "")):
+            return issue_facts.section(LOOP, 7)     # #515: review bodies and inline comments too
 
     def test_each_named_issue_is_shown_by_its_state_and_never_its_body(self):
         github = GitHub("Follow-up to #20. Out of scope: #21.\n\nCloses #5",
