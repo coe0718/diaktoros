@@ -113,15 +113,7 @@ class RunIntake:
         written with this one (or ``shadow_owing``). ``settle``: a new row waits (#2248).
         """
         requested = budget
-        if budget is None:
-            budget = self.child_timeout
-        if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not budget > 0:
-            raise ValueError("positive turn budget required")
-        if not all(isinstance(v, str) and v and len(v) <= 256 for v in
-                   (delivery, repo, head, seat)) or not isinstance(turn_key, str) or len(turn_key) > 256 or type(pr) is not int or pr <= 0:
-            raise ValueError("invalid run identity")
-        if seat not in self.capacity:
-            raise ValueError("unconfigured seat")
+        budget = self._submit_budget(delivery, repo, pr, head, seat, turn_key, budget)
         now = time.time()
         # Serialize policy snapshot and durable enqueue with explicit toggles.
         # Re-delivery of an old row never upgrades its admission.
@@ -162,6 +154,22 @@ class RunIntake:
         # transient generation/read outage; active or completed runs stay deduped.
         self._start_worker(repo, prior, outcome, settle)
         return outcome
+
+    def _submit_budget(self, delivery: str, repo: str, pr: int, head: str, seat: str,
+                       turn_key: str, budget: float | None) -> float:
+        """``submit``'s argument checks, before any lock or row: the turn budget it runs on
+        (``None`` is this supervisor's ``child_timeout``) must be positive, the run identity
+        well formed and the seat configured; each failure raises ``ValueError``."""
+        if budget is None:
+            budget = self.child_timeout
+        if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not budget > 0:
+            raise ValueError("positive turn budget required")
+        if not all(isinstance(v, str) and v and len(v) <= 256 for v in
+                   (delivery, repo, head, seat)) or not isinstance(turn_key, str) or len(turn_key) > 256 or type(pr) is not int or pr <= 0:
+            raise ValueError("invalid run identity")
+        if seat not in self.capacity:
+            raise ValueError("unconfigured seat")
+        return budget
 
     def _redeliver(self, con, prior, outcome: str, admitted: bool, budget, settle: float,
                    shadow, now: float) -> str:
