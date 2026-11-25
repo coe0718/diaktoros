@@ -243,6 +243,10 @@ MIGRATIONS = (
     # at the adjudicator turn's launch: an ACCEPT dismisses an earlier head's change request only
     # when its ruling saw it. NULL: not recorded (other seats, or a ruling from before).
     ("saw_reviews", "ALTER TABLE runs ADD COLUMN saw_reviews TEXT", ()),
+    # The head an issue-fix run was queued at (#1379), kept when its worker moves ``head`` to the
+    # base's tip before staging: the run's enqueue identity, which ``submit`` compares a
+    # redelivery with. NULL: ``head`` was never moved, and is that identity.
+    ("queued_head", "ALTER TABLE runs ADD COLUMN queued_head TEXT", ()),
 )
 
 
