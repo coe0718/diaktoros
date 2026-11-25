@@ -39,7 +39,8 @@ class CoreNameGuard(unittest.TestCase):
     def test_each_way_of_binding_a_core_name_again_fails_the_guard(self):
         shapes = {"FAIL, WARN = 'fail', 'warn'\n": "FAIL", "[PASS, *rest] = ['pass']\n": "PASS",
                   "SKIP: str = 'skip'\n": "SKIP", "from .selftest import PASS\n": "PASS",
-                  "from .selftest import Report as Report\n": "Report", "def Report():\n    pass\n": "Report"}
+                  "from .selftest import Report as Report\n": "Report", "def Report():\n    pass\n": "Report",
+                  "from .selftest import PASS as MY_PASS\n": "PASS", "from .selftest import Report as R\n": "Report"}
         for source, name in shapes.items():
             with self.subTest(source):
                 failures = self.guard(source)
@@ -47,7 +48,7 @@ class CoreNameGuard(unittest.TestCase):
                 self.assertIn(f"'{name}'", failures[0])
 
     def test_imports_and_names_that_do_not_clash_pass(self):
-        fine = ("import json\nfrom pathlib import Path\nfrom . import selftest\n"
+        fine = ("import json\nfrom pathlib import Path\nfrom . import selftest\nfrom .other import PASS as OK\n"
                 "PASSED = 1\ndef check_seats():\n    pass\n")
         self.assertEqual(self.guard(fine), [])
 
