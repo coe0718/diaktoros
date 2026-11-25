@@ -37,11 +37,14 @@ WAIT_S = 600                    # how long one App's browser round trip may take
 SESSION = "apps-wizard.json"
 
 # Each identity's repository permissions and events, as the live trial proved them (#1163,
-# docs/accounts.md). Metadata read is always granted. Only the reader's webhook is active: it is
-# the App whose webhook delivers the loop's events (ingress app-webhook), and it is the hook admin.
+# docs/accounts.md). Metadata read is always granted. Only the reader's webhook can be active: it
+# is the App whose webhook delivers the loop's events (ingress app-webhook, reader_hook_active),
+# and it is the hook admin. It gets Issues: write because it files the issues a shadow review or
+# a ruling found (shadow.file_issues, adjudicator_file_issues; #1623): the broker still decides
+# every write, and a loop can turn either on after its Apps exist.
 PERMISSIONS = {
     "reader": {"contents": "read", "pull_requests": "read", "checks": "read", "statuses": "read",
-               "issues": "read", "repository_hooks": "write", "administration": "write"},
+               "issues": "write", "repository_hooks": "write", "administration": "write"},
     "reviewer": {"contents": "read", "pull_requests": "write", "issues": "write",
                  "checks": "write"},
     "fixer": {"contents": "write", "pull_requests": "write", "issues": "write"},
@@ -67,8 +70,19 @@ def app_name(prefix: str, role: str) -> str:
     return name
 
 
-def manifest(prefix: str, role: str, host: str, redirect: str, homepage: str) -> dict:
-    """The manifest for one role's App."""
+def reader_hook_active(loop: dict | None) -> bool:
+    """Whether the reader App's webhook is made active (#1623): only when it delivers the loop's
+    events, so for a new loop (no ``--loop``: ``create-apps`` sets it up for App ingress) or a
+    loop on ``ingress: app-webhook``. A loop on repo hooks has no App route, so an active
+    webhook there would post every event to a dead URL."""
+    from . import config
+    return loop is None or config.app_ingress(loop)
+
+
+def manifest(prefix: str, role: str, host: str, redirect: str, homepage: str,
+             hook_active: bool = True) -> dict:
+    """The manifest for one role's App; ``hook_active`` is ``reader_hook_active``'s answer and
+    only the reader's webhook follows it (every other App's stays inactive)."""
     name = app_name(prefix, role)
     body = {"name": name, "url": homepage, "redirect_url": redirect, "public": False,
             "default_permissions": {"metadata": "read", **PERMISSIONS[role]},
@@ -78,7 +92,8 @@ def manifest(prefix: str, role: str, host: str, redirect: str, homepage: str) ->
         # is config's one spelling, #2296). Its secret is GitHub's here; `hermes dk app-webhook
         # --set` replaces it with the route's.
         route = APP_ROUTE_PREFIX + slug_of(name)
-        body["hook_attributes"] = {"url": f"{host.rstrip('/')}/webhooks/{route}", "active": True}
+        body["hook_attributes"] = {"url": f"{host.rstrip('/')}/webhooks/{route}",
+                                   "active": bool(hook_active)}
     else:
         body["hook_attributes"] = {"url": f"{host.rstrip('/')}/webhooks/none", "active": False}
     return body
@@ -243,8 +258,9 @@ def code_from(text: str, state: str) -> str:
 
 def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Path,
            browser: bool = True, emit=print, ask=input, open_url=None, post=None,
-           wait_s: float = WAIT_S) -> dict:
-    """Make each role's App (skipping ones the session already has); role -> made App record."""
+           wait_s: float = WAIT_S, hook_active: bool = True) -> dict:
+    """Make each role's App (skipping ones the session already has); role -> made App record.
+    ``hook_active`` is whether the reader's webhook is made active (``reader_hook_active``)."""
     for role in roles:                     # every name checked before any browser opens
         if role not in ROLES:
             raise WizardError(f"unknown role {role!r}: choose from {', '.join(ROLES)}")
@@ -271,7 +287,8 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
         action = new_app_url(owner, org, state)
         if browser:
             round_ = _Round(action, lambda redirect, r=role: manifest(prefix, r, host, redirect,
-                                                                     homepage), state)
+                                                                     homepage, hook_active),
+                            state)
             start = f"http://127.0.0.1:{round_.port}/"
             emit(f"  {role}: opening {start} — click 'Create GitHub App' on GitHub")
             if open_url is None:
@@ -286,7 +303,8 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
             # GitHub takes a manifest only as a form POST, so the one-click page goes to a file
             # any browser can open; GitHub then sends it to the homepage with ?code=&state=.
             page = write_page(key_dir, app_name(prefix, role),
-                              form_page(action, manifest(prefix, role, host, homepage, homepage)))
+                              form_page(action, manifest(prefix, role, host, homepage, homepage,
+                                                         hook_active)))
             emit(f"  {role}: open {page} in a browser (copy it to that machine if needed), click "
                  f"'Create GitHub App', then paste the address GitHub sends you to")
             code = code_from(ask(f"  {role} redirect URL or code: "), state)
@@ -309,8 +327,11 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
     return made
 
 
-def next_steps(made: dict, owner: str, org: bool, loop_id: str | None) -> list[str]:
-    """What the operator runs next: install each App, then map the identities."""
+def next_steps(made: dict, owner: str, org: bool, loop_id: str | None,
+               hook_active: bool = True) -> list[str]:
+    """What the operator runs next: install each App, then map the identities. With the reader's
+    webhook made inactive (a repo-hooks loop, ``reader_hook_active``), the switch to App ingress
+    is not offered as a step: it first needs that webhook made active in the App's settings."""
     steps = ["install each App on the repository (only that one): " +
              " · ".join(f"{GITHUB}/apps/{rec['slug']}/installations/new" for rec in made.values())]
     if loop_id:
@@ -318,7 +339,11 @@ def next_steps(made: dict, owner: str, org: bool, loop_id: str | None) -> list[s
             seat = "read" if role == "reader" else role
             steps.append(f"hermes dk identity --loop {loop_id} --seat {seat} --app "
                          f"\"{rec['login']}={rec['id']}:{rec['key_file']}\"")
-        if "reader" in made:
+        if "reader" in made and not hook_active:
+            steps.append(f"the reader's webhook is inactive (this loop's events come through repo "
+                         f"hooks); to move to App ingress later, first set it Active in "
+                         f"{GITHUB}/settings/apps/{made['reader']['slug']}")
+        elif "reader" in made:
             steps += [f"hermes dk set --loop {loop_id} --ingress app-webhook --ingress-app "
                       f"\"{made['reader']['login']}\"",
                       f"hermes dk app-webhook --loop {loop_id} --set"]

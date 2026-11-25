@@ -315,16 +315,19 @@ def cmd_create_apps(args) -> int:
         ["reader", "reviewer", "fixer"] + (["adjudicator"] if loop and
                                            (loop.get("adjudicator") or {}).get("route") else [])
     key_dir = pathlib.Path(args.key_dir).expanduser() if args.key_dir else config.home() / "apps"
+    hook_active = app_manifest.reader_hook_active(loop)
     try:
         print(f"Creating {len(roles)} GitHub App(s) for {'org ' if args.org else ''}{args.owner}: "
               f"{', '.join(app_manifest.app_name(prefix, r) for r in roles)}")
         made = app_manifest.create(owner=args.owner, org=args.org, prefix=prefix, roles=roles,
-                                   host=host, key_dir=key_dir, browser=not args.no_browser)
+                                   host=host, key_dir=key_dir, browser=not args.no_browser,
+                                   hook_active=hook_active)
     except app_manifest.WizardError as exc:
         print(f"stopped: {exc}")
         return 1
     print("next:")
-    for step in app_manifest.next_steps(made, args.owner, args.org, loop["id"] if loop else None):
+    for step in app_manifest.next_steps(made, args.owner, args.org, loop["id"] if loop else None,
+                                        hook_active):
         print(f"  {step}")
     return 0
 

@@ -190,12 +190,15 @@ check (`merge_check`, on by default for an App reviewer).
 Each App's **repository permissions** (Metadata: Read is always added), as proven end to end on a
 live loop (#1163). Install each App on the loop's repository only. Only one App's webhook is
 active: none when repo hooks deliver the loop's events, the reader's when its webhook does
-(`ingress: app-webhook`; `create-apps` makes the reader that way, active with its events). Every
+(`ingress: app-webhook`). `create-apps` makes the reader's webhook active, with its events, for a
+new loop (no `--loop`) or a `--loop` on `ingress: app-webhook`; for a `--loop` on repo hooks it
+makes it inactive (that loop has no App route), so set it Active in the App's settings before
+moving that loop to `--ingress app-webhook`. Every
 other App's webhook stays inactive with no events:
 
 | App | Permissions | Why |
 | --- | --- | --- |
-| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read** (Issues: **Read and write** when `shadow.file_issues` or `adjudicator_file_issues` is on; `create-apps` grants Read only, so add it); **Webhooks** and **Administration**: **Read**, or **Read and write** as the hook admin (`create-apps` grants that) | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
+| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read** (Issues: **Read and write** when `shadow.file_issues` or `adjudicator_file_issues` is on, since it files those issues; `create-apps` always grants Read and write, and the broker still decides every write); **Webhooks** and **Administration**: **Read**, or **Read and write** as the hook admin (`create-apps` grants that) | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
 | Reviewer | Contents: Read; Pull requests, Issues: **Read and write**; **Checks: Read and write** | Reviews; issues it files and triage labels; the `diaktoros/review` check |
 | Fixer | Contents, Pull requests, Issues: **Read and write** | Pushes and PRs; comments on the issues it fixes. Never Workflows: a merge that carries workflow changes comes back to you |
 | Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment; with `adjudicator_approves` on, also the approval on an ACCEPT and the dismissal of the review it overruled |
