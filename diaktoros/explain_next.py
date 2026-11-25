@@ -177,8 +177,8 @@ def _next_person(c) -> tuple[str, str] | None:
 def _next_review_only(c) -> tuple[str, str] | None:
     """Next event for a review-only PR (#191) that is not waiting on a ruling: its verdict cap, or
     the author's answer to a verdict. Read after ``_next_ruling``: a head parked for adjudication
-    (by the cap, or by a person's ``escalate`` below it, #1156), pending delivery, or ruled waits
-    on that, as ``blockers`` says, and the author's push is not the next event."""
+    (only by a person's ``escalate``, #1156: the cap never parks a review-only head), pending
+    delivery, or ruled waits on that, as ``blockers`` says, and the author's push is not next."""
     if (c.review_only and c.spent is not None
             and gate.review_cap_hit(c.loop, c.st, c.number, c.head, c.spent, c.author)):
         kind = "operator"
