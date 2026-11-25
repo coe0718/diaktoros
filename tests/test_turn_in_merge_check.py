@@ -162,11 +162,12 @@ class Ready(Ledger, tmc.KindsBase):
 
     def test_the_re_arm_is_named_whatever_the_prs_history(self):
         # Review of #2613, F10: the run listing holds 100 actionable runs; the current failed
-        # claim read, newer than 100 failed turns at other heads, still gets its re-arm.
+        # claim read, newer than 100 turns at other heads, still gets its re-arm. The listing is
+        # filled with waiting turns: a newer run at another head supersedes a failed one there
+        # (``views.superseded_where``), so 100 failed fixer turns would list as one.
         now = time.time()
         for n in range(100):
-            self.add("fixer", "failed", "turn exited with status 3", head=f"{n:040x}",
-                     created=now - 1000 + n)
+            self.add("fixer", "waiting", "HTTP 502", head=f"{n:040x}", created=now - 1000 + n)
         self.add("reviewer", "failed", f"retry limit (4 attempts): {run_supervisor.CLAIM_READ_FAILED}"
                  ": PR unreadable (GitHub read failed)", created=now)
         listed = views.read_only_view(self.db, "acme/widgets", 7)
