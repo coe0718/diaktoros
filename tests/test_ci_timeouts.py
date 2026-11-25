@@ -11,6 +11,10 @@ WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
 # colon, and at most a comment after it.
 HEADER = re.compile(r"""^  (?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*:\s*(?:#.*)?$""")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*\d+\s*(?:#.*)?$")
+# The top-level ``jobs`` key, bare or with a comment after it (review of #2700, F1). Any other
+# form (flow style, an anchor) is a ``jobs`` key the reader cannot walk: see ``unread``.
+JOBS = re.compile(r"^jobs:\s*(?:#.*)?$")
+JOBS_KEY = re.compile(r"^[\"']?jobs[\"']?\s*:")
 
 
 def jobs(text: str) -> dict[str, list[str]]:
@@ -22,7 +26,7 @@ def jobs(text: str) -> dict[str, list[str]]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue                       # blank or comment-only: never structure (#1415 F2)
         if not line.startswith(" "):
-            inside, current = line.rstrip() == "jobs:", None    # a top-level key ends the jobs
+            inside, current = bool(JOBS.match(line.rstrip())), None    # a top-level key ends the jobs
             continue
         at_job_level = inside and line.startswith("  ") and not line.startswith("   ")
         match = HEADER.match(line) if at_job_level else None
@@ -37,6 +41,13 @@ def jobs(text: str) -> dict[str, list[str]]:
         elif current is not None:
             found[current].append(line)
     return found
+
+
+def unread(text: str) -> bool:
+    """A ``jobs`` key the reader found no job under: a form it cannot walk, so it can vouch for
+    nothing in it. The guard fails closed on it rather than reading it as "no unbounded job"."""
+    has_key = any(JOBS_KEY.match(line) for line in text.splitlines())
+    return has_key and not jobs(text)
 
 
 def missing(text: str) -> list[str]:
@@ -57,6 +68,21 @@ class Timeouts(unittest.TestCase):
         unbounded = [f"{path.name}: {name}" for path in workflows
                      for name in missing(path.read_text())]
         self.assertEqual(unbounded, [], "jobs without timeout-minutes")
+        unreadable = [path.name for path in workflows if unread(path.read_text())]
+        self.assertEqual(unreadable, [], "a jobs mapping this guard cannot read")
+
+    def test_a_jobs_heading_with_a_comment_or_an_unreadable_form_is_never_passed(self):
+        # Review of #2700, F1: `jobs: # ...` is valid YAML and hid every job, so an unbounded one
+        # passed. It is read now; a form the reader still cannot walk fails closed instead.
+        commented = "on: push\njobs: # every job below\n  runaway:\n    runs-on: x\n"
+        self.assertEqual(missing(commented), ["runaway"])
+        self.assertFalse(unread(commented))
+        for form in ('on: push\njobs: {runaway: {runs-on: x}}\n',
+                     'on: push\n"jobs":\n  runaway:\n    runs-on: x\n',
+                     'on: push\njobs: &all\n  runaway:\n    runs-on: x\n'):
+            with self.subTest(form=form):
+                self.assertEqual(missing(form), [])
+                self.assertTrue(unread(form), "an unwalked jobs key must fail the guard")
 
     def test_a_job_the_check_must_not_miss(self):
         # #1415 review F1: a header with an inline comment is a job too, never part of the one
