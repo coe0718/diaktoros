@@ -990,8 +990,9 @@ class ClaimAndLaunch:
             # An issue handed to the fixer (#214): the base commit it starts from is the
             # row's head, moved to the base's current tip first (#1379); its one write creates
             # a fresh branch from it.
+            issue = turn_prompts.issue_fix_ready(loop, row)
             row = self._issue_fix_base(turn)
-            return _Launch(turn_prompts.issue_fix_prompt(loop, row),
+            return _Launch(turn_prompts.issue_fix_prompt(loop, row, issue),
                            broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "issue_fixer",
                                                config.ISSUE_FIX_BRANCH.format(number=row["pr"]),
                                                row['id'], str(self.db)))
