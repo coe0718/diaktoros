@@ -18,6 +18,9 @@ DENIAL_FIX = {
     "PR base repository mismatch": "the PR must be in the loop's repository",
     "fork head not permitted for credentialed writes": "use a PR whose head branch is in the repository itself, not a fork",
     "cannot verify live PR": "check the PR number and that the read token can see it",
+    # GitHub's answer for the PR is passed on as read: a malformed one reaches the format check.
+    "invalid PR number or head SHA": ("GitHub's answer for the PR had no 40-hex head SHA; run "
+                                      "the selftest again, and check the read token if it repeats"),
     # The broker re-reads the PR: these are its head as that read found it.
     "stale PR head": "the PR's head moved after the selftest read it; run the selftest again",
     "wrong destination branch": ("the PR's head branch changed after the selftest read it, or its name is "
