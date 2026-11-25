@@ -17,7 +17,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_issue_fix as base  # noqa: E402
-from diaktoros import config, gh, seat_model, trusted_turn, watch_conflicts  # noqa: E402
+from diaktoros import config, gh, run_supervisor, seat_model, trusted_turn  # noqa: E402
+from diaktoros import watch_conflicts  # noqa: E402
 from diaktoros.state import ledger  # noqa: E402
 
 TIP = "d" * 40
@@ -82,6 +83,40 @@ class StagesAtCurrentBase(base.Base):
         self.assertEqual(row["state"], "cancelled", dict(row))
         self.assertIn("superseded", row["error"])
         self.assertEqual(row["head"], base.BASE)
+
+    def holder_ended(self, state, error):
+        """Launch with a second row of the issue at the tip, ended ``state`` before launch."""
+        spawned = []
+
+        def other_at_tip(sup):
+            sup.enqueue(f"{base.REPO}:12:{TIP}:issue_fixer:issue-fix", base.REPO, 12, TIP,
+                        "issue_fixer", turn_key="issue-fix")
+            with ledger.connect(self.db) as con:
+                con.execute("UPDATE runs SET state=?, error=?, retries=4 WHERE head=?",
+                            (state, error, TIP))
+            sup._spawn = lambda *a, **k: spawned.append(a)
+        sup, launched, row = self.launch(TIP, before=other_at_tip)
+        with sup._connect() as con:
+            holder = con.execute("SELECT * FROM runs WHERE head=?", (TIP,)).fetchone()
+        return launched, row, holder, spawned
+
+    def test_a_failed_holder_at_the_tip_is_rearmed_not_dropped(self):
+        # F3: the only run at the tip failed before launch; the queued work must still run.
+        launched, row, holder, spawned = self.holder_ended("failed", "isolated turn failed: x")
+        self.assertEqual(launched, [])
+        self.assertEqual(row["state"], "cancelled", dict(row))
+        self.assertIn("re-armed in this one's place", row["error"])
+        self.assertEqual(holder["state"], "pending", dict(holder))
+        self.assertEqual(len(spawned), 1)              # a worker is started for it
+
+    def test_an_operator_cancelled_holder_is_not_rearmed_and_says_how(self):
+        # F3: the redelivery rule refuses an operator's cancel; the error names the retry.
+        launched, row, holder, spawned = self.holder_ended(
+            "cancelled", f"{run_supervisor.OPERATOR_CANCEL} by jeremy")
+        self.assertEqual(launched, [])
+        self.assertEqual(holder["state"], "cancelled")
+        self.assertIn(f"hermes dk retry {holder['id']}", row["error"])
+        self.assertEqual(spawned, [])
 
     def test_a_redelivery_of_the_queued_handoff_is_the_same_run(self):
         # F2: the original delivery, at the queued head, after the head moved to the tip.

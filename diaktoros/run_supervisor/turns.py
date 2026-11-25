@@ -857,16 +857,12 @@ class ClaimAndLaunch(TurnHolds):
             return row
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            holder = con.execute("SELECT id,state FROM runs WHERE repo=? AND pr=? AND head=? AND "
+            holder = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
                                  "seat=? AND turn_key=? AND id!=?",
                                  (row['repo'], row['pr'], tip, row['seat'], row['turn_key'],
                                   row['id'])).fetchone()
             if holder is not None:
-                con.execute("COMMIT")
-                raise run_supervisor.IssueIneligible(
-                    f"superseded: run {holder['id'][:12]} of this issue ({holder['state']}) is "
-                    f"at {turn.loop['base']}'s tip {tip[:7]}; this one, queued at "
-                    f"{row['head'][:7]}, never stages there — no turn launched")
+                self._issue_fix_superseded(con, turn, holder, tip)
             moved = con.execute("UPDATE runs SET queued_head=COALESCE(queued_head, head), "
                                 "head=?, updated=? WHERE id=? AND owner=? AND state='running' "
                                 "AND head=?",
@@ -878,6 +874,42 @@ class ClaimAndLaunch(TurnHolds):
         with self._connect() as con:
             turn.row = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
         return turn.row
+
+    def _issue_fix_superseded(self, con, turn: _Turn, holder, tip: str):
+        """End ``_issue_fix_base``'s transaction for a run whose tip another run of the same
+        issue and turn key already holds, and raise ``IssueIneligible``: this run is cancelled
+        before launch. The queued work is never dropped with it (#2722 review F3):
+
+        - a holder that will still run (pending, waiting, claimed, running) or already ran is
+          the issue's run at this base;
+        - a ``REARMABLE`` holder (failed, cancelled) is re-armed here, in this transaction, by
+          the rule a redelivered event for it meets (``intake.redelivery_refusal``: never one
+          that may have written, an operator's cancel, a fix not admitted, or one at
+          ``MAX_REARMS``), and a worker is started for it;
+        - a holder that rule refuses is left as it is, and this run's error names why and that
+          ``hermes dk retry`` re-arms it."""
+        from . import intake
+        row, base = turn.row, turn.loop['base']
+        state, note, rearmed = holder['state'], '', False
+        if state in run_supervisor.REARMABLE:
+            refused = intake.redelivery_refusal(con, holder,
+                                                admitted=bool(holder['push_admitted']),
+                                                production=bool(self.production_config),
+                                                seat=holder['seat'])
+            if refused is None:
+                self._rearm(con, holder['id'], reset=False)
+                rearmed = True
+                note = f"; it was {state} and is re-armed in this one's place"
+            else:
+                note = (f"; it is {state} and not re-armed ({refused}): "
+                        f"`hermes dk retry {holder['id']}` re-arms it")
+        con.execute("COMMIT")
+        if rearmed:
+            self._spawn()
+        raise run_supervisor.IssueIneligible(
+            f"superseded: run {holder['id'][:12]} of this issue ({state}) is at {base}'s tip "
+            f"{tip[:7]}{note}; this one, queued at {row['head'][:7]}, never stages there — "
+            "no turn launched")
 
     def _prepare_pr_launch(self, turn: _Turn) -> _Launch | None:
         from .. import ci_fix, gh
