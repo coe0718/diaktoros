@@ -79,7 +79,8 @@ def srcset_urls(srcset: str) -> list[str]:
 
 
 class ImageParser(HTMLParser):
-    """Every image path an HTML page or README loads: each ``<img src>`` and ``<source srcset>``."""
+    """Every image path an HTML page or README loads: each ``<img src>`` and each ``srcset``
+    candidate on an ``<img>`` or a ``<source>``."""
 
     def __init__(self):
         super().__init__()
@@ -89,7 +90,7 @@ class ImageParser(HTMLParser):
         a = dict(attrs)
         if tag == "img" and a.get("src"):
             self.paths.append(a["src"])
-        elif tag == "source" and a.get("srcset"):
+        if tag in ("img", "source") and a.get("srcset"):     # a browser may pick either
             self.paths += srcset_urls(a["srcset"])
 
     def handle_startendtag(self, tag, attrs):
@@ -122,6 +123,26 @@ class EveryImageResolves(unittest.TestCase):
         for page in (ROOT / "README.md", PAGE):
             with self.subTest(page.name):
                 self.assertEqual(broken_images(page.read_text(encoding="utf-8"), ROOT), [])
+
+    def test_the_guard_fails_on_a_broken_readme_image_and_passes_a_good_one(self):
+        # #2250: drive the page guard itself on a copy of the repository's two pages.
+        import sys
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "good.png").write_bytes(b"x")
+            (root / "index.html").write_text('<img src="good.png">')
+            for readme, broken in (('<img src="good.png">', 0), ('<img src="moved.png">', 1),
+                                   ('<img src="good.png" srcset="good.png 1x, missing.png 2x">', 1)):
+                with self.subTest(readme):
+                    (root / "README.md").write_text(readme)
+                    result = unittest.TestResult()
+                    module = sys.modules[__name__]
+                    with mock.patch.object(module, "ROOT", root), \
+                            mock.patch.object(module, "PAGE", root / "index.html"):
+                        EveryImageResolves("test_each_image_in_the_readme_and_the_site_is_a_repository_file").run(result)
+                    self.assertEqual(len(result.failures + result.errors), broken)
 
     def test_the_scan_reports_each_unservable_image_and_passes_a_good_one(self):
         import tempfile

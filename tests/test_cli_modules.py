@@ -123,6 +123,29 @@ class Split(unittest.TestCase):
                 with self.subTest(module=name):
                     self.assertIn(name, listed, "add it to MODULES, SHARED or PARSERS")
 
+    def test_the_listing_guard_fails_on_a_subpackage_module_and_passes_without_one(self):
+        # #2063: drive the guard itself on a package copy; its old top-level glob passed this.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            package = pathlib.Path(tmp)
+            for name in ("__init__", *MODULES, *SHARED, *PARSERS):
+                (package / f"{name}.py").write_text("")
+            self.assertEqual(self.listing_failures(package), [])
+            (package / "sub").mkdir()
+            for name in ("__init__", "rogue"):
+                (package / "sub" / f"{name}.py").write_text("")
+            failures = self.listing_failures(package)
+        self.assertEqual(len(failures), 2)
+        self.assertTrue(any("sub/rogue" in f for f in failures), failures)
+
+    @staticmethod
+    def listing_failures(package: pathlib.Path) -> list[str]:
+        from unittest import mock
+        result = unittest.TestResult()
+        with mock.patch.object(sys.modules[__name__], "PACKAGE", package):
+            Split("test_every_cli_module_is_listed").run(result)
+        return [str(test) for test, _ in result.failures + result.errors]
+
     def test_no_command_module_imports_the_package(self):
         # A submodule may import its siblings (`from . import common`), never the package's own
         # names (`from . import cmd_status`, `from .. import cli`): that is the cycle back to
