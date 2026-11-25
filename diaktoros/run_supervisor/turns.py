@@ -988,12 +988,49 @@ class ClaimAndLaunch:
                                                row['id'], str(self.db)))
         if row['seat'] == 'issue_fixer':
             # An issue handed to the fixer (#214): the base commit it starts from is the
-            # row's head; its one write creates a fresh branch from it.
+            # row's head, moved to the base's current tip first (#1379); its one write creates
+            # a fresh branch from it.
+            row = self._issue_fix_base(turn)
             return _Launch(turn_prompts.issue_fix_prompt(loop, row),
                            broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "issue_fixer",
                                                config.ISSUE_FIX_BRANCH.format(number=row["pr"]),
                                                row['id'], str(self.db)))
         return self._prepare_pr_launch(turn)
+
+    def _issue_fix_base(self, turn: _Turn):
+        """Move an issue-fix run to the base branch's current tip before it stages (#1379).
+
+        The row's ``head`` is the base commit read when the fix was queued; the turn may run
+        days later, with the base far ahead. So the tip is read now (``watch_conflicts.base_tip``)
+        and, when it differs, written to the row as the head this run uses: the staged tree, the
+        prompt, the broker scope, the broker's ``issue_fixes`` record and the PR's base commit
+        all follow from it, and the staging check (#214, ``trusted_fetch._base_head``) applies to
+        it. The recorded head is kept when the tip is unreadable, or when another row of the same
+        issue and turn key already holds the tip (the ledger's unique turn index). Returns the
+        row as the ledger now has it (``turn.row`` too)."""
+        from .. import watch_conflicts
+        row = turn.row
+        tip = watch_conflicts.base_tip(turn.loop)
+        if tip is None or tip == row['head']:
+            if tip is None:
+                util.log(f"issue #{row['pr']}: base tip unreadable, fix stages at its recorded "
+                         f"base {row['head'][:7]}")
+            return row
+        try:
+            with self._connect() as con:
+                moved = con.execute("UPDATE runs SET head=?, updated=? WHERE id=? AND owner=? "
+                                    "AND state='running' AND head=?",
+                                    (tip, time.time(), row['id'], turn.owner, row['head'])).rowcount
+        except sqlite3.IntegrityError:
+            util.log(f"issue #{row['pr']}: another run already holds base {tip[:7]}; fix stages "
+                     f"at its recorded base {row['head'][:7]}")
+            return row
+        if moved != 1:
+            raise ValueError("run ownership lost before the base was refreshed")
+        util.log(f"issue #{row['pr']}: fix stages at base {tip[:7]} (queued at {row['head'][:7]})")
+        with self._connect() as con:
+            turn.row = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
+        return turn.row
 
     def _prepare_pr_launch(self, turn: _Turn) -> _Launch | None:
         from .. import ci_fix, gh
