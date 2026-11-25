@@ -478,74 +478,46 @@ def restore_entries(entries: dict[str, dict | None]) -> None:
 
 
 def profile_verdict(configured: str, recorded: dict, live: dict) -> str:
-    """What the heal may do with a route's profile, from three sources (#1446): the loop
+    """What the heal does with a route's profile, from three sources (#1446): the loop
     config's profile (``configured``: what the operator asked for), the intent record's
     (``recorded``: what the plugin last installed) and the live entry's (``live``: what runs).
 
-    * ``""`` — the record and the live route serve one profile, which the config names too (or
-      the config names none): nothing to decide.
-    * ``"apply"`` — the record and the live route agree, the config names another profile: the
-      operator changed the config without ``apply``. Reported; the heal moves nothing.
+    * ``""`` — the record and the live route serve one profile: nothing to restore (a config
+      that names another one is ``apply``'s to rebind, and doctor reports it).
     * ``"refresh"`` — the live route already serves the config's profile and the record's is
       stale: the record is refreshed to it; nothing moves.
-    * ``"restore"`` — another writer moved the route off the profile the config and the record
-      both name: it is put back. This is what the watched ``profile`` field is for.
-    * ``"conflict"`` — the live route differs from both, and the record from the config (or the
-      config names no profile): reported; nothing is touched.
-
-    The one rule for the watchdog's heal and ``doctor --repair`` (``heal_entries``), doctor's
-    report (``route_intent.drift``) and the fix ``gate_shims.divergence`` names: a seat is never
-    moved to a profile the loop config does not name.
+    * ``"restore"`` — any other difference: the record's profile is put back, as for every
+      other watched field (the record is what the plugin last wrote; #2058).
     """
     want, have = route_profile(recorded), route_profile(live)
     if want == have:
-        return "apply" if configured and configured != want else ""
+        return ""
     if configured and have == configured:
         return "refresh"
-    if configured and want == configured:
-        return "restore"
-    return "conflict"
+    return "restore"
 
 
-PROFILE_CONFLICT = "profile conflict"
-
-
-def profile_conflict(configured: str, recorded: dict, live: dict) -> str:
-    """The reason a ``"conflict"`` route is left alone, naming all three sides."""
-    return (f"{PROFILE_CONFLICT}: the intent record has {route_profile(recorded)!r}, the "
-            f"registry runs {route_profile(live)!r} and the loop config says "
-            f"{configured or '(none)'!r}, so the heal moves the seat to none of them (#1446)")
-
-
-def heal_entries(expected: dict[str, dict], fields, owned,
-                 profiles: dict | None = None) -> tuple[dict, dict, dict]:
+def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
     """Put back the plugin's own routes a non-cooperating writer erased or rewrote.
 
-    ``expected`` is the plugin's intent record (name → full entry), or a callable returning it:
-    then it is read under the registry lock, right before the compare, so a rebind recorded
-    since the caller's read is what is restored (#1418). ``fields`` is the watched
-    keys, one tuple for every name or a name → tuple map. Under the lock, against the
-    live bytes, each name is: left alone when every watched ``field`` already matches; restored
-    when missing, or present and still ``owned(entry)`` (one of this plugin's gate scripts);
-    reported as a conflict — never overwritten — when something else now holds the name.
-    Other names in the registry are not read for anything but preservation. A malformed
+    ``expected`` is the plugin's intent record (name → full entry), or a callable taking the
+    parsed live registry and returning it: then it is read under the registry lock, right
+    before the compare, so a rebind recorded since the caller's read is what is restored
+    (#1418), and it may weigh what it returns against the live entries (#1446). ``fields`` is
+    the watched keys, one tuple for every name or a name → tuple map. Under the lock, against
+    the live bytes, each name is: left alone when every watched ``field`` already matches;
+    restored when missing, or present and still ``owned(entry)`` (one of this plugin's gate
+    scripts); reported as a conflict — never overwritten — when something else now holds the
+    name. Other names in the registry are not read for anything but preservation. A malformed
     registry raises (fail closed) exactly like every other plugin write.
 
-    ``profiles`` (name → the loop config's profile) puts a drifted ``profile`` through
-    ``profile_verdict`` (#1446): a route whose profile is in conflict is reported and left
-    untouched, and a live route already on the config's profile keeps it (its other watched
-    fields are still restored) and is returned in ``refreshed`` so the caller brings the
-    record's stale profile up to it. Without ``profiles`` the record's profile is restored.
-
-    Returns ``(restored, conflicts, refreshed)``: name → list of fields restored ("missing" for
-    an erased route), name → reason, and name → ``(record entry, live entry)`` for each route
-    whose live profile was kept.
+    Returns ``(restored, conflicts)``: name → list of fields restored ("missing" for an erased
+    route), and name → reason.
     """
     def edit(data: dict):
         restored: dict = {}
         conflicts: dict = {}
-        refreshed: dict = {}
-        wanted = expected() if callable(expected) else expected
+        wanted = expected(data) if callable(expected) else expected
         for name, want in wanted.items():
             live = data.get(name)
             if live is None:
@@ -563,31 +535,20 @@ def heal_entries(expected: dict[str, dict], fields, owned,
                 conflicts[name] = (f"now runs {live.get('script')!r}, not a Diaktoros gate — "
                                    "something else holds this name")
                 continue
-            verdict = (profile_verdict(profiles.get(name, ""), want, live)
-                       if profiles is not None and "profile" in diff else "")
-            if verdict == "conflict":
-                conflicts[name] = profile_conflict(profiles.get(name, ""), want, live)
-                continue
-            if verdict == "refresh":
-                refreshed[name] = (dict(want), dict(live))
-                want = _keep_live_profile(want, live)
-                diff = [key for key in diff if key != "profile"]
-                if not diff:
-                    continue
             merged = {**live, **want}
             for key in watched:         # a watched key the plugin never wrote is not kept either
                 if key not in want:
                     merged.pop(key, None)
             data[name] = merged
             restored[name] = diff
-        return bool(restored), (restored, conflicts, refreshed)
+        return bool(restored), (restored, conflicts)
 
     return _transact(subs_path(), edit)
 
 
 def _keep_live_profile(want: dict, live: dict) -> dict:
     """The record's entry with the live entry's ``profile`` (its key present or absent alike):
-    what ``heal_entries`` writes for a route whose live profile is the config's (#1446)."""
+    what the heal restores for a route whose live profile is the config's (#1446)."""
     kept = {key: value for key, value in want.items() if key != "profile"}
     if "profile" in live:
         kept["profile"] = live["profile"]

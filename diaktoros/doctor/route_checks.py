@@ -70,9 +70,7 @@ def _intent_overlay(loop: dict, data: dict, checks: list[doctor.Check]) -> list[
             if fields:
                 checks.append(doctor.Check(f"route:{name}", doctor.MISMATCH,
                                            "differs from the plugin's intent record: " + ", ".join(fields),
-                                           PROFILE_CONFLICT_FIX
-                                           if route_intent.PROFILE_CONFLICT in fields
-                                           else REPAIR_FIX))
+                                           REPAIR_FIX))
             continue
         if not fields:
             if check.status == doctor.VERIFIED:
@@ -91,20 +89,11 @@ def _intent_overlay(loop: dict, data: dict, checks: list[doctor.Check]) -> list[
             check.fix = (f"remove or rename that entry (it now runs {live.get('script')!r}, not a "
                          "Diaktoros gate, so repair and apply leave it alone), then "
                          f"`hermes dk doctor --loop {loop['id']} --repair`")
-        elif route_intent.PROFILE_CONFLICT in fields:
-            # #1446: repair touches nothing here (it would move the seat to a profile the
-            # config does not name), so the route check's own profile fix stands.
-            check.fix = check.fix or PROFILE_CONFLICT_FIX
         # The observer check already chose between repair and a rebuild: repair only restores
         # the record, which is no fix when the record itself breaks the feed's contract.
         elif not (check.fix and name == (loop.get("observer") or {}).get("route")):
             check.fix = REPAIR_FIX
     return checks
-
-
-PROFILE_CONFLICT_FIX = ("set the profile this route should serve in the loop config, then "
-                        "`hermes dk apply` — the repair and the watchdog's heal leave a route "
-                        "whose profile matches neither the record nor the config alone (#1446)")
 
 
 def _missing_route_fix(loop: dict) -> str:

@@ -271,10 +271,8 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
                 if "prompt" not in drift:
                     fix = (f"`hermes dk apply --loop {lid}` (rewrites it from the loop "
                            "config, secret kept)")
-                elif (route_intent.recorded_ours(loop, role, name, entry, intent)
-                      or route_intent.recorded_stale_profile(loop, role, name, entry, intent)):
-                    fix = repair    # the record holds it: gate, profile and secret (#1451), or
-                    # all but a stale profile, which the repair refreshes from the live (#1446)
+                elif route_intent.recorded_ours(loop, role, name, entry, intent):
+                    fix = repair    # the record holds it: gate, profile and secret (#1451)
                 else:
                     fix = (f"remove that entry (its prompt no longer proves it is this plugin's), "
                            f"then {recreate_fix(loop)}")
@@ -327,14 +325,10 @@ def _owned_fix(loop: dict, role: str, name: str, entry: dict, intent: dict, rest
     if not route_intent.provably_ours(loop, role, name, entry, intent):
         recorded = intent.get(name) if isinstance(intent, dict) else None
         if (isinstance(recorded, dict) and recorded.get("script") == GATE_SCRIPT[role]
-                and entry.get("secret") and recorded.get("secret") == entry.get("secret")
-                and routes.profile_verdict(config.seat_profile(loop, role), recorded,
-                                           entry) != "conflict"):
+                and entry.get("secret") and recorded.get("secret") == entry.get("secret")):
             # The record holds it with this gate and secret but another profile than the live
             # entry: the repair restores the recorded route (and upgrades its prompt,
-            # ``route_intent._upgrade_prompts``), then apply may rebind it. Not when the
-            # record's profile is in conflict with both the live one and the config's: the
-            # repair touches nothing then (#1446).
+            # ``route_intent._upgrade_prompts``), then apply may rebind it.
             return (f"{repair}, then `hermes dk apply --loop {lid}` (rebinds the route to the "
                     "config)")
         return (f"remove that entry (neither its gate and prompt nor this loop's route record "
