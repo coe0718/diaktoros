@@ -5,6 +5,7 @@ GitHub, the model provider and bubblewrap are all mocked; nothing here needs a n
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import argparse
+import ast
 import io
 import json
 import os
@@ -985,9 +986,7 @@ class ProbeAnswer(unittest.TestCase):
 
 
 def _top_level_names(path: pathlib.Path, imports: bool = False) -> set[str]:
-    """Module-level defs, classes and assignment targets (tuples, starred, annotated: #2532),
-    and with ``imports`` the names an import binds."""
-    import ast
+    """Module-level defs, classes and assignment targets (#2532); with ``imports``, what imports bind (#2705)."""
     names = set()
     for node in ast.parse(path.read_text()).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -997,7 +996,8 @@ def _top_level_names(path: pathlib.Path, imports: bool = False) -> set[str]:
             names.update(n.id for target in targets for n in ast.walk(target)
                          if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
         elif imports and isinstance(node, (ast.Import, ast.ImportFrom)):
-            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            core = isinstance(node, ast.ImportFrom) and (node.level, node.module) in {(1, "selftest"), (0, "diaktoros.selftest")}
+            names.update(n.split(".")[0] for a in node.names for n in {a.asname or a.name, *[a.name] * core})
     return names
 
 
