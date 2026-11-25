@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "diaktoros" / "cli"
 MODULES = ("reports", "operations", "lifecycle", "install", "setup_command", "checks", "settings",
            "set_command", "apply_command", "triage_command", "identity_command", "update")
-SHARED = ("common", "route_sync", "set_adjudication", "seat_flags")  # helper modules: no commands, never import cli
+SHARED = ("common", "route_sync", "set_adjudication", "seat_flags", "merge_check_off")  # helpers: no commands, never import cli
 # Parser-only modules (#1457): an add_* registrar and no cmd_*, so no verb of their own to check
 # in MODULES, but they import the command modules and so get the same import guard.
 PARSERS = ("set_parser", "setup_parser")

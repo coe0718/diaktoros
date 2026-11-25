@@ -4,7 +4,7 @@
 bound before ``merge_check.description`` could keep the tail. #2326: a changed CI hold reason
 written by the claim's light poll, and the claim's two terminal writes (a refused fixer row, an
 unavailable review generation), never refreshed the merge check, so it showed the old reason until
-the watchdog's sweep.
+the watchdog's sweep. #2562: nor did the claim's merge-hold wait, which writes a new reason too.
 """
 from __future__ import annotations
 
@@ -101,7 +101,8 @@ class LightPollRefresh(sm.Base):
 
 
 class ClaimTimeEnds(tim.Ledger, unittest.TestCase):
-    """A row retired at its claim by a refusal or an unavailable read refreshes the check."""
+    """A row retired at its claim by a refusal or an unavailable read, or made to wait by a merge
+    hold, refreshes the check."""
 
     def setUp(self):
         self.make_ledger()
@@ -122,6 +123,13 @@ class ClaimTimeEnds(tim.Ledger, unittest.TestCase):
     def test_an_unavailable_review_generation_refreshes_the_check(self):
         state, refresh = self.committed("reviewer", unavailable="review generation unavailable")
         self.assertEqual(state, "failed")
+        refresh.assert_called_once_with(self.loop, 7)
+
+    def test_a_merge_hold_wait_refreshes_the_check(self):
+        # #2562: the wait writes merge_hold.WAITING as the row's new reason; the check shows it.
+        with mock.patch.object(turns.merge_hold, "spanned", return_value=True):
+            state, refresh = self.committed("reviewer", generation="g1")
+        self.assertEqual(state, "waiting")
         refresh.assert_called_once_with(self.loop, 7)
 
 

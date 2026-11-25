@@ -5,11 +5,14 @@ over the reviewer's change request is acted on once the required checks are gree
 ``human_paths`` file is touched and no maintainer holds the PR: the adjudicator approves the head,
 then dismisses the change request at it. Each write is recorded before it is sent and never
 replayed; a wait is checked again next sweep; a change request at another head is left to a
-person. GitHub, the CI read and the broker's writes are mocked; the ledger is real.
+person. GitHub, the CI read and the broker's writes are mocked; the ledger is real. A posted
+approval reads back only after its sweep here (GitHub's read lag), so the dismissal it allows waits
+for the next one, as it did before #2619; test_ruled_dismiss_same_sweep reads it back at once.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import sqlite3
 import sys
 import unittest
 from pathlib import Path
@@ -35,7 +38,7 @@ class Base(tra.Base):
         self.hold = (None, "")
         self.approve = mock.Mock(side_effect=self._approved)
         self.dismiss = mock.Mock(side_effect=self._dismissed)
-        self.logged = []
+        self.logged, self.lagged = [], []
         for target, name, kw in (
                 (ruled_approval.gh, "reviews", {"side_effect": lambda *_a, **_k: list(self.reviews)}),
                 (ruled_approval.ci, "read", {"side_effect": lambda *_a: self.ci}),
@@ -49,15 +52,17 @@ class Base(tra.Base):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def _approved(self, *_a, **kw):
-        self.reviews = [*self.reviews, {**TUCK, "body": kw.get("text", "")}]
+    def _approved(self, *_a, **kw):     # read back once the sweep that posted it is over
+        self.lagged.append({**TUCK, "body": kw.get("text", "")})
         return TUCK["id"]
 
     def _dismissed(self, *_a, review_id, **_kw):
         self.reviews = [DISMISSED if r["id"] == review_id else r for r in self.reviews]
 
     def sweep(self):
-        return ruled_approval.sweep(self.loop, self.st, [PR], self.logged.append)
+        moved = ruled_approval.sweep(self.loop, self.st, [PR], self.logged.append)
+        self.reviews, self.lagged = [*self.reviews, *self.lagged], []
+        return moved
 
     def row(self):
         """The newest ruling's record at the head: the one acted on last."""
@@ -133,7 +138,6 @@ class Rulings(Base):
     """Review of #1605, round 2: which ruling, and which review, the sweep acts on."""
 
     def rule(self, verdict, created, head=fg.HEAD):
-        import sqlite3
         from contextlib import closing
         self.n += 1
         with closing(sqlite3.connect(self.db)) as con, con:
@@ -261,7 +265,6 @@ class Interrupted(Base):
     """Review of #1605, round 2, F3: a step left ``posting`` by a stopped process."""
 
     def claim(self, step, age):
-        import sqlite3
         import time
         from contextlib import closing
         sup, run = run_supervisor.Supervisor(self.db), f"r{self.n}"
@@ -556,7 +559,6 @@ class HeadMoved(Base):
     def saw(self, *ids, run=None):
         """The ruling's launch record: the reviewer reviews its prompt showed."""
         import json
-        import sqlite3
         from contextlib import closing
         with closing(sqlite3.connect(self.db)) as con, con:
             run = run or f"r{self.n}"
@@ -694,7 +696,6 @@ class RulingRecordsWhatItSaw(tra.Base):
     records the reviewer reviews its prompt showed, before the seat starts."""
 
     def launch(self, reviews, turn_key="breach:1"):
-        import sqlite3
         import time
         from contextlib import closing
         from diaktoros import gh, issue_facts
@@ -731,7 +732,6 @@ class RulingRecordsWhatItSaw(tra.Base):
 
     def test_a_ruling_whose_view_cannot_be_recorded_never_starts(self):
         # Review of #2544, F4. Control: a launch records what its prompt showed and goes ahead.
-        import sqlite3
         from contextlib import closing
         from diaktoros import state as state_mod
         reviews = [tra.review(5, "CHANGES_REQUESTED", head=OLD)]

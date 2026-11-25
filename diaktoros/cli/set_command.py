@@ -16,7 +16,7 @@ from .. import (
 )
 from ..gate import shims as gate_shims
 from . import common as cli_common
-from . import identity_command
+from . import identity_command, merge_check_off
 from . import set_adjudication
 from . import triage_command
 from ..config import credentials
@@ -698,6 +698,7 @@ def _print_summary(loop: dict, updated: dict, path, changes: dict, seat_changes:
         print(f"  observer: {observer.describe(loop.get('observer') or {})} → "
               f"{observer.describe(updated.get('observer') or {})}")
     print(f"loop config updated: {path}")
+    merge_check_off.note(loop, updated, dry_run=False)      # #1987
     if app_route and app_route != config.app_route(loop):
         print(f"  route written: {app_route} ({updated.get('ingress_app')}'s events)")
         for line in shim_lines:
@@ -775,8 +776,7 @@ def _set(args) -> int:
             return set_adjudication._commit(adj)
         print("nothing to change — pass at least one setting "
               "(--concurrency, --reviewer-concurrency, --fixer-concurrency, "
-              "--shadow-concurrency, --triage-concurrency, --cap, --clone, "
-              "--turn-budget, "
+              "--shadow-concurrency, --triage-concurrency, --cap, --clone, --turn-budget, "
               "--observer-profile, ...)")
         return 0
 
