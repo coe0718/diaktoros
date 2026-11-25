@@ -5,6 +5,7 @@ not added to every list that names them. A fix round gets the rows its PR's diff
 issue fix, a CI fix and a conflict turn (no diff to read yet) get every row.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import inspect
 from pathlib import Path
 import sys
 import unittest
@@ -100,10 +101,10 @@ class Prompts(unittest.TestCase):
         self.assertIn(prompts.registry_section(None), text)
 
     def test_the_ci_fix_turn_uses_the_shared_text(self):
-        # The CI-fix prompt is built inline in the worker; pin that it appends the shared text.
-        src = (Path(run_supervisor.__file__).parent / "turns.py").read_text()  # moved from the core (#758)
-        block = src[src.index("render_isolated('ci_fix'"):][:600]
-        self.assertIn("prompts.registry_section(None)", block)
+        # The CI-fix prompt is built by turn_prompts.ci_fix_prompt (#515); pin that it appends
+        # the shared text.
+        src = inspect.getsource(turn_prompts.ci_fix_prompt)
+        self.assertIn("prompts.registry_section(None)", src)
 
 
 if __name__ == "__main__":
