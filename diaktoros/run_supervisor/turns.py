@@ -818,12 +818,98 @@ class ClaimAndLaunch(TurnHolds):
                                                row['id'], str(self.db)))
         if row['seat'] == 'issue_fixer':
             # An issue handed to the fixer (#214): the base commit it starts from is the
-            # row's head; its one write creates a fresh branch from it.
-            return _Launch(turn_prompts.issue_fix_prompt(loop, row),
+            # row's head, moved to the base's current tip first (#1379); its one write creates
+            # a fresh branch from it.
+            issue = turn_prompts.issue_fix_ready(loop, row)
+            row = self._issue_fix_base(turn)
+            return _Launch(turn_prompts.issue_fix_prompt(loop, row, issue),
                            broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "issue_fixer",
                                                config.ISSUE_FIX_BRANCH.format(number=row["pr"]),
                                                row['id'], str(self.db)))
         return self._prepare_pr_launch(turn)
+
+    def _issue_fix_base(self, turn: _Turn):
+        """Move an issue-fix run to the base branch's current tip before it stages (#1379).
+
+        The row's ``head`` is the base commit read when the fix was queued; the turn may run
+        days later, with the base far ahead. So the tip is read now (``watch_conflicts.base_tip``)
+        and, when it differs, written to the row as the head this run uses: the staged tree, the
+        prompt, the broker scope, the broker's ``issue_fixes`` record and the PR's base commit
+        all follow from it, and the staging check (#214, ``trusted_fetch._base_head``) applies to
+        it. The queued head stays the row's enqueue identity in ``queued_head`` (set once), so a
+        redelivery of the original handoff still deduplicates (``intake.submit``).
+
+        Never launched at a stale base (#2722 review F1):
+        - an unreadable tip raises ``RetryableError``: the run waits and is retried with
+          backoff, then fails, like any other unreadable pre-launch read;
+        - a tip another run of the same issue and turn key already holds (the ledger's unique
+          turn index) raises ``IssueIneligible``: this run is cancelled before launch, no model
+          ran, and that run is the issue's run at this base.
+        Returns the row as the ledger now has it (``turn.row`` too)."""
+        from .. import watch_conflicts
+        row = turn.row
+        tip = watch_conflicts.base_tip(turn.loop)
+        if tip is None:
+            raise run_supervisor.RetryableError(
+                f"{turn.loop['base']}'s tip unreadable before launch (GitHub read failed): an "
+                "issue fix never stages at the base it was queued at")
+        if tip == row['head']:
+            return row
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            holder = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                                 "seat=? AND turn_key=? AND id!=?",
+                                 (row['repo'], row['pr'], tip, row['seat'], row['turn_key'],
+                                  row['id'])).fetchone()
+            if holder is not None:
+                self._issue_fix_superseded(con, turn, holder, tip)
+            moved = con.execute("UPDATE runs SET queued_head=COALESCE(queued_head, head), "
+                                "head=?, updated=? WHERE id=? AND owner=? AND state='running' "
+                                "AND head=?",
+                                (tip, time.time(), row['id'], turn.owner, row['head'])).rowcount
+            con.execute("COMMIT")
+        if moved != 1:
+            raise ValueError("run ownership lost before the base was refreshed")
+        util.log(f"issue #{row['pr']}: fix stages at base {tip[:7]} (queued at {row['head'][:7]})")
+        with self._connect() as con:
+            turn.row = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
+        return turn.row
+
+    def _issue_fix_superseded(self, con, turn: _Turn, holder, tip: str):
+        """End ``_issue_fix_base``'s transaction for a run whose tip another run of the same
+        issue and turn key already holds, and raise ``IssueIneligible``: this run is cancelled
+        before launch. The queued work is never dropped with it (#2722 review F3):
+
+        - a holder that will still run (pending, waiting, claimed, running) or already ran is
+          the issue's run at this base;
+        - a ``REARMABLE`` holder (failed, cancelled) is re-armed here, in this transaction, by
+          the rule a redelivered event for it meets (``intake.redelivery_refusal``: never one
+          that may have written, an operator's cancel, a fix not admitted, or one at
+          ``MAX_REARMS``), and a worker is started for it;
+        - a holder that rule refuses is left as it is, and this run's error names why and that
+          ``hermes dk retry`` re-arms it."""
+        from . import intake
+        row, base = turn.row, turn.loop['base']
+        state, note, rearmed = holder['state'], '', False
+        if state in run_supervisor.REARMABLE:
+            refused = intake.redelivery_refusal(con, holder,
+                                                admitted=bool(holder['push_admitted']),
+                                                production=bool(self.production_config),
+                                                seat=holder['seat'])
+            if refused is None:
+                self._rearm(con, holder['id'], reset=False)
+                rearmed = True
+                note = f"; it was {state} and is re-armed in this one's place"
+            else:
+                note = (f"; it is {state} and not re-armed ({refused}): "
+                        f"`hermes dk retry {holder['id']}` re-arms it")
+        con.execute("COMMIT")
+        if rearmed:
+            self._spawn()
+        raise run_supervisor.IssueIneligible(
+            f"superseded: run {holder['id'][:12]} of this issue ({state}) is at {base}'s tip "
+            f"{tip[:7]}{note}; this one, queued at {row['head'][:7]}, never stages there — "
+            "no turn launched")
 
     def _prepare_pr_launch(self, turn: _Turn) -> _Launch | None:
         from .. import ci_fix, gh
