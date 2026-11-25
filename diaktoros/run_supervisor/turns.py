@@ -89,6 +89,7 @@ class _Launch(NamedTuple):
 
 
 CI_HOLD_READS = "ci-hold-reads.json"     # {run id: when the light poll last read the hold}
+SHADOW_AGREES = 'adjudication no longer current: the shadow review agrees now'   # #2688
 
 
 def _ci_poll_hold_due(row, st, now: float | None = None) -> bool:
@@ -1148,8 +1149,7 @@ class ClaimAndLaunch:
             if self._policy_hold(turn):
                 return None
         elif row['seat'] == 'adjudicator':
-            # Same live checks as the claim, repeated right before launch: the claim's
-            # reads may be minutes old, and a ruling on a moved or approved head is noise.
+            # Again before launch: the claim's reads may be minutes old; a moved or approved head's ruling is noise.
             status, facts = pr_facts.adjudication_state(loop, row, self.db)
             if status in ('retry', 'wait'):
                 raise run_supervisor.RetryableError('adjudication facts unreadable before launch')
@@ -1191,35 +1191,33 @@ class ClaimAndLaunch:
         prompted as, the change it saw and the shadow review a ruling's prompt showed. A ruling's
         prompt also fills ``seen`` with the reviewer reviews it showed (#2402)."""
         from .. import config
-        # The reviewer and fixer see the change itself (#50); the adjudicator needs both
-        # sides' comments. A read that failed is transient (retry); a moved head is not.
-        # The shadow is prompted as the reviewer it shadows.
+        # The reviewer and fixer see the change itself (#50); the adjudicator needs both sides' comments. A read
+        # that failed is transient (retry); a moved head is not. The shadow is prompted as the reviewer it shadows.
         prompt_row = dict(row, seat='reviewer') if row['seat'] == run_supervisor.SHADOW else row
         try:
-            # The last allowed attempt degrades an unreadable file list rather than failing
-            # the run (#110): a partial view, stated as such, instead of no turn at all.
+            # The last allowed attempt degrades an unreadable file list (#110): a stated partial view, not no turn.
             final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
             change = (pr_facts.pr_change(loop, prompt_row, final=final)
                       if prompt_row['seat'] in ('reviewer', 'fixer') else None)
-            # A shadow escalation's ruling answers the shadow review read HERE (#1112): the
-            # prompt shows it and the scope records its run id, from one read, so a later
-            # review landing during the turn is never taken as shown.
+            # A shadow escalation's ruling answers the shadow review read HERE (#1112): the prompt
+            # shows it and the scope records its run id, from one read, so a later one is never shown.
             shadow, extra = None, {}
             if (row['seat'] == 'adjudicator'
                     and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
                 shadow = turn_prompts.newest_shadow_review(row, missing=False)
-                if shadow is False:     # superseded (#2601): no read brings one
-                    raise ValueError('no shadow review for the active reviewer turn')
+                if shadow is False:     # superseded (#2601): wait, bounded, for its own (#2688)
+                    raise run_supervisor.RetryableError("waiting on the active reviewer turn's shadow review")
                 if shadow is None:      # #1145: a ruling on none records '': wait for a read
                     raise run_supervisor.RetryableError('shadow review unreadable before launch')
+                if str(shadow[2]) != 'REQUEST_CHANGES':  # agrees now: no ruling (shadow_retired drops its hold)
+                    raise ValueError(SHADOW_AGREES)
                 extra = {'shadow': shadow}
             if row['seat'] == 'adjudicator':
                 extra['seen'] = seen
             elif row['seat'] == run_supervisor.SHADOW:
                 # Prompted as the reviewer, but told its own step budget (#2199).
                 extra = {'steps': config.max_steps(loop, run_supervisor.SHADOW)}
-            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change,
-                                                  **extra)
+            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change, **extra)
         except ValueError as exc:
             if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
                     or str(exc).startswith('PR files unreadable'):
