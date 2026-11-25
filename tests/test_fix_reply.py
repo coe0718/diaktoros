@@ -247,12 +247,33 @@ class Delivery(Replies):
         for name, payload in (("edited", self.comment(action="edited")),
                               ("deleted", self.comment(action="deleted")),
                               ("a stranger", self.comment(sender="stranger")),
-                              ("the fixer seat, though listed", self.comment(sender="fix")),
-                              ("on a PR", self.comment(on_pr=True))):
+                              ("the fixer seat, though listed", self.comment(sender="fix"))):
             with self.subTest(name):
                 decision, reason = self.deliver(payload)
                 self.assertEqual(decision, "declined", reason)
                 self.assertEqual((self.github_reads, self.reads, self.enqueued), (0, 0, []))
+
+    def test_a_maintainers_pr_comment_requeues_the_fixer_turn_at_the_head(self):
+        """#2025: a comment on a loop PR re-arms the fixer turn waiting at its live head, through
+        retry_action.perform (retry's refusals); nothing to re-arm stays declined."""
+        head = "e" * 40
+        self.origin_pr = {"number": 12, "state": "open", "head": {"sha": head}}
+        calls, rearm = [], [True]
+
+        def perform(loop, pr, seat, **kw):
+            calls.append((pr, seat, kw["confirm_head"]))
+            return {"rearmed": [{"seat": "fixer"}] if rearm[0] else [], "refused": [],
+                    "message": "" if rearm[0] else "#12: nothing to retry"}
+        from diaktoros import retry_action
+        with mock.patch.object(retry_action, "perform", perform):
+            decision, reason = self.deliver(self.comment(on_pr=True))
+            self.assertEqual(decision, "accepted", reason)
+            rearm[0] = False
+            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "declined")
+            self.assertEqual(self.deliver(self.comment(on_pr=True, sender="stranger"))[0],
+                             "declined")
+        self.assertEqual(calls, [(12, "fixer", head)] * 2)
+        self.assertEqual(self.enqueued, [])
 
     def test_an_answer_to_an_ask_resumes_it_at_once_and_no_other_issues(self):
         self.st.fix_ask_set(12, "question", 100, "Which API shape?")

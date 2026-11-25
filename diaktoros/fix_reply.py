@@ -161,7 +161,7 @@ def on_comment(loop: dict, payload: dict) -> None:
     if type(number) is not int or number < 1:
         silence("issue_comment: payload has no issue number")
     if "pull_request" in issue:
-        silence(f"#{number}: a comment on a PR; the seats read it in their next turn (#666)")
+        on_pr_comment(loop, number, login)
     st = state_mod.state_for(loop)
     if number in st.fix_ask_open():                 # an ask (#483) resumes by its own rules
         lines: list[str] = []
@@ -187,6 +187,27 @@ def on_comment(loop: dict, payload: dict) -> None:
     if outcome != "queued":
         silence(f"issue #{number}: no fix turn queued ({outcome})")
     silence(f"issue #{number}: {login} replied; fix turn queued", "accepted")
+
+
+def on_pr_comment(loop: dict, number: int, login: str) -> None:
+    """#2025: a maintainer's comment on a loop PR re-queues the fixer turn waiting at its head:
+    one that ended there without pushing (failed, waiting on backoff, policy-cancelled). It is
+    re-armed exactly as `hermes dk retry --pr N --seat fixer` would (``retry_action.perform``:
+    the same write-evidence and push-policy refusals), confirmed against the PR's live head.
+    The comment reaches the turn as data, in the PR's maintainers' comments (#666). A
+    review-only cap, a ruling and admission are not lifted by a comment. Always silences."""
+    from . import retry_action
+    pr = gh.pr(loop, number)
+    head = ((pr.get("head") or {}).get("sha") or "") if isinstance(pr, dict) else ""
+    if not isinstance(pr, dict) or pr.get("state") != "open" or not head:
+        silence(f"#{number}: a comment on a PR that is not open or unreadable; nothing re-queued")
+    result = retry_action.perform(loop, number, "fixer", confirm_head=head, read_pr=lambda: pr)
+    if not result["rearmed"]:
+        why = retry_action.bounded(result["message"] or "; ".join(
+            str(e.get("reason") or "") for e in result["refused"]) or "nothing to re-arm")
+        silence(f"#{number}: a comment on a PR; no fixer turn re-queued ({why}); the seats read "
+                "it in their next turn (#666)")
+    silence(f"#{number}: {login} commented; fixer turn at {head[:7]} re-queued", "accepted")
 
 
 def repliers(loop: dict) -> set[str]:
