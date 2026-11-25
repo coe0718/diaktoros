@@ -916,6 +916,12 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.Shado
         with self._connect() as con:
             return views.runs_view(con, repo, pr)
 
+    def attention(self, repo: str | None = None) -> list[dict]:
+        """Every run ``status`` would list, uncapped (``views.attention_view``): the total its
+        capped list is a part of (#1364). Read-only."""
+        with self._connect() as con:
+            return views.attention_view(con, repo)
+
     def seat_numbers(self, repo: str, seat: str, state: str | None = None) -> set[int]:
         """Every PR/issue number with a ledger row for ``seat`` (read-only): in any state, or
         only in ``state`` when given."""

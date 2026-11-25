@@ -61,13 +61,45 @@ def dispute_choices(loop_id: str, pr: int) -> str:
             f"escalate --loop {loop_id} --pr {pr}`, or merge on its evidence")
 
 
+# How many rows ``runs_view`` lists without a ``head``; ``attention_view`` counts past it.
+RUNS_CAP = 100
+
+
 def runs_view(con, repo: str | None = None, pr: int | None = None,
               head: str | None = None) -> list[dict]:
-    """The newest 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled
-    runs, oldest first, or with ``head`` all of that head's, uncapped: no other turn, at that
-    head or another, pushes a current head's turn out of its reader's list (#2613 review, F10).
+    """The newest ``RUNS_CAP`` failed, waiting, uncertain, push-policy-cancelled and
+    operator-cancelled runs, oldest first, plus every uncertain one past the cap (#1364: it holds
+    its seat until reconciled); or with ``head`` all of that head's, uncapped: no other turn, at
+    that head or another, pushes a current head's turn out of its reader's list (#2613 review,
+    F10). Which rows count is ``attention_where``'s rule (a superseded failed or cancelled run is
+    left out); ``attention_view`` is the uncapped list the cap cuts.
     Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
+    where, args = attention_where(repo, pr, head)
+    # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
+    # them; a read-only view never migrates.
+    columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
+    budget = 'r.budget' if 'budget' in columns else 'NULL AS budget'
+    deps = 'r.deps' if 'deps' in columns else 'NULL AS deps'
+    if head is None:
+        # The newest under the cap, and every uncertain row whatever its age (#1364).
+        where, args = (f"{where} AND (r.state='uncertain' OR r.id IN (SELECT r.id FROM runs r "
+                       f"WHERE {where} ORDER BY r.created DESC,r.id DESC LIMIT {RUNS_CAP}))",
+                       args + args)
+    rows = [dict(row) for row in con.execute(
+        "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
+        f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
+        "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
+        " ORDER BY r.created,r.id", args)]
+    for row in rows:
+        row['write'] = run_supervisor.write_evidence(con, row['id'])
+    return rows
+
+
+def attention_where(repo: str | None = None, pr: int | None = None,
+                    head: str | None = None) -> tuple[str, list]:
+    """The one rule for which ledger rows need a person, shared by ``runs_view`` and
+    ``attention_view``: an SQL condition on ``runs r`` and its arguments."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
     # cancellation (head moved, PR closed) is not: a fixer's new head gets its own turn, and the
@@ -86,6 +118,12 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
     where += " AND r.seat != 'shadow'"
+    # A failed or cancelled run is superseded once a newer run of the same repo, PR (or issue)
+    # and seat exists (#1364): that run is the one that moves it now. An uncertain run is never
+    # dropped, it holds its seat until reconciled; a waiting one is still due to start.
+    where += (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
+              "WHERE s.repo=r.repo AND s.pr=r.pr AND s.seat=r.seat AND "
+              "(s.created>r.created OR (s.created=r.created AND s.id>r.id))))")
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
@@ -95,19 +133,33 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
     if head is not None:
         where += ' AND r.head=?'
         args.append(head)
-    # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
-    # them; a read-only view never migrates.
-    columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
-    budget = 'r.budget' if 'budget' in columns else 'NULL AS budget'
-    deps = 'r.deps' if 'deps' in columns else 'NULL AS deps'
-    rows = [dict(row) for row in con.execute(
-        "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
-        f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
-        "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
-        " ORDER BY r.created DESC,r.id DESC" + ("" if head else " LIMIT 100"), args)][::-1]
+    return where, args
+
+
+def attention_view(con, repo: str | None = None) -> list[dict]:
+    """Every row ``runs_view`` lists, uncapped, as ``{id, repo, pr, seat, state, error}``,
+    oldest first: the total the capped list is a part of (#1364)."""
+    where, args = attention_where(repo)
+    return [dict(row) for row in con.execute(
+        "SELECT r.id,r.repo,r.pr,r.seat,r.state,r.error FROM runs r WHERE " + where +
+        " ORDER BY r.created,r.id", args)]
+
+
+# ``attention_counts``'s kinds, in the order the selftest line names them.
+ATTENTION_KINDS = ('uncertain', 'failed', 'waiting', 'held by policy', 'cancelled')
+
+
+def attention_counts(rows: list[dict]) -> dict[str, int]:
+    """How many of ``rows`` are of each ``ATTENTION_KINDS`` kind, zero kinds left out. A run
+    cancelled by the push or issue-fix policy is ``held by policy``; any other listed cancelled
+    run (an operator's cancel, a stop for an owed shadow) is ``cancelled``."""
+    counts: dict[str, int] = {}
     for row in rows:
-        row['write'] = run_supervisor.write_evidence(con, row['id'])
-    return rows
+        kind = row['state']
+        if kind == 'cancelled' and run_supervisor.policy_cancelled(row.get('error')):
+            kind = 'held by policy'
+        counts[kind] = counts.get(kind, 0) + 1
+    return {kind: counts[kind] for kind in ATTENTION_KINDS if kind in counts}
 
 
 # The watchdog sweeps every 15 minutes; a listing older than that is not trusted alone to say a

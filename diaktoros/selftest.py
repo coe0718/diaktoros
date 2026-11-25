@@ -1018,16 +1018,14 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
     db = ledger_path()
     try:
         supervisor = Supervisor(db, presence=presence_marker())
-        rows = supervisor.status()
+        rows = supervisor.attention(loop["repo"])
+        listed = len(supervisor.status(loop["repo"]))
     except Exception as exc:
         report.add(step, "ledger", FAIL, f"{db}: {type(exc).__name__}: {exc}",
                    f"make {db.parent} writable by you; a corrupt ledger must be moved aside by hand")
         return
     report.add(step, "ledger", PASS, f"{db} (schema migrated, status readable)")
-    if rows:
-        report.add(step, "ledger:attention", WARN, f"{len(rows)} failed/uncertain run(s) in the ledger",
-                   f"inspect `python -m diaktoros.run_supervisor status {db}`; an uncertain seat "
-                   "blocks new turns until reconciled")
+    _ledger_attention(report, step, loop, db, rows, listed)
     if settings is not None:
         try:
             Supervisor(db, production_config=runtime_file, hermes_home=config.home())
@@ -1048,6 +1046,29 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
                    "`hermes dk doctor`")
     else:
         report.add(step, "observer", PASS, "observer route registered with a secret and URL")
+
+
+def _ledger_attention(report: Report, step: str, loop: dict, db: Path, rows: list[dict],
+                      listed: int) -> None:
+    """``ledger:attention``: the loop's runs that need a person, by kind (#1364). ``rows`` is the
+    uncapped ``attention`` list, so an uncertain run past ``status``'s cap is still counted;
+    failed runs on PRs the watchdog's last listing shows closed are history (``split_history``,
+    as ``status``/``explain`` print them), and ``listed`` is how many rows ``status`` shows."""
+    from .run_supervisor import views
+    rows, history, _ = views.split_history(rows, loop)
+    if not rows:
+        return
+    counts = views.attention_counts(rows)
+    text = ", ".join(f"{count} {kind}" for kind, count in counts.items())
+    text = f"{len(rows)} run(s) need a person in the ledger: {text}"
+    if history:
+        text += f" ({len(history)} failed on closed PRs not counted)"
+    if listed < len(rows) + len(history):
+        text += (f"; `status` lists {listed} of {len(rows) + len(history)}, the newest "
+                 "(every uncertain one included)")
+    report.add(step, "ledger:attention", WARN, text,
+               f"inspect `python -m diaktoros.run_supervisor status {db}`; an uncertain seat "
+               "blocks new turns until reconciled")
 
 
 # -- step 7: live no-write turn ------------------------------------------------------------------
