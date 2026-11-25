@@ -83,7 +83,9 @@ def _verify_identities(loop: dict, identities: tuple, names: str, *,
     each mapped to its own credential file, with a token that is there, resolving to that very
     account, and no two to one principal. ``names`` says who, for the denial. ``trusted_fetch``
     shares it (#1498): ``denied`` is the exception raised, ``fetch(identity)`` the transport
-    ``gh.principal`` reads that account through (``None``: its own)."""
+    ``gh.principal`` reads that account through (``None``: its own). A principal that can't be
+    read at all is ``BrokerUnchecked`` when ``denied`` is ``BrokerDenied`` (#1704): the check
+    failed, not the policy; any other ``denied`` is raised for it as before."""
     if (not all(isinstance(i, str) and i for i in identities)
             or len({i.casefold() for i in identities}) != len(identities)):
         raise denied(f"{names} must use distinct identities")
@@ -100,6 +102,9 @@ def _verify_identities(loop: dict, identities: tuple, names: str, *,
         except gh.GitHubError as exc:
             raise denied(f"missing token for {identity}") from exc
         account = gh.principal(loop, identity, None if fetch is None else fetch(identity))
+        if account is None:
+            raise (BrokerUnchecked if denied is BrokerDenied else denied)(
+                "token principal cannot be verified")
         if (not isinstance(account, dict) or type(account.get("id")) is not int
                 or not isinstance(account.get("login"), str)
                 or account["login"].casefold() != identity.casefold()):
@@ -111,10 +116,11 @@ def _verify_identities(loop: dict, identities: tuple, names: str, *,
 
 def _live_pr(loop: dict, repo: str, number: int, head: str, branch: str) -> dict:
     """The PR re-read as the reader right before a write: still this open, non-draft PR on the
-    loop's base, at ``head``, on ``branch`` in this repository (no fork). It, or a denial."""
+    loop's base, at ``head``, on ``branch`` in this repository (no fork). It, or a denial; a PR
+    that can't be read is ``BrokerUnchecked`` (#1704), a failed check rather than a refusal."""
     current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=loop.get("read_token"))
     if not isinstance(current, dict):
-        raise BrokerDenied("cannot verify live PR")
+        raise BrokerUnchecked("cannot verify live PR")
     pr_head = current.get("head") or {}
     pr_base = current.get("base") or {}
     # An omitted or wrong-shaped draft flag is unknown, never an eligible PR.
@@ -364,7 +370,9 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
 def authorize_adjudicator(loop: dict, *, repo: str, number: int, head: str, branch: str) -> str:
     """The adjudicator login, cleared to write at this live head, or deny: a fourth identity at
     the open, non-draft, same-repository head of an authorized fixer's PR. The ruling comment
-    and the approval on an ACCEPT (#905) both need it; each adds its own checks."""
+    and the approval on an ACCEPT (#905) both need it; each adds its own checks. A GitHub read it
+    depends on that failed (a principal, the live PR) raises ``BrokerUnchecked`` (#1704), so the
+    ACCEPT's sweep waits for its next pass instead of recording a refusal."""
     from .. import config
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")

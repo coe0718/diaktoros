@@ -29,9 +29,14 @@ Each write is recorded before it is sent (``ruled_approvals``, a record per ruli
 sent again; a later ACCEPT at the same head is acted on afresh, once every earlier ruling's write
 there is settled. A lost
 response is ``uncertain`` until a later sweep reads GitHub: the approval or dismissal is there
-(``posted``) or it is not (``denied``). A refusal is ``denied`` with its reason. ``ready`` and the
-merge check show an uncertain or denied step with its reason. A wait (red or running CI before
-the approval, a hold, an unreadable read) writes nothing and is checked again on the next sweep.
+(``posted``) or it is not (``denied``). A refusal (a ``human_paths`` diff, a human hold at the
+head, ``st.human_hold``, an identity or PR the broker refuses) is ``denied`` with its reason. A
+denied step is never retried for that ruling, so once a human hold is cleared, a person (or a new
+ACCEPT) finishes it. ``ready`` and the merge check show an uncertain or denied step with its
+reason. A wait
+(red or running CI before the approval, a maintainer hold, an unreadable read, including a GitHub
+read the broker's check could not make, ``broker.BrokerUnchecked``, #1704) writes nothing and is
+checked again on the next sweep.
 """
 from __future__ import annotations
 
@@ -359,6 +364,9 @@ def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: in
     try:
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
                                              branch=branch)
+    except broker.BrokerUnchecked as exc:                # a failed read, not a refusal: wait
+        log(f"#{number} @ {head[:7]}: the approval on the ACCEPT waits: {exc}")
+        return False
     except broker.BrokerDenied as exc:
         sup.ruled_approval_step(repo, number, head, run, "approve", "denied", error=str(exc)[:200])
         log(f"#{number} @ {head[:7]}: not approved on the ACCEPT: {exc}")
@@ -393,6 +401,9 @@ def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: 
     try:
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
                                              branch=branch)
+    except broker.BrokerUnchecked as exc:                # a failed read, not a refusal: wait
+        log(f"#{number} @ {head[:7]}: the dismissal on the ACCEPT waits: {exc}")
+        return False
     except broker.BrokerDenied as exc:
         return sup.ruled_approval_step(repo, number, head, run, "dismiss", "denied",
                                        error=str(exc)[:200])
