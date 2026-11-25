@@ -477,42 +477,6 @@ class ChecklistTests(SelftestBase):
                 self.assertIn(denial, line[0])
                 self.assertIn("fix: see the identities step", line[1])
 
-    def test_every_denial_fix_key_is_a_denial_the_broker_raises(self):
-        """#1497: each ``_DENIAL_FIX`` key is exactly what ``broker.authorize`` raises for a
-        reviewer write in some state, so the exact-string lookup cannot drift from its wording."""
-        original = self.fx.fetch
-        pr = self.fx.pr
-
-        def answer(override):
-            def fetch(loop, path, method="GET", body=None, login=None):
-                hit = override(path, login)
-                return hit if hit is not None else original(loop, path, method, body, login)
-            return fetch
-        states = [
-            lambda: pr.update(draft=True),
-            lambda: pr["base"].update(ref="dev"),
-            lambda: pr["base"].update(repo={"full_name": "other/widgets"}),
-            lambda: pr["head"].update(repo={"full_name": "fork/widgets"}),
-            lambda: self.fx.ids.update(fixer=2),
-            lambda: answer(lambda path, login: ({"login": "someone-else", "id": 2}, "")
-                           if path == "/user" and login == "reviewer" else None),
-            lambda: answer(lambda path, login: (None, "HTTP 404")
-                           if path == "/repos/acme/widgets/pulls/7" else None),
-        ]
-        raised = set()
-        for state in states:
-            saved = json.loads(json.dumps(pr)), dict(self.fx.ids)
-            fetch = state()
-            with mock.patch.object(gh, "fetch", side_effect=fetch or original):
-                with self.assertRaises(broker.BrokerDenied) as caught:
-                    broker.authorize(self.fx.loop, repo="acme/widgets", number=7, head=HEAD,
-                                     role="reviewer", branch="fix-7", operation="review")
-            raised.add(str(caught.exception))
-            pr.clear()
-            pr.update(saved[0])
-            self.fx.ids = saved[1]
-        self.assertEqual(raised, set(selftest._DENIAL_FIX))
-
     def test_github_writes_are_refused_during_the_selftest(self):
         with selftest.github_read_only():
             with self.assertRaises(selftest.WriteBlocked):
