@@ -9,8 +9,10 @@ variants and requires most of each to be fully transparent, which the boxed logo
 import _home_guard  # noqa: F401  # first import: temp HOME/HERMES_HOME
 from html.parser import HTMLParser
 import pathlib
+import re
 import struct
 import unittest
+import urllib.parse
 
 try:  # Pillow is optional here, as node is for the viewer tests: the pixel check needs it.
     from PIL import Image
@@ -61,6 +63,21 @@ def webp_header(path: pathlib.Path) -> tuple[int, int, bool]:
     return width, height, has_alpha
 
 
+def srcset_urls(srcset: str) -> list[str]:
+    """The URL of each ``srcset`` candidate, as the HTML spec splits them: a URL is a run of
+    non-space characters (a ``data:`` URL keeps its commas), then any descriptors up to a comma."""
+    urls, pos = [], 0
+    while (m := re.compile(r"[\s,]*(\S+)").match(srcset, pos)) and m.group(1):
+        url, pos = m.group(1), m.end()
+        if url.endswith(","):
+            url = url.rstrip(",")
+        else:                                   # skip this candidate's descriptors
+            comma = srcset.find(",", pos)
+            pos = len(srcset) if comma < 0 else comma + 1
+        urls.append(url)
+    return urls
+
+
 class ImageParser(HTMLParser):
     """Every image path an HTML page or README loads: each ``<img src>`` and ``<source srcset>``."""
 
@@ -73,26 +90,56 @@ class ImageParser(HTMLParser):
         if tag == "img" and a.get("src"):
             self.paths.append(a["src"])
         elif tag == "source" and a.get("srcset"):
-            self.paths += [item.split()[0] for item in a["srcset"].split(",") if item.strip()]
+            self.paths += srcset_urls(a["srcset"])
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
 
 
+def broken_images(text: str, root: pathlib.Path) -> list[str]:
+    """Each image ``text`` loads that is not a file inside ``root`` (#2250). README sits at the
+    root and the page is published there with docs/ beside it, so a relative path on either is a
+    path from the repository root. data: URIs load nothing; a remote, absolute or escaping path
+    is not a repository file, so it is broken too. No image at all is reported as well."""
+    parser = ImageParser()
+    parser.feed(text)
+    found, broken = 0, []
+    for src in parser.paths:
+        url = urllib.parse.urlsplit(src)
+        if url.scheme == "data":
+            continue
+        found += 1
+        path = (root / urllib.parse.unquote(url.path)).resolve()
+        if (url.scheme or url.netloc or url.path.startswith("/") or url.query or url.fragment
+                or not path.is_relative_to(root.resolve()) or not path.is_file()):
+            broken.append(src)
+    return broken if found else ["no image found: the scan reads nothing"]
+
+
 class EveryImageResolves(unittest.TestCase):
     def test_each_image_in_the_readme_and_the_site_is_a_repository_file(self):
         # #2250: only the hero <picture> was checked, so a moved README logo shipped broken.
-        # README sits at the root, and the page is published there with docs/ beside it, so a
-        # relative path on either is a path from the repository root. data: URIs load nothing.
         for page in (ROOT / "README.md", PAGE):
-            parser = ImageParser()
-            parser.feed(page.read_text(encoding="utf-8"))
-            local = [src for src in parser.paths if not src.startswith("data:")]
-            self.assertTrue(local, f"no image found in {page.name}: the scan reads nothing")
-            for src in local:
-                with self.subTest(page=page.name, src=src):
-                    self.assertNotIn("://", src, "a remote image is not checked: ship it")
-                    self.assertTrue((ROOT / src).is_file(), f"{src} is missing")
+            with self.subTest(page.name):
+                self.assertEqual(broken_images(page.read_text(encoding="utf-8"), ROOT), [])
+
+    def test_the_scan_reports_each_unservable_image_and_passes_a_good_one(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "repo"
+            (root / "img").mkdir(parents=True)
+            (root / "img/good.png").write_bytes(b"x")
+            (root.parent / "outside.png").write_bytes(b"x")
+            ok = '<img src="img/good.png"><source srcset="data:image/png;base64,AAAA">'
+            self.assertEqual(broken_images(ok, root), [])
+            self.assertEqual(broken_images('<source srcset="img/good.png 1x, img/good.png 2x">', root), [])
+            for bad in ("img/missing.png", "/etc/passwd", "../outside.png", "https://x.test/a.png",
+                        "img/good.png?v=1"):
+                with self.subTest(bad):
+                    self.assertEqual(broken_images(f'{ok}<img src="{bad}">', root), [bad])
+            srcset = '<source srcset="img/good.png 1x,img/missing.png 2x">'
+            self.assertEqual(broken_images(srcset, root), ["img/missing.png"])
+            self.assertEqual(broken_images('<img src="data:,x">', root), ["no image found: the scan reads nothing"])
 
 
 class SiteHeroLogoTests(unittest.TestCase):
