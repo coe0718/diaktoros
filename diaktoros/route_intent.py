@@ -132,6 +132,21 @@ def recorded_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
             and bool(secret) and want.get("secret") == secret)
 
 
+def recorded_stale_profile(loop: dict, role: str, name: str, entry, intent) -> bool:
+    """Does the record hold the live route ``name`` (its gate and secret) with only a stale
+    profile, while the live route already serves the loop config's (#1446)? Then the repair
+    keeps the live profile, refreshes the record's and restores the rest (``routes.heal_entries``
+    with the config's profiles): the repair is its fix, as for ``recorded_ours``."""
+    want = intent.get(name) if isinstance(intent, dict) else None
+    if not isinstance(want, dict) or not isinstance(entry, dict):
+        return False
+    script = entry.get("script")
+    secret = entry.get("secret")
+    return (plugin_gate(role, script) and want.get("script") == script
+            and bool(secret) and want.get("secret") == secret
+            and routes.profile_verdict(config.seat_profile(loop, role), want, entry) == "refresh")
+
+
 def provably_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
     """Is the live route ``name`` provably this loop's ``role`` route, so ``apply``/``set`` may
     rewrite it (secret kept)? It must run one of this role's gates (``plugin_gate``) and either
@@ -296,9 +311,26 @@ def _set_prompt(loop: dict, name: str, role: str, seen) -> bool:
         return True
 
 
+def configured_profiles(loop: dict) -> dict:
+    """route name → the profile the loop config says it serves (``config.seat_profile``): the
+    third side the heal weighs a drifted profile against (#1446)."""
+    return {name: config.seat_profile(loop, role) for role, name in routes_of(loop).items()}
+
+
+STALE_PROFILE = "stale record profile"
+PROFILE_CONFLICT = routes.PROFILE_CONFLICT
+
+
 def drift(loop: dict, registry: dict, intent: dict) -> dict:
-    """name → differing watched fields (``["missing"]`` when erased), for this loop's names only."""
+    """name → differing watched fields (``["missing"]`` when erased), for this loop's names only.
+
+    A differing ``profile`` is named by what the heal does with it (``routes.profile_verdict``,
+    #1446): ``"profile"`` when it is restored, ``STALE_PROFILE`` when the live route already
+    serves the config's profile (the heal refreshes the record instead), ``PROFILE_CONFLICT``
+    when it differs from both the record and the config (the heal touches nothing).
+    """
     role_of = {name: role for role, name in routes_of(loop).items()}
+    profiles = configured_profiles(loop)
     out = {}
     for name, want in intent.items():
         if name not in role_of:
@@ -310,9 +342,48 @@ def drift(loop: dict, registry: dict, intent: dict) -> dict:
             out[name] = ["entry"]
         else:
             diff = [key for key in watched(role_of[name]) if live.get(key) != want.get(key)]
+            if "profile" in diff:
+                verdict = routes.profile_verdict(profiles[name], want, live)
+                named = {"refresh": STALE_PROFILE, "conflict": PROFILE_CONFLICT}.get(verdict)
+                diff = [named if key == "profile" and named else key for key in diff]
             if diff:
                 out[name] = diff
     return out
+
+
+def _refresh_profile(loop: dict, name: str, stale, live: dict) -> bool:
+    """Bring the record's profile of ``name`` up to the live entry's, which is the loop config's
+    (#1446), under the record's lock and only if the record still holds the ``stale`` profile
+    that was read: a concurrent rebind is kept. The key is copied as the live entry has it
+    (present or absent), so the record serves exactly the live profile."""
+    with _lock(loop) as target:
+        current = load(loop) or {}
+        entry = current.get(name)
+        if not isinstance(entry, dict) or entry.get("profile", _ABSENT) != stale:
+            return False
+        current[name] = routes._keep_live_profile(entry, live)
+        _write(target, loop, current)
+        return True
+
+
+_ABSENT = object()
+
+
+def _apply_lines(loop: dict, registry: dict, intent: dict, label: str) -> list[str]:
+    """The routes whose record and live entry agree on a profile the loop config no longer
+    names: the operator changed the config without ``apply`` (#1446). The heal never moves a
+    seat there itself; it says so, once per sweep, as doctor does."""
+    lines = []
+    profiles = configured_profiles(loop)
+    for name, want in sorted(intent.items()):
+        live = registry.get(name)
+        if (name in profiles and isinstance(want, dict) and isinstance(live, dict)
+                and routes.profile_verdict(profiles[name], want, live) == "apply"):
+            lines.append(f"⚠️ Diaktoros {label} — route {name} serves profile "
+                         f"{routes.route_profile(live)!r}, but the loop config says "
+                         f"{profiles[name]!r}: not moved by the heal. Run `hermes dk apply "
+                         f"--loop {loop.get('id', '?')}` to rebind it to the config.")
+    return lines
 
 
 def heal(loop: dict, *, adopt: bool = True) -> list[str]:
@@ -359,6 +430,7 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
     lines += [line] if line else []
     expected = {name: entry for name, entry in intent.items()
                 if name in set(routes_of(loop).values())}
+    lines += _apply_lines(loop, registry, expected, label)
     if not expected or not drift(loop, registry, expected):
         return lines
     try:
@@ -370,11 +442,32 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
             # is what is restored, never the older snapshot.
             fresh = load(loop) or {}
             return {name: entry for name, entry in fresh.items() if name in names}
-        restored, conflicts = routes.heal_entries(
-            current, {name: watched(role_of[name]) for name in expected}, owned)
+        restored, conflicts, refreshed = routes.heal_entries(
+            current, {name: watched(role_of[name]) for name in expected}, owned,
+            configured_profiles(loop))
     except (OSError, ValueError) as exc:
         return lines + [f"⚠️ Diaktoros {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]
+    return lines + _heal_report(loop, label, upgraded, restored, conflicts, refreshed)
+
+
+def _heal_report(loop: dict, label: str, upgraded: set, restored: dict, conflicts: dict,
+                 refreshed: dict) -> list[str]:
+    """``heal``'s lines for what ``routes.heal_entries`` did, after it refreshes the record of
+    each route whose live profile was kept because it is the loop config's (#1446)."""
+    lines = []
+    for name, (want, live) in sorted(refreshed.items()):
+        try:
+            done = _refresh_profile(loop, name, want.get("profile", _ABSENT), live)
+        except (OSError, IntentError) as exc:
+            lines.append(f"⚠️ Diaktoros {label} — route {name}: could not refresh its recorded "
+                         f"profile to the loop config's: {exc}")
+            continue
+        if done:
+            lines.append(f"🔧 Diaktoros {label} — route {name}: the intent record's profile "
+                         f"{routes.route_profile(want)!r} was stale; refreshed to "
+                         f"{routes.route_profile(live)!r}, which the route already serves and "
+                         "the loop config names (nothing moved)")
     for name in [n for n, fields in restored.items() if n in upgraded and fields == ["prompt"]]:
         lines.append(f"🔧 Diaktoros {label} — route {name}: its gate prompt was upgraded to this "
                      "version's (same secret, so GitHub's hook still authenticates)")
@@ -387,6 +480,11 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
             what = "was missing" if fields == ["missing"] else "had changed " + ", ".join(fields)
             lines.append(f"  {name}: {what}")
     for name, reason in sorted(conflicts.items()):
+        if reason.startswith(routes.PROFILE_CONFLICT):
+            lines.append(f"⚠️ Diaktoros {label} — route {name} NOT restored: {reason}. Set the "
+                         "profile you want in the loop config; `hermes dk doctor --loop "
+                         f"{loop.get('id', '?')}` then names the command that rebinds it.")
+            continue
         lines.append(f"⚠️ Diaktoros {label} — route {name} NOT restored: {reason}. "
                      "Pick another route name or remove the other entry.")
     return lines
