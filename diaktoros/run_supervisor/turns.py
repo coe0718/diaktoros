@@ -836,26 +836,42 @@ class ClaimAndLaunch(TurnHolds):
         and, when it differs, written to the row as the head this run uses: the staged tree, the
         prompt, the broker scope, the broker's ``issue_fixes`` record and the PR's base commit
         all follow from it, and the staging check (#214, ``trusted_fetch._base_head``) applies to
-        it. The recorded head is kept when the tip is unreadable, or when another row of the same
-        issue and turn key already holds the tip (the ledger's unique turn index). Returns the
-        row as the ledger now has it (``turn.row`` too)."""
+        it. The queued head stays the row's enqueue identity in ``queued_head`` (set once), so a
+        redelivery of the original handoff still deduplicates (``intake.submit``).
+
+        Never launched at a stale base (#2722 review F1):
+        - an unreadable tip raises ``RetryableError``: the run waits and is retried with
+          backoff, then fails, like any other unreadable pre-launch read;
+        - a tip another run of the same issue and turn key already holds (the ledger's unique
+          turn index) raises ``IssueIneligible``: this run is cancelled before launch, no model
+          ran, and that run is the issue's run at this base.
+        Returns the row as the ledger now has it (``turn.row`` too)."""
         from .. import watch_conflicts
         row = turn.row
         tip = watch_conflicts.base_tip(turn.loop)
-        if tip is None or tip == row['head']:
-            if tip is None:
-                util.log(f"issue #{row['pr']}: base tip unreadable, fix stages at its recorded "
-                         f"base {row['head'][:7]}")
+        if tip is None:
+            raise run_supervisor.RetryableError(
+                f"{turn.loop['base']}'s tip unreadable before launch (GitHub read failed): an "
+                "issue fix never stages at the base it was queued at")
+        if tip == row['head']:
             return row
-        try:
-            with self._connect() as con:
-                moved = con.execute("UPDATE runs SET head=?, updated=? WHERE id=? AND owner=? "
-                                    "AND state='running' AND head=?",
-                                    (tip, time.time(), row['id'], turn.owner, row['head'])).rowcount
-        except sqlite3.IntegrityError:
-            util.log(f"issue #{row['pr']}: another run already holds base {tip[:7]}; fix stages "
-                     f"at its recorded base {row['head'][:7]}")
-            return row
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            holder = con.execute("SELECT id,state FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                                 "seat=? AND turn_key=? AND id!=?",
+                                 (row['repo'], row['pr'], tip, row['seat'], row['turn_key'],
+                                  row['id'])).fetchone()
+            if holder is not None:
+                con.execute("COMMIT")
+                raise run_supervisor.IssueIneligible(
+                    f"superseded: run {holder['id'][:12]} of this issue ({holder['state']}) is "
+                    f"at {turn.loop['base']}'s tip {tip[:7]}; this one, queued at "
+                    f"{row['head'][:7]}, never stages there — no turn launched")
+            moved = con.execute("UPDATE runs SET queued_head=COALESCE(queued_head, head), "
+                                "head=?, updated=? WHERE id=? AND owner=? AND state='running' "
+                                "AND head=?",
+                                (tip, time.time(), row['id'], turn.owner, row['head'])).rowcount
+            con.execute("COMMIT")
         if moved != 1:
             raise ValueError("run ownership lost before the base was refreshed")
         util.log(f"issue #{row['pr']}: fix stages at base {tip[:7]} (queued at {row['head'][:7]})")

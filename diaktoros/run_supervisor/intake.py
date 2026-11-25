@@ -136,7 +136,10 @@ class RunIntake:
             con.execute("BEGIN IMMEDIATE")
             prior = con.execute("SELECT * FROM runs WHERE delivery=?", (delivery,)).fetchone()
             if prior:
-                if (prior["repo"], prior["pr"], prior["head"], prior["seat"], prior['turn_key']) != (repo, pr, head, seat, turn_key):
+                # An issue fix's worker may have moved ``head`` to the base's tip (#1379): its
+                # enqueue identity is then ``queued_head``, the head this delivery names.
+                queued = prior["queued_head"] or prior["head"]
+                if (prior["repo"], prior["pr"], queued, prior["seat"], prior['turn_key']) != (repo, pr, head, seat, turn_key):
                     raise ValueError("delivery identity collision")
             else:
                 prior = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? AND turn_key=?",

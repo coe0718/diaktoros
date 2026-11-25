@@ -158,6 +158,15 @@ allowlisted author. The gate reads the configured base branch's current commit a
 queues one `issue_fixer` turn keyed by issue and base commit. The turn uses the normal
 fixer profile and account, not a separate issue-fixer profile.
 
+When the turn is claimed, the worker reads the base branch's tip again and stages the fix
+there, not at the commit read when it was queued (#1379): the run's `head` in the ledger is
+moved to the tip (the queued commit stays in `queued_head`, so a redelivered handoff is still
+the same run), and the prompt, staging, the base-on-branch check and the PR's base all use it.
+A fix never starts at a stale base: if the tip cannot be read, the run waits and retries like
+any other failed read before launch; if another run of the same issue and turn key is already
+at that tip, this one is cancelled before launch (`superseded: run … is at … tip`) and that run
+is the issue's fix at this base.
+
 If a fix is possible, the broker:
 
 1. Records the intent before external writes.
