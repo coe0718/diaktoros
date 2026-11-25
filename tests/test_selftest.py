@@ -1020,14 +1020,20 @@ class ProbeAnswer(unittest.TestCase):
         self.assertIsNone(st.probe_answer('codex_responses', 'application/json', b'<html>'))
 
 
-def _top_level_names(path: pathlib.Path) -> set[str]:
+def _top_level_names(path: pathlib.Path, imports: bool = False) -> set[str]:
+    """Module-level defs, classes and assignment targets (tuples, starred, annotated: #2532),
+    and with ``imports`` the names an import binds."""
     import ast
     names = set()
     for node in ast.parse(path.read_text()).body:
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(n.id for target in targets for n in ast.walk(target)
+                         if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
+        elif imports and isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
     return names
 
 
@@ -1044,10 +1050,11 @@ class InferenceStepModule(unittest.TestCase):
 
     def test_the_inference_step_reads_the_selftest_core_through_selftest(self):
         # So a patch of a core name on selftest (Report, PASS…) reaches step 3 too: nothing of
-        # the core is defined again in selftest_inference.
+        # the core is defined again, or imported by name, in selftest_inference (both import json).
         core = _top_level_names(ROOT / "diaktoros" / "selftest.py")
-        own = _top_level_names(ROOT / "diaktoros" / "selftest_inference.py")
+        own = _top_level_names(ROOT / "diaktoros" / "selftest_inference.py", imports=True)
         self.assertIn("Report", core)
+        self.assertIn("PASS", core)
         self.assertEqual(sorted(core & own), [])
 
 
