@@ -497,6 +497,10 @@ class Prompts(Base):
         patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(no_other_read))
         patch.start()
         self.addCleanup(patch.stop)
+        for name in ("reviews_read", "review_comments_read"):   # #515: the PR's other comments
+            patch = mock.patch.object(gh, name, return_value=([], ""))
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def test_the_ruling_gets_the_heads_ci_and_the_issue_facts(self):
         # #521, live on #537: without CI facts the adjudicator ruled a green head red, twice.
