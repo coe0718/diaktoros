@@ -298,6 +298,10 @@ class FailedFixSequence(Worker):
         stack.enter_context(mock.patch.object(gh, "api", side_effect=self.fake.api))
         stack.enter_context(mock.patch.object(gh, "reviews",
                                               side_effect=lambda *_a, **_k: list(self.reviews)))
+        # #515: the conflict prompt's shared reader reads the PR's comments, review bodies and
+        # inline review comments; none here.
+        for name in ("issue_comments_read", "reviews_read", "review_comments_read"):
+            stack.enter_context(mock.patch.object(gh, name, return_value=([], "")))
         return stack
 
     def sweep(self, head):

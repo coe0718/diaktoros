@@ -939,7 +939,7 @@ class ClaimAndLaunch(TurnHolds):
     def _prepare_ci_fix_launch(self, turn: _Turn, head: dict) -> _Launch | None:
         # #306: a failed required check at this head, handed to the fixer. No verdict
         # is answered; CI is re-read now, and a green or moved head ends the run.
-        from .. import ci, ci_fix, config, gh, prompts
+        from .. import ci, ci_fix, config
         from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
         if self._policy_hold(turn):
@@ -952,12 +952,7 @@ class ClaimAndLaunch(TurnHolds):
         names = ci_fix.failing(state, config.required_checks(loop))
         if not names:
             raise ValueError('CI no longer failing at this head')
-        prompt = (prompts.render_isolated('ci_fix', repo=row['repo'], pr=row['pr'],
-                                          url=gh.pr_url(loop, row['pr']),
-                                          head=row['head'])
-                  + prompts.fixer_check_section(loop, ci_fix=True)
-                  + prompts.registry_section(None)
-                  + ci_fix.section(loop, state, names))
+        prompt = turn_prompts.ci_fix_prompt(loop, row, state, names)
         return _Launch(prompt, broker_ipc.RunScope(
             row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
             str(self.db), row['generation'], ci_fix=True))

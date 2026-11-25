@@ -7,6 +7,7 @@ the opt-in. The watchdog hook is exercised through ``ci_fix.sweep`` with GitHub 
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import json
 import sys
 import unittest
@@ -94,7 +95,9 @@ class Claim(tc.Claim):
 
 
 class Worker(sm.Worker):
-    def fix_run(self, state, loop_extra=None):
+    def fix_run(self, state, loop_extra=None, github=None):
+        """One CI-fix launch through the worker. ``github``: ``(api, reads)``, the PR's REST
+        reads and the comment, review and inline-comment reads, when a test needs them."""
         runtime = self.root / "runtime.json"
         runtime.write_text(json.dumps(self.settings))
         runtime.chmod(0o600)
@@ -112,18 +115,54 @@ class Worker(sm.Worker):
             seen.update(kw, scope=scope)
             return 0
         loop = {**self.loop, "base": "main", "fix_ci": True, **(loop_extra or {})}
+        pr = {"number": 7, "head": {"sha": sm.HEAD, "ref": "fix-7"}}
+        api, reads = github or ((lambda *_a, **_k: pr), {})
+        with contextlib.ExitStack() as stack:
+            for name, value in reads.items():
+                stack.enter_context(mock.patch.object(gh, name, return_value=value))
+            reviews = self.launch(sup, run_id, loop, state, api, run_turn)
+        with ledger.connect(sup.db) as con:
+            row = con.execute("SELECT state, error FROM runs WHERE id=?", (run_id,)).fetchone()
+        return seen, row, reviews
+
+    def launch(self, sup, run_id, loop, state, api, run_turn):
+        """Run the claimed CI-fix row through ``_run_production`` with GitHub and CI mocked."""
         with mock.patch.object(config, "by_repo", return_value=loop), \
-             mock.patch.object(gh, "api", return_value={"number": 7, "head": {
-                 "sha": sm.HEAD, "ref": "fix-7"}}), \
+             mock.patch.object(gh, "api", side_effect=api), \
              mock.patch.object(gh, "reviews") as reviews, \
              mock.patch.object(ci, "read", return_value=state), \
              mock.patch.object(ci_fix, "section", return_value="\nJOBS"), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
              mock.patch.object(sup, "recover"):
             sup._run_production(run_id, "w")
-        with ledger.connect(sup.db) as con:
-            row = con.execute("SELECT state, error FROM runs WHERE id=?", (run_id,)).fetchone()
-        return seen, row, reviews
+        return reviews
+
+    def test_the_launch_carries_the_maintainers_pr_reviews(self):
+        # #515 review F3: the CI-fix launch itself (not only its builder) carries the shared
+        # maintainer section, with a closing issue, a maintainer's review body and inline
+        # comment, and leaves a stranger's out.
+        pr = {"number": 7, "body": "Fixes #5", "head": {"sha": sm.HEAD, "ref": "fix-7"}}
+
+        def api(_loop, path, *a, **k):
+            return ({"number": 5, "title": "T5", "body": "BODY5"} if path.endswith("/issues/5")
+                    else pr)
+        boss, stranger = {"login": "boss"}, {"login": "stranger"}
+        reads = {"issue_comments_read": ([], ""),
+                 "reviews_read": ([{"user": boss, "state": "COMMENTED", "body": "MAINT-REVIEW",
+                                    "submitted_at": "2026-01-02T00:00:00Z"},
+                                   {"user": stranger, "state": "COMMENTED", "body": "STRANGER",
+                                    "submitted_at": "2026-01-02T00:00:00Z"}], ""),
+                 "review_comments_read": ([{"user": boss, "path": "a.py", "line": 3,
+                                            "body": "MAINT-INLINE",
+                                            "created_at": "2026-01-03T00:00:00Z"}], "")}
+        seen, row, _ = self.fix_run(RED, {"triage": {"maintainers": ["boss"]}}, (api, reads))
+        self.assertEqual(row[0], "succeeded")
+        text = seen["prompt"]
+        self.assertIn("BODY5", text)
+        self.assertIn("MAINT-REVIEW", text)
+        self.assertIn("MAINT-INLINE", text)
+        self.assertNotIn("STRANGER", text)
+        self.assertTrue(text.endswith("JOBS"))
 
     def test_the_turn_gets_the_failing_jobs_and_a_verdict_free_scope(self):
         seen, row, reviews = self.fix_run(RED)
