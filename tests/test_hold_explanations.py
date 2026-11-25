@@ -142,7 +142,7 @@ class LedgerExplanations(unittest.TestCase):
         }
 
     # The (reason_code, waiting_for, automatic_resume) each writer's line must explain as. A CI
-    # wait ends at its event or CI_WAIT_MAX_S (turns._ci_hold_reason, the shadow gate); a red
+    # wait ends at its event or CI_WAIT_MAX_S (turn_holds._ci_hold_reason, the shadow gate); a red
     # head's hold has no time limit (#1110), so it is 'after_event', and so is a fixer's red head,
     # where only the fixer's turn order ends at the limit (review of #2398, F3).
     CI_TIMED = ('ci_wait', 'ci_checks_or_new_head', 'after_event_or_timeout')
