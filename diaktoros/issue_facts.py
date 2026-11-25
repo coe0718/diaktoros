@@ -124,19 +124,33 @@ def maintainer_comments(loop: dict, number: int, newest: int | None = COMMENTS_M
     return maintainers_among(loop, comments, newest), ""
 
 
+def _loop_verdict(loop: dict, review: dict) -> bool:
+    """Whether ``review`` is a verdict the loop's own seat posted (#515 review F1): by a login
+    in ``reviewers`` *and* carrying the loop's footer (the one ``attribution.unsign`` strips). A
+    login may be both a maintainer and in ``reviewers``: that person's own review has no footer
+    and is shown. The footer is a display label, not proof: a maintainer who pastes it only hides
+    their own review. With ``attribution: false`` no verdict has a footer, so every review is
+    shown (a loop verdict may then appear twice, in the PR record and here, but none is
+    dropped)."""
+    from . import attribution
+    user = review.get("user")
+    login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
+    if login not in {str(name).lower() for name in loop.get("reviewers") or []}:
+        return False
+    body = review.get("body")
+    return isinstance(body, str) and attribution.unsign(body) != body
+
+
 def _review_items(loop: dict, reviews: list) -> list[dict]:
     """The PR's reviews as comment-shaped items (#515): each review with a body, headed by its
     state. A pending review (its author's draft), an empty body and the loop reviewer's own
-    verdicts (already in the PR record) carry nothing to show here."""
-    seats = {str(login).lower() for login in loop.get("reviewers") or []}
+    verdicts (``_loop_verdict``, already in the PR record) carry nothing to show here."""
     out = []
     for review in reviews:
         if not isinstance(review, dict) or not str(review.get("body") or "").strip():
             continue
-        user = review.get("user")
-        login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
         state = str(review.get("state") or "").upper()
-        if state == "PENDING" or login in seats:
+        if state == "PENDING" or _loop_verdict(loop, review):
             continue
         out.append({"user": review.get("user"), "created_at": review.get("submitted_at"),
                     "body": f"[PR review, {_clip(state or 'unknown state', 40)}]\n{review['body']}"})
