@@ -1,47 +1,22 @@
 """Every CI job has a time limit (2026-10-27: a hung unit shard on #1407 ran past 30 minutes,
-toward GitHub's 6-hour default, because the `unit` job had none). Read as text: the tests are
-stdlib-only, so no YAML parser."""
+toward GitHub's 6-hour default, because the `unit` job had none), in every workflow, not only
+ci.yml (#1447). Read as text: the tests are stdlib-only, so no YAML parser."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import os
 import pathlib
-import re
+import shutil
+import sys
+import tempfile
 import unittest
 
-WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
-# A job's header under ``jobs:``: two spaces, its id (bare, or single- or double-quoted), a
-# colon, and at most a comment after it.
-HEADER = re.compile(r"""^  (?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*:\s*(?:#.*)?$""")
-TIMEOUT = re.compile(r"^    timeout-minutes:\s*\d+\s*(?:#.*)?$")
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+# The guard lives in tools/workflow_jobs.py, outside tests/, so the host's base-failure proof sees
+# a change to it (review of #2700, F2), as test_run_supervisor_modules does for its shadow rules.
+sys.path.insert(0, str(ROOT / "tools"))
+import workflow_jobs  # noqa: E402
 
-
-def jobs(text: str) -> dict[str, list[str]]:
-    """Each job under ``jobs:`` and its lines, read line by line."""
-    found: dict[str, list[str]] = {}
-    current = None
-    inside = False
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue                       # blank or comment-only: never structure (#1415 F2)
-        if not line.startswith(" "):
-            inside, current = line.rstrip() == "jobs:", None    # a top-level key ends the jobs
-            continue
-        at_job_level = inside and line.startswith("  ") and not line.startswith("   ")
-        match = HEADER.match(line) if at_job_level else None
-        if match:
-            current = next(name for name in match.groups() if name)
-            found[current] = []
-        elif at_job_level:
-            # Fail closed (#1415 F3): a job-level line this reader does not understand is a job
-            # it cannot vouch for, never a line of the job before it.
-            current = f"(unrecognised: {line.strip()})"
-            found[current] = []
-        elif current is not None:
-            found[current].append(line)
-    return found
-
-
-def missing(text: str) -> list[str]:
-    return sorted(name for name, lines in jobs(text).items()
-                  if not any(TIMEOUT.match(line) for line in lines))
+jobs, missing = workflow_jobs.jobs, workflow_jobs.missing
 
 
 class Timeouts(unittest.TestCase):
@@ -49,6 +24,48 @@ class Timeouts(unittest.TestCase):
         text = WORKFLOW.read_text()
         self.assertGreaterEqual(len(jobs(text)), 6, sorted(jobs(text)))
         self.assertEqual(missing(text), [], "jobs without timeout-minutes")
+
+    def test_every_workflow_job_has_a_time_limit(self):
+        # #1447: deploy-site.yml and prune-runs.yml had jobs with no limit, and only ci.yml was read.
+        workflows = sorted(WORKFLOW.parent.glob("*.y*ml"))
+        self.assertGreater(len(workflows), 1, workflows)
+        self.assertEqual(workflow_jobs.problems(workflows), [])
+
+    def test_the_guard_never_passes_a_workflow_it_cannot_read(self):
+        # Reviews of #2700: a commented `jobs:` heading (F1) and an indented root mapping (F3) hid
+        # an unbounded job from the guard, as would flow style or a quoted or anchored key. Each is
+        # written beside copies of the real workflows and run through the guard itself.
+        unbounded = {
+            "commented.yml": "on: push\njobs: # every job below\n  runaway:\n    runs-on: x\n",
+            "indented.yml": " on: push\n jobs:\n   runaway:\n     runs-on: x\n",
+            "flow.yml": "on: push\njobs: {runaway: {runs-on: x}}\n",
+            "quoted.yml": 'on: push\n"jobs":\n  runaway:\n    runs-on: x\n',
+            "anchored.yml": "on: push\njobs: &all\n  runaway:\n    runs-on: x\n",
+            # F4: a quoted '#' before runs-on in flow style; a first-'#' cut hid the whole job.
+            "flow_hash.yml": ('on: push\njobs: {runaway: {name: "build #1", runs-on: x, '
+                              'steps: [{run: echo hi}]}}\n'),
+        }
+        bounded = "on: push\njobs: # every job below\n  fine:\n    runs-on: x\n    timeout-minutes: 5\n"
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:
+            folder = pathlib.Path(temp)
+            for path in WORKFLOW.parent.glob("*.y*ml"):
+                shutil.copy(path, folder / path.name)
+            (folder / "bounded.yml").write_text(bounded)
+            self.assertEqual(workflow_jobs.problems(folder.glob("*.yml")), [], "the control passes")
+            for name, text in unbounded.items():
+                with self.subTest(workflow=name):
+                    (folder / name).write_text(text)
+                    found = workflow_jobs.problems(folder.glob("*.yml"))
+                    (folder / name).unlink()
+                    self.assertTrue(any(line.startswith(f"{name}:") for line in found), found)
+
+    def test_a_comment_naming_runs_on_fails_closed(self):
+        # The cost of counting raw text (F4): a comment that mentions the key is an unreadable
+        # workflow until reworded, a false red, never a false green.
+        text = ("on: push\njobs:\n  fine:\n    runs-on: x  # runs-on: y was the old runner\n"
+                "    timeout-minutes: 5\n")
+        self.assertEqual(missing(text), [])
+        self.assertTrue(workflow_jobs.unvouched(text))
 
     def test_a_job_the_check_must_not_miss(self):
         # #1415 review F1: a header with an inline comment is a job too, never part of the one

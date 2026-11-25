@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 from .. import config, util
-from ..config import blocks, credentials, lists, prices
+from ..config import blocks, credentials, lists, number_settings, prices
 
 
 def _check_lists_and_modes(loop: dict, where: str) -> None:
@@ -105,7 +105,7 @@ def _check_reviewer_and_adjudicator(loop: dict, seats: dict, where: str) -> None
 
 def _check_limits(loop: dict, where: str) -> None:
     """``cap``, the review-only limits, the CI-fix, proof and breaker limits, the reply settle."""
-    loop["cap"] = config._as_int(loop["cap"], "cap", where)
+    loop["cap"] = number_settings._as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise config.ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
@@ -117,7 +117,7 @@ def _check_limits(loop: dict, where: str) -> None:
                        ("reply_settle_seconds", lists.check_reply_settle_seconds)):   # #2248
         loop[key] = check(loop.get(key), where)
     for key in ("cooldown_h", "marker_grace_min"):
-        loop[key] = config._positive_number(loop.get(key), key, where)
+        loop[key] = number_settings._positive_number(loop.get(key), key, where)
     for key in ("grace_min", "ttl_min"):
         loop[key] = _whole_minutes(loop.get(key), key, where)
 
@@ -127,12 +127,12 @@ def _whole_minutes(value, key: str, where: str) -> int:
     default). ``config.stall_grace_s`` and ``config.seat_ttl_s`` do ``int(...)`` on these in the
     watchdog sweep, doctor and explain, so a value they cannot read must fail when the loop file
     loads (#1692). A numeric string (``"40"``, what the settings form pushes) reads as its number,
-    as every other integer setting does (``config._as_int``). The ceiling,
+    as every other integer setting does (``number_settings._as_int``). The ceiling,
     ``config.TIMER_MINUTES_MAX``, keeps the sweep's float arithmetic and the seat ledger's
     ``LoopState.minutes`` reading the same number as ``config.seat_died_after_s``."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return config.DEFAULTS[key]
-    minutes = config._as_int(value, key, where)
+    minutes = number_settings._as_int(value, key, where)
     if not 1 <= minutes <= config.TIMER_MINUTES_MAX:
         raise config.ConfigError(f"{where}: {key!r} must be a whole number of minutes, "
                                  f"1-{config.TIMER_MINUTES_MAX}")
@@ -203,7 +203,7 @@ def _check_run_concurrency(loop: dict, seats: dict, where: str) -> None:
     raw_capacity = loop.get("concurrency")
     if raw_capacity is None or raw_capacity == "":
         raw_capacity = 1
-    loop["concurrency"] = config._as_int(raw_capacity, "concurrency", where)
+    loop["concurrency"] = number_settings._as_int(raw_capacity, "concurrency", where)
     if loop["concurrency"] < 1:
         raise config.ConfigError(f"{where}: 'concurrency' must be >= 1 (1 = serialized)")
 
@@ -211,7 +211,7 @@ def _check_run_concurrency(loop: dict, seats: dict, where: str) -> None:
         raw = seats[seat].get("concurrency")
         if raw is None or raw == "":
             continue
-        seats[seat]["concurrency"] = config._as_int(raw, f"seats.{seat}.concurrency", where)
+        seats[seat]["concurrency"] = number_settings._as_int(raw, f"seats.{seat}.concurrency", where)
         if seats[seat]["concurrency"] < 1:
             raise config.ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
 

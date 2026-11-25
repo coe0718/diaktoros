@@ -1094,13 +1094,20 @@ class WorkerLaunch(Base):
         def run_turn(loop, scope, **kw):
             launched.append((scope.role, scope.branch, scope.head))
             return 0
+
+        def api(loop, path, method="GET", body=None, login=None):
+            # the pre-launch base-tip read (#1379): main is still at the queued base
+            if path.endswith(f"/git/ref/heads/{self.loop['base']}"):
+                return {"ref": f"refs/heads/{self.loop['base']}",
+                        "object": {"type": "commit", "sha": BASE}}
+            return issue()
         sup.production_config = self.root / "runtime.json"
         with mock.patch.object(seat_model, "load_runtime", return_value={
                     "source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}), \
                 mock.patch.object(seat_model, "resolve_profile",
                                   side_effect=resolve_profile), \
                 mock.patch.object(config, "by_repo", return_value=self.loop), \
-                mock.patch.object(gh, "api", return_value=issue()), \
+                mock.patch.object(gh, "api", side_effect=api), \
                 mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
                 mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
                 mock.patch.object(sup, "recover"), \

@@ -158,6 +158,12 @@ class DueTurn(base.Base):
         def run_turn(loop, scope, **kw):
             self.launched.append((scope.role, scope.branch, scope.head))
             return 0
+        def api(loop, path, *a, **k):
+            # the pre-launch base-tip read (#1379): the base is still at the queued commit
+            if path.endswith(f"/git/ref/heads/{self.loop['base']}"):
+                return {"ref": f"refs/heads/{self.loop['base']}",
+                        "object": {"type": "commit", "sha": BASE}}
+            return self.live
         sup.production_config = self.root / "runtime.json"
         self.owner, self.err = owner, io.StringIO()
         stack = contextlib.ExitStack()
@@ -166,7 +172,7 @@ class DueTurn(base.Base):
                           "source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}),
                       mock.patch.object(seat_model, "resolve_profile", return_value=inference),
                       mock.patch.object(config, "by_repo", return_value=self.loop),
-                      mock.patch.object(gh, "api", side_effect=lambda *a, **k: self.live),
+                      mock.patch.object(gh, "api", side_effect=api),
                       mock.patch.object(gh, "issue_comments_read", return_value=([], "")),
                       mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn),
                       mock.patch.object(observer, "notify",
