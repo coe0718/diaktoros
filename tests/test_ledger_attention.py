@@ -136,7 +136,8 @@ class LedgerAttention(unittest.TestCase):
         self.run_row(11, "fixer", "failed", "other loop", repo="acme/other")
         text = self.check_ledger()
         self.assertEqual(text, "4 run(s) need a person in the ledger: 1 uncertain, 1 failed, "
-                               "1 waiting, 1 held by policy")
+                               "1 waiting, 1 held by policy (no fresh open-PR listing: runs on "
+                               "closed PRs may be counted)")
 
     def test_selftest_counts_an_uncertain_run_past_the_cap_and_says_the_list_is_cut(self):
         self.run_row(1, "reviewer", "uncertain", "worker lost")
@@ -156,7 +157,55 @@ class LedgerAttention(unittest.TestCase):
         watch["open_prs"] = {"at": time.time(), "numbers": [8]}
         st.watch_save(watch)
         self.assertEqual(self.check_ledger(), "1 run(s) need a person in the ledger: 1 failed "
-                                              "(1 failed on closed PRs not counted)")
+                                              "(1 on closed PRs not counted)")
+
+    def listing(self, numbers, age=0):
+        st = state_mod.state_for(self.loop)
+        watch = st.watch()
+        watch["open_prs"] = {"at": time.time() - age, "numbers": list(numbers)}
+        st.watch_save(watch)
+
+    def test_a_newer_run_at_another_head_supersedes_an_old_heads_failure(self):
+        # Review F1: a fixer failed at head A, then the PR moved on and a fixer ran at head B.
+        self.run_row(7, "fixer", "failed", "conflict needs a person")
+        self.clock += 1
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,"
+                        "updated) VALUES('rb','d-rb',?,7,?,'fixer','kb','done',?,?)",
+                        (REPO, "b" * 40, self.clock, self.clock))
+        self.assertEqual(self.listed(), [])
+
+    def test_a_head_back_after_a_force_push_keeps_its_old_row(self):
+        # Review F1's other half: head A's old row was re-armed (``updated`` bumped) after B ran.
+        self.run_row(7, "fixer", "failed", "conflict needs a person")
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,"
+                        "updated) VALUES('rb','d-rb',?,7,?,'fixer','kb','done',?,?)",
+                        (REPO, "b" * 40, self.clock + 1, self.clock + 1))
+            con.execute("UPDATE runs SET updated=? WHERE head=?", (self.clock + 5, HEAD))
+        self.assertEqual(self.listed(), [(7, "fixer", "failed")])
+
+    def test_closed_pr_rows_of_every_state_but_uncertain_leave_every_path(self):
+        # Review F2: cancelled and waiting rows on closed PRs, through selftest and the Desktop.
+        self.run_row(7, "fixer", "cancelled", run_supervisor.POLICY_CANCELLATIONS[0])
+        self.run_row(8, "reviewer", "waiting", "held: ci")
+        self.run_row(9, "reviewer", "uncertain", "worker lost")
+        self.listing([])
+        self.assertEqual(self.check_ledger(), "1 run(s) need a person in the ledger: 1 uncertain "
+                                              "(2 on closed PRs not counted)")
+        from diaktoros import desktop_api
+        with mock.patch.object(run_supervisor, "production_ledger", return_value=self.db):
+            self.assertEqual(desktop_api.pr_view("widgets", 7)["stuck"], [])
+            self.assertEqual(len(desktop_api.pr_view("widgets", 9)["stuck"]), 1)
+
+    def test_a_stale_listing_is_unknown_openness_not_closed(self):
+        # Review F3: a sweep that stopped a day ago never hides a current failure.
+        self.run_row(7, "fixer", "failed", "conflict needs a person")
+        self.listing([], age=86400)
+        text = self.check_ledger()
+        self.assertIsNotNone(text)
+        self.assertIn("1 run(s) need a person in the ledger: 1 failed", text)
+        self.assertIn("no fresh open-PR listing", text)
 
     def test_selftest_says_nothing_when_nothing_needs_a_person(self):
         self.run_row(7, "fixer", "failed", "conflict needs a person")

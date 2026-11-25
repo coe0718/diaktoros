@@ -118,14 +118,7 @@ def attention_where(repo: str | None = None, pr: int | None = None,
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
     where += " AND r.seat != 'shadow'"
-    # A failed or cancelled run is superseded once a newer run of the same repo, PR (or issue),
-    # head and seat exists (#1364): that run is the one that moves it now. A run at another head
-    # never supersedes it (a head can return after a force-push, and the current head's turn is
-    # never pushed out by turns at other heads, #2613 review, F10). An uncertain run is never
-    # dropped, it holds its seat until reconciled; a waiting one is still due to start.
-    where += (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
-              "WHERE s.repo=r.repo AND s.pr=r.pr AND s.head=r.head AND s.seat=r.seat AND "
-              "(s.created>r.created OR (s.created=r.created AND s.id>r.id))))")
+    where += superseded_where(head is None)
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
@@ -136,6 +129,31 @@ def attention_where(repo: str | None = None, pr: int | None = None,
         where += ' AND r.head=?'
         args.append(head)
     return where, args
+
+
+def superseded_where(across_heads: bool) -> str:
+    """``attention_where``'s supersession rule (#1364), as an SQL condition on ``runs r``.
+
+    A failed or cancelled run is superseded once a newer run (created later) of the same repo,
+    PR (or issue) and seat exists: that run is the one that moves it now. An uncertain run is
+    never dropped, it holds its seat until reconciled; a waiting one is still due to start.
+
+    A newer run at the same head always supersedes. With ``across_heads`` (a listing that is
+    not scoped to one head), a newer run at another head does too, unless the old run's head is
+    still the seat's current head in the ledger: the head of its most recently updated row,
+    the same ``newest`` rule ``retry_action`` targets. A head that came back after a force-push
+    re-arms its old row, which bumps ``updated``, so that row stays listed and ``retry`` can
+    act on it. A head-scoped reader (``explain``'s current head) asks for one head it already
+    knows is current, so only same-head runs supersede there (#2613 review, F10)."""
+    newer = ("s.repo=r.repo AND s.pr=r.pr AND s.seat=r.seat AND "
+             "(s.created>r.created OR (s.created=r.created AND s.id>r.id))")
+    if not across_heads:
+        return (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
+                f"WHERE {newer} AND s.head=r.head))")
+    current = ("(SELECT c.head FROM runs c WHERE c.repo=r.repo AND c.pr=r.pr AND c.seat=r.seat "
+               "ORDER BY c.updated DESC, c.id DESC LIMIT 1)")
+    return (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
+            f"WHERE {newer} AND (s.head=r.head OR r.head IS NOT {current})))")
 
 
 def attention_view(con, repo: str | None = None) -> list[dict]:
@@ -185,17 +203,34 @@ def open_listing(loop: dict) -> dict | None:
             'numbers': {n for n in raw['numbers'] if isinstance(n, int) and not isinstance(n, bool)}}
 
 
+def fresh_listing(listing: dict | None, now: float | None = None) -> dict | None:
+    """``listing`` when it is recent enough to say alone that a PR is closed (no older than
+    ``WATCH_INTERVAL_S``, the bound ``retry_action.pr_open`` trusts it to), else None. A sweep
+    that stopped running leaves a listing that says nothing about PRs opened or reopened since,
+    so a stale one is unknown openness, never evidence that a PR is closed (#1364 review, F3)."""
+    now = time.time() if now is None else now
+    if listing is None or now - listing['at'] > WATCH_INTERVAL_S:
+        return None
+    return listing
+
+
 def closed_history(row: dict, listing: dict | None) -> bool:
-    """Whether a failed run is history: its PR is absent from the last complete open listing.
-    Issue seats are keyed by issue number and never judged by it. No listing: False."""
-    return (listing is not None and row.get('state') == 'failed'
+    """Whether a listed run is history: its PR is absent from a fresh complete open listing
+    (``fresh_listing``; the caller passes one). Failed, waiting and cancelled runs are judged
+    (#1364): a closed or merged PR has nothing left for them to move. An uncertain run never
+    is: it holds its seat until reconciled. Issue seats are keyed by issue number and never
+    judged by a PR listing (closed issues: #2709). No listing: False."""
+    return (listing is not None and row.get('state') != 'uncertain'
             and row.get('seat') not in run_supervisor.ISSUE_SEATS and row.get('pr') not in listing['numbers'])
 
 
 def split_history(rows: list[dict], loop: dict) -> tuple[list[dict], list[dict], bool]:
-    """(rows still to act on, failed rows on closed PRs, whether openness is unknown) for
-    ``runs_view`` rows. Nothing is written: ``report`` and ``stats`` still count them failed."""
-    listing = open_listing(loop)
+    """(rows still to act on, rows on closed PRs, whether openness is unknown) for ``runs_view``
+    rows: the one closed-PR rule ``status``, ``explain``, selftest's ``ledger:attention`` and the
+    Desktop's stuck list apply. Openness is unknown when no sweep recorded a listing or the last
+    one is stale (``fresh_listing``); then nothing is split off. Nothing is written: ``report``
+    and ``stats`` still count the rows in their states."""
+    listing = fresh_listing(open_listing(loop))
     history = [row for row in rows if closed_history(row, listing)]
     return [row for row in rows if row not in history], history, listing is None
 

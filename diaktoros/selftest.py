@@ -1055,14 +1055,16 @@ def _ledger_attention(report: Report, step: str, loop: dict, db: Path, rows: lis
     failed runs on PRs the watchdog's last listing shows closed are history (``split_history``,
     as ``status``/``explain`` print them), and ``listed`` is how many rows ``status`` shows."""
     from .run_supervisor import views
-    rows, history, _ = views.split_history(rows, loop)
+    rows, history, unknown = views.split_history(rows, loop)
     if not rows:
         return
     counts = views.attention_counts(rows)
     text = ", ".join(f"{count} {kind}" for kind, count in counts.items())
     text = f"{len(rows)} run(s) need a person in the ledger: {text}"
     if history:
-        text += f" ({len(history)} failed on closed PRs not counted)"
+        text += f" ({len(history)} on closed PRs not counted)"
+    elif unknown:
+        text += " (no fresh open-PR listing: runs on closed PRs may be counted)"
     if listed < len(rows) + len(history):
         text += (f"; `status` lists {listed} of {len(rows) + len(history)}, the newest "
                  "(every uncertain one included)")
