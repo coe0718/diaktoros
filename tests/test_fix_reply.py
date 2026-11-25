@@ -218,9 +218,9 @@ class Delivery(Replies):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def comment(self, action="created", sender="Jeremy", on_pr=False):
+    def comment(self, action="created", sender="Jeremy", on_pr=False, cid=201):
         body = {**issue(), **({"pull_request": {"url": "x"}} if on_pr else {})}
-        return {"action": action, "comment": {"id": 201, "user": {"login": sender}, "body": "B"},
+        return {"action": action, "comment": {"id": cid, "user": {"login": sender}, "body": "B"},
                 "issue": body, "sender": {"login": sender}, "repository": {"full_name": REPO}}
 
     def deliver(self, payload):
@@ -269,11 +269,28 @@ class Delivery(Replies):
             decision, reason = self.deliver(self.comment(on_pr=True))
             self.assertEqual(decision, "accepted", reason)
             rearm[0] = False
-            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "declined")
+            self.assertEqual(self.deliver(self.comment(on_pr=True, cid=202))[0], "declined")
             self.assertEqual(self.deliver(self.comment(on_pr=True, sender="stranger"))[0],
                              "declined")
         self.assertEqual(calls, [(12, "fixer", head)] * 2)
         self.assertEqual(self.enqueued, [])
+
+    def test_a_redelivered_pr_comment_never_rearms_the_turn_again(self):
+        """#2738 review F1: the same PR comment delivered again (after an operator cancelled the
+        turn it re-armed) re-arms nothing; a new comment by a maintainer still does."""
+        self.origin_pr = {"number": 12, "state": "open", "head": {"sha": "e" * 40}}
+        calls = []
+
+        def perform(loop, pr, seat, **kw):
+            calls.append(pr)
+            return {"rearmed": [{"seat": "fixer"}], "refused": [], "message": ""}
+        from diaktoros import retry_action
+        with mock.patch.object(retry_action, "perform", perform):
+            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "accepted")
+            decision, reason = self.deliver(self.comment(on_pr=True))
+            self.assertEqual(decision, "declined", reason)
+            self.assertEqual(self.deliver(self.comment(on_pr=True, cid=999))[0], "accepted")
+        self.assertEqual(calls, [12, 12])
 
     def test_an_answer_to_an_ask_resumes_it_at_once_and_no_other_issues(self):
         self.st.fix_ask_set(12, "question", 100, "Which API shape?")

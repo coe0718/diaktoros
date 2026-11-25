@@ -161,7 +161,7 @@ def on_comment(loop: dict, payload: dict) -> None:
     if type(number) is not int or number < 1:
         silence("issue_comment: payload has no issue number")
     if "pull_request" in issue:
-        on_pr_comment(loop, number, login)
+        on_pr_comment(loop, number, login, payload.get("comment"))
     st = state_mod.state_for(loop)
     if number in st.fix_ask_open():                 # an ask (#483) resumes by its own rules
         lines: list[str] = []
@@ -189,7 +189,34 @@ def on_comment(loop: dict, payload: dict) -> None:
     silence(f"issue #{number}: {login} replied; fix turn queued", "accepted")
 
 
-def on_pr_comment(loop: dict, number: int, login: str) -> None:
+PR_COMMENTS = "fix-reply-pr-comments.json"   # {"<comment id>": when it was first acted on}
+
+
+def claim_pr_comment(st, comment) -> bool:
+    """#2738 review F1: whether this PR comment is acted on for the first time. Its id is recorded
+    under the loop's state lock before anything is re-armed, so a redelivery of the same comment
+    (after an operator's cancel, or another failure) never re-arms the turn again. A comment with
+    no id, or a record that cannot be written, is not acted on."""
+    cid = comment.get("id") if isinstance(comment, dict) else None
+    if type(cid) is not int:
+        return False
+    with st.locked():
+        seen = st.kv_get(st.dir / PR_COMMENTS, {})
+        seen = dict(seen) if isinstance(seen, dict) else {}
+        if str(cid) in seen:
+            return False
+        cutoff = time.time() - WAIT_DAYS * 86400
+        seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and v > cutoff}
+        seen[str(cid)] = time.time()
+        try:
+            st.kv_set_strict(st.dir / PR_COMMENTS, seen)
+        except Exception as exc:
+            log(f"state write failed ({PR_COMMENTS}): {exc}")
+            return False
+    return True
+
+
+def on_pr_comment(loop: dict, number: int, login: str, comment=None) -> None:
     """#2025: a maintainer's comment on a loop PR re-queues the fixer turn waiting at its head:
     one that ended there without pushing (failed, waiting on backoff, policy-cancelled). It is
     re-armed exactly as `hermes dk retry --pr N --seat fixer` would (``retry_action.perform``:
@@ -201,6 +228,9 @@ def on_pr_comment(loop: dict, number: int, login: str) -> None:
     head = ((pr.get("head") or {}).get("sha") or "") if isinstance(pr, dict) else ""
     if not isinstance(pr, dict) or pr.get("state") != "open" or not head:
         silence(f"#{number}: a comment on a PR that is not open or unreadable; nothing re-queued")
+    from . import state as state_mod
+    if not claim_pr_comment(state_mod.state_for(loop), comment):
+        silence(f"#{number}: PR comment already acted on, or without an id; nothing re-queued")
     result = retry_action.perform(loop, number, "fixer", confirm_head=head, read_pr=lambda: pr)
     if not result["rearmed"]:
         why = retry_action.bounded(result["message"] or "; ".join(
