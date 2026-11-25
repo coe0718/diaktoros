@@ -1,6 +1,6 @@
 """Every CI job has a time limit (2026-10-27: a hung unit shard on #1407 ran past 30 minutes,
-toward GitHub's 6-hour default, because the `unit` job had none). Read as text: the tests are
-stdlib-only, so no YAML parser."""
+toward GitHub's 6-hour default, because the `unit` job had none), in every workflow, not only
+ci.yml (#1447). Read as text: the tests are stdlib-only, so no YAML parser."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import pathlib
 import re
@@ -49,6 +49,14 @@ class Timeouts(unittest.TestCase):
         text = WORKFLOW.read_text()
         self.assertGreaterEqual(len(jobs(text)), 6, sorted(jobs(text)))
         self.assertEqual(missing(text), [], "jobs without timeout-minutes")
+
+    def test_every_workflow_job_has_a_time_limit(self):
+        # #1447: deploy-site.yml and prune-runs.yml had jobs with no limit, and only ci.yml was read.
+        workflows = sorted(WORKFLOW.parent.glob("*.y*ml"))
+        self.assertGreater(len(workflows), 1, workflows)
+        unbounded = [f"{path.name}: {name}" for path in workflows
+                     for name in missing(path.read_text())]
+        self.assertEqual(unbounded, [], "jobs without timeout-minutes")
 
     def test_a_job_the_check_must_not_miss(self):
         # #1415 review F1: a header with an inline comment is a job too, never part of the one
