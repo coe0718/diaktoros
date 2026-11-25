@@ -26,6 +26,9 @@ from diaktoros import ready, run_supervisor  # noqa: E402
 
 PR = {**fg.LIVE, "user": {"login": "fixer"}}
 CHANGES, DISMISSED, TUCK = tra.CHANGES, tra.DISMISSED, tra.TUCK
+AUTHORIZE = broker.authorize_adjudicator   # the real check, before Base mocks it
+LIVE = {**PR, "head": {**PR["head"], "repo": {"full_name": fg.REPO}},   # as the broker reads it
+        "base": {**PR["base"], "repo": {"full_name": fg.REPO}}}
 
 
 class Base(tra.Base):
@@ -372,6 +375,98 @@ class Waits(Base):
         self.paths = ("the PR's file list could not be read", "")
         self.assertEqual(self.sweep(), [])
         self.assertIsNone(self.row())
+
+
+class ReadFailureWaits(Base):
+    """#1704: a GitHub read the broker's adjudicator check could not make (a token's principal,
+    the live PR) is a wait, not a refusal: nothing is recorded, and the next sweep, with GitHub
+    readable again, approves. The real ``broker.authorize_adjudicator`` runs here."""
+
+    def setUp(self):
+        super().setUp()
+        self.failing = 1
+        self.loop = {**self.loop, "read_token": "reader", "seats": {
+            **self.loop["seats"], "reviewer": {**self.loop["seats"]["reviewer"], "login": "reviewer"},
+            "fixer": {**self.loop["seats"]["fixer"], "login": "fixer"}}}
+        for target, name, kw in (
+                (broker, "authorize_adjudicator", {"new": AUTHORIZE}),
+                (broker.gh, "credential_path",
+                 {"side_effect": lambda _loop, login=None: Path(f"/creds/{login}")}),
+                (broker.gh, "token", {"return_value": "t"})):
+            patch = mock.patch.object(target, name, **kw)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def fail_once(self, value):
+        """``value`` once GitHub reads again; ``None`` (a failed read) for the first call."""
+        if self.failing:
+            self.failing -= 1
+            return None
+        return value
+
+    def check(self, principal, pr):
+        self.ruled("ACCEPT")
+        with mock.patch.object(broker.gh, "principal", side_effect=principal), \
+                mock.patch.object(broker.gh, "api", side_effect=pr):
+            self.assertEqual(self.sweep(), [])
+            self.assertIsNone(self.row())                  # no terminal "denied" written
+            self.approve.assert_not_called()
+            self.assertEqual(self.sweep(), [7])            # healthy again: approved
+        self.approve.assert_called_once()
+        self.assertEqual(self.row()["approve"], "posted")
+
+    def test_an_unreadable_principal_waits_then_approves(self):
+        self.check(lambda _loop, login, *_a: self.fail_once({"id": hash(login), "login": login}),
+                   lambda *_a, **_k: dict(LIVE))
+
+    def test_an_unreadable_live_pr_waits_then_approves(self):
+        self.check(lambda _loop, login, *_a: {"id": hash(login), "login": login},
+                   lambda *_a, **_k: self.fail_once(dict(LIVE)))
+
+    def test_an_unreadable_live_pr_before_the_dismissal_waits_too(self):
+        self.ruled("ACCEPT")
+        with mock.patch.object(broker.gh, "principal",
+                               side_effect=lambda _l, login, *_a: {"id": hash(login), "login": login}), \
+                mock.patch.object(broker.gh, "api", side_effect=lambda *_a, **_k: dict(LIVE)):
+            self.sweep()                                   # approved
+            self.failing = 1
+            with mock.patch.object(broker.gh, "api",
+                                   side_effect=lambda *_a, **_k: self.fail_once(dict(LIVE))):
+                self.sweep()
+            self.assertEqual(self.row()["dismiss"], "pending")
+            self.dismiss.assert_not_called()
+            self.sweep()
+        self.dismiss.assert_called_once()
+        self.assertEqual(self.row()["dismiss"], "posted")
+
+    def test_a_refusal_is_still_denied(self):
+        self.ruled("ACCEPT")
+        with mock.patch.object(broker.gh, "principal",
+                               side_effect=lambda _l, login, *_a: {"id": hash(login), "login": login}), \
+                mock.patch.object(broker.gh, "api",
+                                  side_effect=lambda *_a, **_k: {**LIVE, "draft": True}):
+            self.sweep()
+        self.approve.assert_not_called()
+        self.assertEqual(self.row()["approve"], "denied")
+
+
+class HoldDocs(unittest.TestCase):
+    """#1704: the docs say what the sweep does with each hold: a human hold is a refusal recorded
+    ``denied`` (``_wait_or_deny``), left for a person; a maintainer hold waits."""
+
+    def text(self, body):
+        return " ".join(body.split())
+
+    def test_configuration_names_the_human_hold_a_refusal_and_the_maintainer_hold_a_wait(self):
+        table = (Path(__file__).resolve().parents[1] / "docs" / "configuration.md").read_text()
+        row = self.text(next(line for line in table.splitlines()
+                             if line.startswith("| `adjudicator_approves`")))
+        for text in (row, self.text(ruled_approval.__doc__)):
+            with self.subTest(text=text[:40]):
+                self.assertNotIn("a hold or an unreadable read wait", text)
+                self.assertRegex(text, r"refusal \([^)]*a human hold")
+                self.assertIn("a maintainer hold", text)
+                self.assertRegex(text, r"once a human hold is cleared,? a person \(or a new")
 
 
 class LeftToAPerson(Base):
