@@ -209,7 +209,8 @@ def comments_section(loop: dict, number: int, what: str = "issue", read=None) ->
 def section(loop: dict, number: int) -> str:
     """The seats' view of one PR's issues: each closing issue's title, body and maintainers'
     comments, the maintainers' comments on the PR, and the state of every other issue it names
-    (``referenced_section``). '' when it names none, or the PR can't be read."""
+    (``referenced_section``). A PR that closes no issue still gets its maintainers' comments
+    (#2311). '' when it names none and has no maintainer comment, or the PR can't be read."""
     from . import gh
     body = _pr_body(loop, number)
     if body is None:
@@ -223,7 +224,11 @@ def section(loop: dict, number: int) -> str:
     referenced = referenced_section(loop, number, [body, *(text for _, _, text in every)],
                                     numbers, comments_read=not unread)
     if not numbers:
-        return referenced
+        # #2311: a PR that closes no issue still carries its maintainers' comments (same bound
+        # and unread note); with none, and nothing unread, there is nothing to show.
+        if not pr_comments[0] and not unread:
+            return referenced
+        return comments_section(loop, number, "the PR", pr_comments) + referenced
     out = []
     for n in numbers:
         issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{n}", login=loop["read_token"])
