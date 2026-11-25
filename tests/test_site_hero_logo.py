@@ -88,8 +88,8 @@ class ImageParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if tag == "img" and a.get("src"):
-            self.paths.append(a["src"])
+        if tag == "img" and "src" in a:              # an empty src loads no image either
+            self.paths.append(a["src"] or "")
         if tag in ("img", "source") and a.get("srcset"):     # a browser may pick either
             self.paths += srcset_urls(a["srcset"])
 
@@ -134,7 +134,8 @@ class EveryImageResolves(unittest.TestCase):
             (root / "good.png").write_bytes(b"x")
             (root / "index.html").write_text('<img src="good.png">')
             for readme, broken in (('<img src="good.png">', 0), ('<img src="moved.png">', 1),
-                                   ('<img src="good.png" srcset="good.png 1x, missing.png 2x">', 1)):
+                                   ('<img src="good.png" srcset="good.png 1x, missing.png 2x">', 1),
+                                   ('<img src="good.png"><img src="">', 1)):
                 with self.subTest(readme):
                     (root / "README.md").write_text(readme)
                     result = unittest.TestResult()
