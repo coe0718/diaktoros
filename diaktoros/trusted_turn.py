@@ -798,6 +798,183 @@ def _stage_pr(loop: dict, scope: broker_ipc.RunScope, sandbox_root: Path,
         raise
 
 
+def _private_work_root(loop: dict, work_root) -> Path:
+    """The resolved, private (0700, not a symlink) directory a turn's temporary root goes
+    under: ``work_root`` or the loop's state dir, guarded against the operator's real home."""
+    from .config import state_dir
+    from .config.host_guards import guard_real_home
+    parent = guard_real_home(Path(work_root) if work_root else state_dir(loop)).resolve()
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if parent.is_symlink() or parent.stat().st_mode & 0o077:
+        raise TurnDenied('work root must be private')
+    return parent
+
+
+def _write_home(native: bool, home: Path, model: str, api_mode: str, client_identity: str,
+                reasoning_effort: str):
+    """Write the sandbox's disposable HOME (native or bwrap layout); returns the provider."""
+    if native:
+        from . import native_turn
+        return native_turn.write_home(home, model, api_mode, client_identity, reasoning_effort)
+    return _write_sandbox_home(home, model, api_mode, client_identity, reasoning_effort)
+
+
+def _stage_review(root: Path, review_diff: str | None) -> Path | None:
+    """The directory holding the host-built, read-only ``pr.diff``; None without a diff."""
+    if review_diff is None:
+        return None
+    review = root / 'review'
+    review.mkdir(mode=0o700)
+    (review / 'pr.diff').write_text(review_diff)
+    (review / 'pr.diff').chmod(0o444)
+    return review
+
+
+def _stage_checkout(loop: dict, scope, root: Path, *, merged, progress, prefetch_timeout,
+                    rust) -> tuple[Path, list, list]:
+    """``(checkout, prefetched, not_exported)``: the tree the sandbox mounts at /work (empty
+    for triage, the host's merge for a conflict turn, else the PR's staged head) and its
+    prefetched dependencies."""
+    if scope.role == 'triage':
+        # An issue has no tree (#213): /work is an empty, read-only directory, and there is
+        # nothing to fetch or build.
+        checkout = root / 'export'
+        checkout.mkdir(mode=0o700)
+        return checkout, [], []
+    not_exported = []
+    if merged is not None:
+        # A conflict-resolution turn (#303): the host's merge of the base into the head,
+        # written and verified entry by entry exactly like a PR export.
+        if scope.merge is None or scope.merge.get("tree") != merged.get("tree"):
+            raise TurnDenied('merge export does not match the turn scope')
+        export = root / 'export'
+        export.mkdir(mode=0o700)
+        checkout = export / 'repo'
+        checkout.mkdir(mode=0o700)
+        trusted_fetch._extract(merged["archive"], checkout, merged["entries"],
+                               frozenset(merged["skipped"]))
+        not_exported.extend(merged["skipped"])
+    else:
+        checkout = _stage_pr(loop, scope, root / 'export', not_exported)
+    cache = dependency_cache(loop)
+    _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
+            + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
+    prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
+    return checkout, prefetched, not_exported
+
+
+def _write_query(query: Path, loop: dict, scope, *, prompt, checkout, root, prefetched,
+                 not_exported, layout, review, progress, observed, **sandbox) -> None:
+    """Report the prefetch's outcome, run the change proof and write the seat's query.
+    ``review`` is given only on the native backend, whose query names the diff's path;
+    ``sandbox`` is ``change_proof_parts``'s sandbox arguments."""
+    if prefetched:
+        _report(progress, deps.ledger_text(prefetched))
+    else:
+        # Without this the ledger keeps "fetching — started …" for good, and explain
+        # shows a finished turn as still fetching (#361).
+        _report(progress, "nothing to prefetch (no supported dependency manifest)")
+    if observed is not None:
+        observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
+    proof = change_proof_parts(loop, scope, checkout, root, progress, **sandbox)
+    text = query_text(prompt, scope.role, prefetched, not_exported, proof, layout=layout)
+    if review is not None:
+        import shlex
+        text = compose_prompt(text, 'The host-provided PR diff is at '
+                              + shlex.quote(str(review / 'pr.diff')) + '.')
+    query.write_text(text)
+
+
+def _start_capabilities(stack: ExitStack, loop: dict, scope, *, native: bool, steps: int,
+                        upstream, key, model, api_mode, credential, no_write, sandbox: dict):
+    """``(inference, broker)``: the turn's inference proxy and scoped broker, on sockets in a
+    short private scratch directory, all closed by ``stack``. ``sandbox`` holds the issue
+    fixer's ``sandbox_prover`` arguments."""
+    sockets = Path(stack.enter_context(tempfile.TemporaryDirectory(
+        prefix='rl-', dir='/tmp' if native else tempfile.gettempdir()))).resolve()
+    # AF_UNIX has a ~108-byte pathname limit, independent of work_root.
+    if len(os.fsencode(sockets)) > 50:
+        raise TurnDenied('scratch socket directory path too long')
+    inference = stack.enter_context(inference_proxy.InferenceCapability(
+        sockets / 'i', upstream, key,
+        model=model, quota=config.model_calls(steps), api_mode=api_mode,
+        credential=credential,
+        # #554: the writing seats are nudged to submit before their steps run out; a
+        # judging seat (adjudicator, triage) is not.
+        nudge_steps=steps if gets_nudge(scope.role) else None))
+    broker_root = sockets / 'b'
+    broker_root.mkdir(mode=0o700)
+    broker = stack.enter_context(broker_ipc.RunBroker(
+        loop, scope, broker_root, require_push=scope.role == 'fixer',
+        require_receipt=scope.role == 'reviewer', no_write=no_write,
+        prover=(sandbox_prover(**sandbox) if scope.role == 'issue_fixer' else None)))
+    return inference, broker
+
+
+def _observe_kill(observed: dict | None, inference, exc, what: str, note: str = '') -> None:
+    """Keep what a killed sandbox printed and what the agent was last doing (the proxy saw
+    its last call): without them a kill says only that it happened. ``what`` names the kill
+    ('stop' or 'kill'); ``note`` is appended to stdout."""
+    if observed is None:
+        return
+    doing = getattr(inference, 'last_activity', '')
+    observed['thinking'] = getattr(inference, 'thinking', None)
+    observed.update(usage_of(inference))
+    observed.update(
+        stdout=_kept(exc.output, 'stdout')
+        + (f"\n[last agent activity before the {what}] {doing}" if doing else "") + note,
+        stderr=_kept(exc.stderr, 'stderr'))
+
+
+def _run_sandbox(native: bool, *, inference, observed, timeout, stop, workspace, **launch):
+    """Run the sandbox (the native backend or ``contained.run``) to its exit, bounded by the
+    turn's ``timeout`` plus ``KILL_GRACE_S``. A stop (#1148) or a budget kill is recorded in
+    ``observed`` and re-raised (the kill as ``TurnBudgetExceeded``)."""
+    grace = KILL_GRACE_S
+    stopping = {"stop": stop} if stop is not None else {}
+    try:
+        if native:
+            from . import native_turn
+            runner = native_turn.native_backend.run
+        else:
+            runner = contained.run
+        return runner(timeout=timeout + grace, **launch,
+                      **({'workspace': workspace, 'extra_env': {'OPENAI_API_KEY': 'sandbox-dummy'}}
+                         if native else {}), **stopping)
+    except contained.Stopped as exc:
+        # An operator's cancel (#1148): the same kill as the budget's, and the same
+        # record of what the turn printed and was last doing.
+        _observe_kill(observed, inference, exc, 'stop')
+        raise
+    except subprocess.TimeoutExpired as exc:
+        # contained.run has already SIGKILLed the sandbox's process group.
+        _observe_kill(observed, inference, exc, 'kill', _provider_note(inference))
+        raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
+
+
+def _require_published(result, broker) -> None:
+    """A clean exit must have completed the turn's one scoped write through the broker."""
+    if result.returncode == 0 and not broker.completed:
+        if not broker.requests:
+            raise TurnUnpublished('agent exited without a confirmed scoped write '
+                                  '(it never called the broker)')
+        raise TurnDenied('agent exited without a confirmed scoped write')
+
+
+def _broker_stuck(in_flight: BaseException | None) -> None:
+    """Raise for a broker that did not shut down. Raised from the turn's ``finally``, it
+    replaces whatever was in flight; keep a budget kill in the reason (and as the cause) so
+    the operator sees both clocks (#98)."""
+    if isinstance(in_flight, TurnBudgetExceeded):
+        raise TurnDenied(drain_failure(in_flight)) from in_flight
+    if in_flight is not None:
+        # Whatever the sandbox raised stays the cause, and is named (#98).
+        raise TurnDenied(f'broker did not shut down (after '
+                         f'{type(in_flight).__name__}: {in_flight})'[:400]
+                         ) from in_flight
+    raise TurnDenied('broker did not shut down')
+
+
 
 def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path,
              runtime: Path, rust: Path, upstream: str, key: str, model: str,
@@ -845,182 +1022,75 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
 
     if not model or not prompt or timeout < 1 or not key:
         raise TurnDenied('missing model, prompt or credential')
-    from .config import state_dir
-    from .config.host_guards import guard_real_home
-    parent = guard_real_home(Path(work_root) if work_root else state_dir(loop)).resolve()
-    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if parent.is_symlink() or parent.stat().st_mode & 0o077:
-        raise TurnDenied('work root must be private')
+    parent = _private_work_root(loop, work_root)
     with ExitStack() as resources:
         tmp = resources.enter_context(tempfile.TemporaryDirectory(prefix='turn-', dir=parent))
         root = Path(tmp)
         native = sys.platform == 'darwin'
         code, home, client = _stage_source(root, source, scope)
-        if native:
-            from . import native_turn
-            provider = native_turn.write_home(home, model, api_mode, client_identity, reasoning_effort)
-        else:
-            provider = _write_sandbox_home(home, model, api_mode, client_identity, reasoning_effort)
-        review = None
-        if review_diff is not None:
-            review = root / 'review'
-            review.mkdir(mode=0o700)
-            (review / 'pr.diff').write_text(review_diff)
-            (review / 'pr.diff').chmod(0o444)
-        if scope.role == 'triage':
-            # An issue has no tree (#213): /work is an empty, read-only directory, and there is
-            # nothing to fetch or build.
-            checkout = root / 'export'
-            checkout.mkdir(mode=0o700)
-            prefetched = []
-            not_exported = []
-        else:
-            not_exported = []
-            if merged is not None:
-                # A conflict-resolution turn (#303): the host's merge of the base into the head,
-                # written and verified entry by entry exactly like a PR export.
-                if scope.merge is None or scope.merge.get("tree") != merged.get("tree"):
-                    raise TurnDenied('merge export does not match the turn scope')
-                export = root / 'export'
-                export.mkdir(mode=0o700)
-                checkout = export / 'repo'
-                checkout.mkdir(mode=0o700)
-                trusted_fetch._extract(merged["archive"], checkout, merged["entries"],
-                                       frozenset(merged["skipped"]))
-                not_exported.extend(merged["skipped"])
-            else:
-                checkout = _stage_pr(loop, scope, root / 'export', not_exported)
-            cache = dependency_cache(loop)
-            _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
-                    + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
-            prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
+        provider = _write_home(native, home, model, api_mode, client_identity, reasoning_effort)
+        review = _stage_review(root, review_diff)
+        checkout, prefetched, not_exported = _stage_checkout(
+            loop, scope, root, merged=merged, progress=progress,
+            prefetch_timeout=prefetch_timeout, rust=rust)
         workspace = layout = None
         try:
             query = root / 'query.txt'
             if native:
+                from . import native_turn
                 workspace, layout = resources.enter_context(native_turn.prepare(
                     home=home, code=code, venv=venv, checkout=checkout,
                     client=client.parent, query=query, ledger_db=getattr(scope, 'ledger_db', None)))
                 home = workspace.home
-            if prefetched:
-                _report(progress, deps.ledger_text(prefetched))
-            else:
-                # Without this the ledger keeps "fetching — started …" for good, and explain
-                # shows a finished turn as still fetching (#361).
-                _report(progress, "nothing to prefetch (no supported dependency manifest)")
-            if observed is not None:
-                observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
-            proof = change_proof_parts(loop, scope, checkout, root, progress, code=code,
-                                       venv=venv, runtime=runtime, home=home, rust=rust, stop=stop)
-            text = query_text(prompt, scope.role, prefetched, not_exported, proof, layout=layout)
-            if native and review is not None:
-                import shlex
-                text = compose_prompt(text, 'The host-provided PR diff is at '
-                                      + shlex.quote(str(review / 'pr.diff')) + '.')
-            query.write_text(text)
+            _write_query(query, loop, scope, prompt=prompt, checkout=checkout, root=root,
+                         prefetched=prefetched, not_exported=not_exported, layout=layout,
+                         review=review if native else None, progress=progress,
+                         observed=observed, code=code, venv=venv, runtime=runtime, home=home,
+                         rust=rust, stop=stop)
         except BaseException:
             deps.release(prefetched)
             raise
         with ExitStack() as stack:
             # The cache generation stays held until the sandbox that mounts it has exited.
             stack.callback(deps.release, prefetched)
-            sockets = Path(stack.enter_context(tempfile.TemporaryDirectory(
-                prefix='rl-', dir='/tmp' if native else tempfile.gettempdir()))).resolve()
-            # AF_UNIX has a ~108-byte pathname limit, independent of work_root.
-            if len(os.fsencode(sockets)) > 50:
-                raise TurnDenied('scratch socket directory path too long')
             # Steps per seat are a setting (#271: config.max_steps); model calls follow from them.
             # ``steps`` overrides it for a seat whose scope role is another's: a shadow review
             # runs as the reviewer, with its own budget (#218).
             steps = steps or config.max_steps(loop, scope.role)
-            inference = stack.enter_context(inference_proxy.InferenceCapability(
-                sockets / 'i', upstream, None if credential is not None else key,
-                model=proxy_model or model, quota=config.model_calls(steps), api_mode=api_mode,
-                credential=credential,
-                # #554: the writing seats are nudged to submit before their steps run out; a
-                # judging seat (adjudicator, triage) is not.
-                nudge_steps=steps if gets_nudge(scope.role) else None))
-            broker_root = sockets / 'b'
-            broker_root.mkdir(mode=0o700)
-            broker = stack.enter_context(broker_ipc.RunBroker(
-                loop, scope, broker_root, require_push=scope.role == 'fixer',
-                require_receipt=scope.role == 'reviewer', no_write=no_write,
-                prover=(sandbox_prover(checkout=checkout, code=code, venv=venv, runtime=runtime,
-                                       home=home, rust=rust, query=query,
-                                       ledger_db=getattr(scope, 'ledger_db', None), stop=stop)
-                        if scope.role == 'issue_fixer' else None)))
+            inference, broker = _start_capabilities(
+                stack, loop, scope, native=native, steps=steps, upstream=upstream,
+                key=None if credential is not None else key, model=proxy_model or model,
+                api_mode=api_mode, credential=credential, no_write=no_write,
+                sandbox=dict(checkout=checkout, code=code, venv=venv, runtime=runtime,
+                             home=home, rust=rust, query=query,
+                             ledger_db=getattr(scope, 'ledger_db', None), stop=stop))
             server = broker_ipc.serve_in_thread(broker)
             try:
                 # -P (#1373): /work, the cwd, is the tree under review; a `diaktoros` package
                 # there must never shadow the trusted bridge on sys.path.
                 command = _turn_entry(layout, provider=provider, model=model, max_steps=steps,
                                       timeout=timeout, api_mode=api_mode)
-                grace = KILL_GRACE_S
                 if stop is not None and stop.is_set():
                     raise contained.Stopped()
                 if on_launch is not None:
                     on_launch()
-                stopping = {"stop": stop} if stop is not None else {}
-                try:
-                    runner = native_turn.native_backend.run if native else contained.run
-                    result = runner(code=code, venv=venv, runtime=runtime,
-                        home=home, checkout=checkout, rust=rust, query=query, entry=command,
-                        node=node,
-                        inference_socket_dir=inference.directory,
-                        broker_socket_dir=broker.socket_path.parent,
-                        client_code=client.parent, review_dir=review, timeout=timeout + grace,
-                        dependency_caches={r.ecosystem: r.cache for r in prefetched if r.ready},
-                        # A ruling is judgement, not a change: the adjudicator's tree is mounted
-                        # read-only so nothing it runs can dress up the head it rules on.
-                        checkout_writable=scope.role not in ('adjudicator', 'triage'),
-                        **({'workspace': workspace, 'extra_env': {'OPENAI_API_KEY': 'sandbox-dummy'}}
-                           if native else {}), **stopping)
-                except contained.Stopped as exc:
-                    # An operator's cancel (#1148): the same kill as the budget's, and the same
-                    # record of what the turn printed and was last doing.
-                    if observed is not None:
-                        doing = getattr(inference, 'last_activity', '')
-                        observed['thinking'] = getattr(inference, 'thinking', None)
-                        observed.update(usage_of(inference))
-                        observed.update(
-                            stdout=_kept(exc.output, 'stdout')
-                            + (f"\n[last agent activity before the stop] {doing}" if doing else ""),
-                            stderr=_kept(exc.stderr, 'stderr'))
-                    raise
-                except subprocess.TimeoutExpired as exc:
-                    # contained.run has already SIGKILLed the sandbox's process group. Keep what
-                    # it printed and what the agent was last doing (the proxy saw its last call):
-                    # without them a budget kill says only that the clock ran out.
-                    if observed is not None:
-                        doing = getattr(inference, 'last_activity', '')
-                        observed['thinking'] = getattr(inference, 'thinking', None)
-                        observed.update(usage_of(inference))
-                        observed.update(
-                            stdout=_kept(exc.output, 'stdout')
-                            + (f"\n[last agent activity before the kill] {doing}" if doing else "")
-                            + _provider_note(inference),
-                            stderr=_kept(exc.stderr, 'stderr'))
-                    raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
+                result = _run_sandbox(
+                    native, inference=inference, observed=observed, timeout=timeout,
+                    stop=stop, workspace=workspace, code=code, venv=venv, runtime=runtime,
+                    home=home, checkout=checkout, rust=rust, query=query, entry=command,
+                    node=node, inference_socket_dir=inference.directory,
+                    broker_socket_dir=broker.socket_path.parent,
+                    client_code=client.parent, review_dir=review,
+                    dependency_caches={r.ecosystem: r.cache for r in prefetched if r.ready},
+                    # A ruling is judgement, not a change: the adjudicator's tree is mounted
+                    # read-only so nothing it runs can dress up the head it rules on.
+                    checkout_writable=scope.role not in ('adjudicator', 'triage'))
                 if observed is not None:
                     _observe_exit(observed, inference, result, broker)
-                if result.returncode == 0 and not broker.completed:
-                    if not broker.requests:
-                        raise TurnUnpublished('agent exited without a confirmed scoped write '
-                                              '(it never called the broker)')
-                    raise TurnDenied('agent exited without a confirmed scoped write')
+                _require_published(result, broker)
                 return result.returncode
             finally:
                 broker.close()
                 server.join(timeout=BROKER_DRAIN_S)
                 if server.is_alive():
-                    # Raised here it replaces whatever was in flight; keep a budget kill in the
-                    # reason (and as the cause) so the operator sees both clocks (#98).
-                    in_flight = sys.exc_info()[1]
-                    if isinstance(in_flight, TurnBudgetExceeded):
-                        raise TurnDenied(drain_failure(in_flight)) from in_flight
-                    if in_flight is not None:
-                        # Whatever the sandbox raised stays the cause, and is named (#98).
-                        raise TurnDenied(f'broker did not shut down (after '
-                                         f'{type(in_flight).__name__}: {in_flight})'[:400]
-                                         ) from in_flight
-                    raise TurnDenied('broker did not shut down')
+                    _broker_stuck(sys.exc_info()[1])
