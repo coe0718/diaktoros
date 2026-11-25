@@ -85,19 +85,25 @@ class ReviewBodies(Base):
 class LoopVerdicts(Base):
     def test_a_maintainer_who_is_also_a_reviewer_login_is_shown(self):
         # #515 review F1: a human maintainer may be in ``reviewers`` too (config allows it).
-        # Their own review (no loop footer) is shown; the loop's signed verdict by the same
-        # login is not (it is in the PR record already).
+        # Their own review is shown whatever it ends with: here one quotes a signed loop
+        # verdict at its end, footer included (round 2's probe). The footer is copyable, so it
+        # never hides a review; a loop verdict by that login is shown too (a duplicate of the
+        # PR record, never a lost point).
         from diaktoros import attribution
         loop = {**LOOP, "reviewers": ["boss"]}
         signed = attribution.stamp(loop, "LOOP-VERDICT", seat="reviewer", head="a" * 40)
         got = [{"user": who("Boss"), "state": "COMMENTED", "body": "BOSS-OWN-REVIEW",
                 "submitted_at": "2026-01-02T00:00:00Z"},
+               {"user": who("boss"), "state": "COMMENTED",
+                "body": "BOSS-QUOTING. Please fix this issue.\n\n> earlier:\n\n" + signed,
+                "submitted_at": "2026-01-02T00:00:02Z"},
                {"user": who("boss"), "state": "CHANGES_REQUESTED", "body": signed,
                 "submitted_at": "2026-01-02T00:00:01Z"}], ""
         with mock.patch.object(gh, "reviews_read", return_value=got):
             text = issue_facts.section(loop, 7)
         self.assertIn("BOSS-OWN-REVIEW", text)
-        self.assertNotIn("LOOP-VERDICT", text)
+        self.assertIn("BOSS-QUOTING. Please fix this issue.", text)
+        self.assertIn("LOOP-VERDICT", text)
 
 
 class PartialRead(Base):
@@ -211,6 +217,81 @@ def scan() -> dict[str, bool]:
     return found
 
 
+def _call_name(call) -> str:
+    """The bare name a call calls: ``f`` for ``f(...)`` and ``a.b.f(...)``."""
+    fn = call.func
+    return fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else ""
+
+
+def _assigned(fn) -> dict[str, list]:
+    """``name -> [value, ...]`` for every name ``fn`` assigns (each name of a tuple target maps
+    to the whole value)."""
+    out: dict[str, list] = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in ast.walk(target):
+                    if isinstance(name, ast.Name):
+                        out.setdefault(name.id, []).append(node.value)
+    return out
+
+
+def _sourced(expr, assigned: dict, helpers: set, names: set, depth: int = 0) -> bool:
+    """Whether the prompt ``expr`` comes from a listed builder (``names``): it calls one, or a
+    package function that calls one (``helpers``, e.g. ``_verdict_prompt``), or reads a
+    launch's ``.prompt`` (its ``_Launch`` is itself a checked sink), or is a local name assigned
+    from one of these. A string built by hand, or by a function not listed, is not."""
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Call) and _call_name(node) in names | helpers:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == "prompt" \
+                and isinstance(node.value, ast.Name) and node.value.id == "launch":
+            return True
+        if isinstance(node, ast.Name) and node.id in assigned and depth < 4 \
+                and any(_sourced(value, assigned, helpers, names, depth + 1)
+                        for value in assigned[node.id]):
+            return True
+    return False
+
+
+def _sink_prompt(call):
+    """The prompt a call hands to a seat, or None: ``_Launch``'s first argument (what the worker
+    launches) or ``run_turn``'s ``prompt=`` (the sandbox itself)."""
+    name, keyword = _call_name(call), None
+    if name not in ("_Launch", "run_turn"):
+        return None
+    keyword = next((k.value for k in call.keywords if k.arg == "prompt"), None)
+    return call.args[0] if name == "_Launch" and call.args else keyword
+
+
+def launch_sinks(trees: dict, names: set) -> dict[str, bool]:
+    """Every place in ``trees`` (``where -> ast.Module``) a prompt is handed to a seat, keyed
+    ``where::function::line``, mapped to whether that prompt comes from a listed builder. This
+    finds a seat prompt however it is built, not only through ``render_isolated`` (#515 review
+    F2, round 2)."""
+    functions = [node for tree in trees.values() for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    helpers = {fn.name for fn in functions
+               if any(isinstance(n, ast.Call) and _call_name(n) in names for n in ast.walk(fn))}
+    out = {}
+    for where, tree in trees.items():
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for call in ast.walk(fn):
+                prompt = _sink_prompt(call) if isinstance(call, ast.Call) else None
+                if prompt is not None:
+                    out[f"{where}::{fn.name}::{call.lineno}"] = _sourced(
+                        prompt, _assigned(fn), helpers - {fn.name}, names)
+    return out
+
+
+def package_trees() -> dict:
+    """Every module of the package and its scripts, parsed."""
+    return {str(path.relative_to(ROOT)): ast.parse(path.read_text())
+            for top in ("diaktoros", "scripts") for path in sorted((ROOT / top).rglob("*.py"))}
+
+
 class EveryBuilderCallsTheReader(unittest.TestCase):
     # Every seat prompt builder that carries PR or issue text: every function in the package
     # that renders an isolated seat prompt (``prompts.render_isolated``, the one renderer every
@@ -241,6 +322,35 @@ class EveryBuilderCallsTheReader(unittest.TestCase):
         src = inspect.getsource(turn_prompts.triage_prompt).replace(
             "issue_facts.comments_section", "len")
         self.assertFalse(builders(src, "t")["t::triage_prompt"])
+
+    def builder_names(self) -> set:
+        return {name.rsplit("::", 1)[1] for name in self.BUILDERS}
+
+    def test_every_prompt_a_seat_is_launched_with_comes_from_a_listed_builder(self):
+        # #515 review F2, round 2: a builder that never calls ``render_isolated`` is still found,
+        # where its prompt is handed to a seat (a worker ``_Launch`` or ``run_turn``).
+        sinks = launch_sinks(package_trees(), self.builder_names())
+        self.assertGreaterEqual(len(sinks), 9, sinks)
+        self.assertEqual([where for where, ok in sinks.items() if not ok], [])
+
+    def test_a_launch_of_a_hand_built_prompt_fails_the_scan(self):
+        # The reviewer's probe: a new builder returning issue text with no reader and no
+        # ``render_isolated``, launched by the worker or handed to ``run_turn``.
+        src = ("def new_prompt(loop, row):\n"
+               "    return 'Issue text: ' + row['issue_body']\n"
+               "def _prepare_new_launch(self, turn):\n"
+               "    prompt = new_prompt(turn.loop, turn.row)\n"
+               "    return _Launch(prompt, None)\n"
+               "def selfcheck(loop, row):\n"
+               "    trusted_turn.run_turn(loop, None, prompt=new_prompt(loop, row))\n")
+        trees = {**package_trees(), "diaktoros/other.py": ast.parse(src)}
+        bad = [where for where, ok in launch_sinks(trees, self.builder_names()).items() if not ok]
+        self.assertEqual(sorted(bad), ["diaktoros/other.py::_prepare_new_launch::5",
+                                       "diaktoros/other.py::selfcheck::7"])
+        # Once listed, its launches pass here, and the listed-builder test holds it to the reader.
+        listed = launch_sinks({"diaktoros/other.py": ast.parse(src)},
+                              self.builder_names() | {"new_prompt"})
+        self.assertTrue(all(listed.values()))
 
 
 if __name__ == "__main__":

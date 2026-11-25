@@ -124,33 +124,20 @@ def maintainer_comments(loop: dict, number: int, newest: int | None = COMMENTS_M
     return maintainers_among(loop, comments, newest), ""
 
 
-def _loop_verdict(loop: dict, review: dict) -> bool:
-    """Whether ``review`` is a verdict the loop's own seat posted (#515 review F1): by a login
-    in ``reviewers`` *and* carrying the loop's footer (the one ``attribution.unsign`` strips). A
-    login may be both a maintainer and in ``reviewers``: that person's own review has no footer
-    and is shown. The footer is a display label, not proof: a maintainer who pastes it only hides
-    their own review. With ``attribution: false`` no verdict has a footer, so every review is
-    shown (a loop verdict may then appear twice, in the PR record and here, but none is
-    dropped)."""
-    from . import attribution
-    user = review.get("user")
-    login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
-    if login not in {str(name).lower() for name in loop.get("reviewers") or []}:
-        return False
-    body = review.get("body")
-    return isinstance(body, str) and attribution.unsign(body) != body
-
-
-def _review_items(loop: dict, reviews: list) -> list[dict]:
+def _review_items(reviews: list) -> list[dict]:
     """The PR's reviews as comment-shaped items (#515): each review with a body, headed by its
-    state. A pending review (its author's draft), an empty body and the loop reviewer's own
-    verdicts (``_loop_verdict``, already in the PR record) carry nothing to show here."""
+    state. A pending review (its author's draft) and an empty body carry nothing to show here.
+    No review is dropped for its author or its text (#515 review F1, twice): the one filter is
+    ``maintainers_among``. A loop verdict posted by a login that is also a maintainer is then
+    shown here as well as in the PR record; the loop's footer cannot tell it from a maintainer's
+    own review (anyone can paste or quote it), and a duplicate costs bytes, a dropped point a
+    requirement."""
     out = []
     for review in reviews:
         if not isinstance(review, dict) or not str(review.get("body") or "").strip():
             continue
         state = str(review.get("state") or "").upper()
-        if state == "PENDING" or _loop_verdict(loop, review):
+        if state == "PENDING":
             continue
         out.append({"user": review.get("user"), "created_at": review.get("submitted_at"),
                     "body": f"[PR review, {_clip(state or 'unknown state', 40)}]\n{review['body']}"})
@@ -180,8 +167,7 @@ def pr_maintainer_comments(loop: dict, number: int, newest: int | None = COMMENT
     from . import gh
     items, unread = [], []
     for what, read, shape in (("comments", gh.issue_comments_read, lambda got: got),
-                              ("review bodies", gh.reviews_read,
-                               lambda got: _review_items(loop, got)),
+                              ("review bodies", gh.reviews_read, _review_items),
                               ("inline review comments", gh.review_comments_read, _inline_items)):
         got, _ = read(loop, number)
         if got is None:
