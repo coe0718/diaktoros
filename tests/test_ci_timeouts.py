@@ -2,57 +2,21 @@
 toward GitHub's 6-hour default, because the `unit` job had none), in every workflow, not only
 ci.yml (#1447). Read as text: the tests are stdlib-only, so no YAML parser."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import os
 import pathlib
-import re
+import shutil
+import sys
+import tempfile
 import unittest
 
-WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
-# A job's header under ``jobs:``: two spaces, its id (bare, or single- or double-quoted), a
-# colon, and at most a comment after it.
-HEADER = re.compile(r"""^  (?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*:\s*(?:#.*)?$""")
-TIMEOUT = re.compile(r"^    timeout-minutes:\s*\d+\s*(?:#.*)?$")
-# The top-level ``jobs`` key, bare or with a comment after it (review of #2700, F1). Any other
-# form (flow style, an anchor) is a ``jobs`` key the reader cannot walk: see ``unread``.
-JOBS = re.compile(r"^jobs:\s*(?:#.*)?$")
-JOBS_KEY = re.compile(r"^[\"']?jobs[\"']?\s*:")
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+# The guard lives in tools/workflow_jobs.py, outside tests/, so the host's base-failure proof sees
+# a change to it (review of #2700, F2), as test_run_supervisor_modules does for its shadow rules.
+sys.path.insert(0, str(ROOT / "tools"))
+import workflow_jobs  # noqa: E402
 
-
-def jobs(text: str) -> dict[str, list[str]]:
-    """Each job under ``jobs:`` and its lines, read line by line."""
-    found: dict[str, list[str]] = {}
-    current = None
-    inside = False
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue                       # blank or comment-only: never structure (#1415 F2)
-        if not line.startswith(" "):
-            inside, current = bool(JOBS.match(line.rstrip())), None    # a top-level key ends the jobs
-            continue
-        at_job_level = inside and line.startswith("  ") and not line.startswith("   ")
-        match = HEADER.match(line) if at_job_level else None
-        if match:
-            current = next(name for name in match.groups() if name)
-            found[current] = []
-        elif at_job_level:
-            # Fail closed (#1415 F3): a job-level line this reader does not understand is a job
-            # it cannot vouch for, never a line of the job before it.
-            current = f"(unrecognised: {line.strip()})"
-            found[current] = []
-        elif current is not None:
-            found[current].append(line)
-    return found
-
-
-def unread(text: str) -> bool:
-    """A ``jobs`` key the reader found no job under: a form it cannot walk, so it can vouch for
-    nothing in it. The guard fails closed on it rather than reading it as "no unbounded job"."""
-    has_key = any(JOBS_KEY.match(line) for line in text.splitlines())
-    return has_key and not jobs(text)
-
-
-def missing(text: str) -> list[str]:
-    return sorted(name for name, lines in jobs(text).items()
-                  if not any(TIMEOUT.match(line) for line in lines))
+jobs, missing = workflow_jobs.jobs, workflow_jobs.missing
 
 
 class Timeouts(unittest.TestCase):
@@ -65,24 +29,32 @@ class Timeouts(unittest.TestCase):
         # #1447: deploy-site.yml and prune-runs.yml had jobs with no limit, and only ci.yml was read.
         workflows = sorted(WORKFLOW.parent.glob("*.y*ml"))
         self.assertGreater(len(workflows), 1, workflows)
-        unbounded = [f"{path.name}: {name}" for path in workflows
-                     for name in missing(path.read_text())]
-        self.assertEqual(unbounded, [], "jobs without timeout-minutes")
-        unreadable = [path.name for path in workflows if unread(path.read_text())]
-        self.assertEqual(unreadable, [], "a jobs mapping this guard cannot read")
+        self.assertEqual(workflow_jobs.problems(workflows), [])
 
-    def test_a_jobs_heading_with_a_comment_or_an_unreadable_form_is_never_passed(self):
-        # Review of #2700, F1: `jobs: # ...` is valid YAML and hid every job, so an unbounded one
-        # passed. It is read now; a form the reader still cannot walk fails closed instead.
-        commented = "on: push\njobs: # every job below\n  runaway:\n    runs-on: x\n"
-        self.assertEqual(missing(commented), ["runaway"])
-        self.assertFalse(unread(commented))
-        for form in ('on: push\njobs: {runaway: {runs-on: x}}\n',
-                     'on: push\n"jobs":\n  runaway:\n    runs-on: x\n',
-                     'on: push\njobs: &all\n  runaway:\n    runs-on: x\n'):
-            with self.subTest(form=form):
-                self.assertEqual(missing(form), [])
-                self.assertTrue(unread(form), "an unwalked jobs key must fail the guard")
+    def test_the_guard_never_passes_a_workflow_it_cannot_read(self):
+        # Reviews of #2700: a commented `jobs:` heading (F1) and an indented root mapping (F3) hid
+        # an unbounded job from the guard, as would flow style or a quoted or anchored key. Each is
+        # written beside copies of the real workflows and run through the guard itself.
+        unbounded = {
+            "commented.yml": "on: push\njobs: # every job below\n  runaway:\n    runs-on: x\n",
+            "indented.yml": " on: push\n jobs:\n   runaway:\n     runs-on: x\n",
+            "flow.yml": "on: push\njobs: {runaway: {runs-on: x}}\n",
+            "quoted.yml": 'on: push\n"jobs":\n  runaway:\n    runs-on: x\n',
+            "anchored.yml": "on: push\njobs: &all\n  runaway:\n    runs-on: x\n",
+        }
+        bounded = "on: push\njobs: # every job below\n  fine:\n    runs-on: x\n    timeout-minutes: 5\n"
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:
+            folder = pathlib.Path(temp)
+            for path in WORKFLOW.parent.glob("*.y*ml"):
+                shutil.copy(path, folder / path.name)
+            (folder / "bounded.yml").write_text(bounded)
+            self.assertEqual(workflow_jobs.problems(folder.glob("*.yml")), [], "the control passes")
+            for name, text in unbounded.items():
+                with self.subTest(workflow=name):
+                    (folder / name).write_text(text)
+                    found = workflow_jobs.problems(folder.glob("*.yml"))
+                    (folder / name).unlink()
+                    self.assertTrue(any(line.startswith(f"{name}:") for line in found), found)
 
     def test_a_job_the_check_must_not_miss(self):
         # #1415 review F1: a header with an inline comment is a job too, never part of the one
