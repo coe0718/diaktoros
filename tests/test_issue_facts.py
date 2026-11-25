@@ -60,9 +60,33 @@ class IssueFacts(unittest.TestCase):
         self.assertNotIn("STRANGER-TEXT", text)
 
     def test_pr_closing_no_issue_is_unaffected(self):
+        # #2311: no issue facts and no Requirements check, but the maintainers' PR comments.
         self.fake.pr_body = "just a change"
-        self.assertEqual(issue_facts.section(LOOP, 7), "")
+        text = issue_facts.section(LOOP, 7)
+        self.assertIn("Maintainers' comments on the PR #7", text)
+        self.assertIn("MAINTAINER-REQ", text)
+        self.assertNotIn("STRANGER-TEXT", text)
+        self.assertNotIn("closed by this PR", text)
+        self.assertNotIn("BODY", text)
         self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", "looks good"), "")
+
+    def test_pr_closing_no_issue_without_maintainer_comments_has_no_section(self):
+        # #2311: a stranger's comment alone still adds nothing.
+        self.fake.pr_body = "just a change"
+        only_stranger = ([comment("stranger", "STRANGER-TEXT")], "")
+        with mock.patch.object(gh, "issue_comments_read", return_value=only_stranger):
+            self.assertEqual(issue_facts.section(LOOP, 7), "")
+        with mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
+            self.assertEqual(issue_facts.section(LOOP, 7), "")
+
+    def test_pr_closing_no_issue_keeps_the_newest_comments_only(self):
+        # #2311: the same newest-COMMENTS_MAX bound as on a PR that closes an issue.
+        self.fake.pr_body = "just a change"
+        many = [comment("boss", f"NOTE-{i:03d}") for i in range(issue_facts.COMMENTS_MAX + 2)]
+        with mock.patch.object(gh, "issue_comments_read", return_value=(many, "")):
+            text = issue_facts.section(LOOP, 7)
+        self.assertNotIn("NOTE-001", text)
+        self.assertIn(f"NOTE-{issue_facts.COMMENTS_MAX + 1:03d}", text)
 
     def test_missing_requirements_section_is_refused(self):
         self.assertIn("Requirements", issue_facts.check(LOOP, 7, "REQUEST_CHANGES", "F1: a.py: x"))
@@ -203,6 +227,30 @@ class Prompts(unittest.TestCase):
         self.assertIn("BODY5", text)
         self.assertIn("MAINTAINER-REQ", text)
         self.assertNotIn("STRANGER-TEXT", text)
+
+    def no_issue_prompt(self, seat):
+        """#2311: the seat's prompt on PR 7 whose body closes no issue."""
+        fake = Fake("a docs cleanup, no issue")
+        row = {"seat": seat, "repo": "acme/w", "pr": 7, "head": "a" * 40}
+        loop = {**LOOP, "cap": 3, "seats": {}}
+        with mock.patch.object(gh, "api", side_effect=fake.api), \
+                mock.patch.object(gh, "issue_comments_read", side_effect=fake.comments), \
+                mock.patch.object(gh, "reviews_read", return_value=([], "")), \
+                mock.patch.object(gh, "review_comments_read", return_value=([], "")), \
+                mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
+                mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None), \
+                mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/w/pull/7"), \
+                mock.patch("diaktoros.ci.read", return_value=None), \
+                mock.patch("diaktoros.ci.section", return_value=""):
+            return turn_prompts.isolated_prompt(loop, row, [], change=pr_facts.PRChange("RECORD", "DIFF"))
+
+    def test_pr_closing_no_issue_shows_maintainer_comment_to_both_seats(self):
+        for seat in ("reviewer", "fixer"):
+            with self.subTest(seat):
+                text = self.no_issue_prompt(seat)
+                self.assertIn("Maintainers' comments on the PR #7", text)
+                self.assertIn("MAINTAINER-REQ", text)
+                self.assertNotIn("STRANGER-TEXT", text)
 
     def test_656_fixture_deferral_in_pr_comment_is_visible_and_accepted_by_the_broker(self):
         # #666/#656: split into #658 lives only in a maintainer's PR comment. The seat sees it,
