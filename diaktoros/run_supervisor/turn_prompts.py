@@ -11,8 +11,10 @@ _READ = object()      # "read the newest shadow review now", as opposed to one a
 
 
 def conflict_prompt(loop: dict, row, merged: dict) -> str:
-    """The resolving turn's prompt: the rule, then the conflicted files and both sides' changes."""
-    from .. import gh, prompts
+    """The resolving turn's prompt: the rule, then the conflicted files and both sides' changes,
+    and, like every seat prompt that carries PR text, the PR's issues and its maintainers'
+    comments as data (#515, ``issue_facts.section``): what both sides meant may live there."""
+    from .. import gh, issue_facts, prompts
     base_sha = str(row['turn_key'])[len(run_supervisor.CONFLICT_KEY):]
     text = prompts.render_isolated('conflict', repo=row['repo'], pr=row['pr'],
                                    url=gh.pr_url(loop, row['pr']), head=row['head'],
@@ -20,6 +22,7 @@ def conflict_prompt(loop: dict, row, merged: dict) -> str:
     files = "\n".join(f"- `{path}`" for path in merged['conflicted'])
     return (text + prompts.fixer_check_section(loop, summary=True)
             + prompts.registry_section(None)
+            + issue_facts.section(loop, row['pr'])
             + "\n\n" + run_supervisor.CONFLICT_SIDES_NOTE + "\n\n"
             + files + "\n\n" + merged.get('sides', ''))
 

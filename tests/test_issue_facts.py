@@ -37,11 +37,24 @@ class Fake:
         return None
 
     def comments(self, loop, number):
+        # On issue #5 only: a maintainer comment on PR 7 is a point an APPROVE must account
+        # for (#515), which the Requirements tests here are not about.
+        if number != 5:
+            return [], ""
         return [comment("boss", "MAINTAINER-REQ"), comment("stranger", "STRANGER-TEXT")], ""
+
+
+def quiet_reviews(case, reviews=(), inline=()):
+    """#515: the PR's reviews and inline review comments, faked (none unless given)."""
+    for name, items in (("reviews_read", reviews), ("review_comments_read", inline)):
+        patch = mock.patch.object(gh, name, return_value=(list(items), ""))
+        patch.start()
+        case.addCleanup(patch.stop)
 
 
 class IssueFacts(unittest.TestCase):
     def setUp(self):
+        quiet_reviews(self)
         self.fake = Fake()
         for target, repl in ((gh, "api"), (gh, "issue_comments_read")):
             fn = self.fake.api if repl == "api" else self.fake.comments
@@ -170,6 +183,9 @@ class IssueFacts(unittest.TestCase):
 
 
 class Prompts(unittest.TestCase):
+    def setUp(self):
+        quiet_reviews(self)
+
     def test_issue_fix_prompt_shows_maintainer_comments_not_strangers(self):
         fake = Fake()
         issue = {"number": 5, "state": "open", "user": {"login": "o"}, "title": "T5",
@@ -217,7 +233,8 @@ class Prompts(unittest.TestCase):
         with mock.patch.object(gh, "api", side_effect=api), \
                 mock.patch.object(gh, "issue_comments_read", side_effect=comments):
             self.assertIn("split into #658", issue_facts.section(LOOP, 7))
-            body = "## Requirements\n- digest coverage: deferred to #658\n"
+            body = ("## Requirements\n- digest coverage: deferred to #658\n\n"
+                    "## Maintainer points\n- MC1: addressed — deferred to #658 as asked\n")
             self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
             bad = "## Requirements\n- digest coverage: deferred to #999\n"
             self.assertIn("#999", issue_facts.check(LOOP, 7, "APPROVE", bad))

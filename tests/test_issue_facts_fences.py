@@ -18,6 +18,7 @@ def check(body: str, verdict: str = "APPROVE") -> str:
 
 class Mocked(unittest.TestCase):
     def setUp(self):
+        tif.quiet_reviews(self)
         fake = tif.Fake()
         for name, fn in (("api", fake.api), ("issue_comments_read", fake.comments)):
             patch = mock.patch.object(gh, name, side_effect=fn)

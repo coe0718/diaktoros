@@ -625,6 +625,13 @@ def issue_comments_read(loop: dict, number: int) -> tuple[list[dict] | None, str
                        "comment", MAX_COMMENT_PAGES)
 
 
+def review_comments_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
+    """Every inline review comment on the PR (``pulls/N/comments``), or ``(None, reason)``: the
+    maintainers' points on lines of the diff reach the seats as data too (#515)."""
+    return _read_pages(loop, f"{pr_path(loop, number)}/comments?per_page=100",
+                       "review comment", MAX_COMMENT_PAGES)
+
+
 # A repository's labels, read in full for triage's label meanings (#1411): 500 labels at most.
 MAX_LABEL_PAGES = 5
 

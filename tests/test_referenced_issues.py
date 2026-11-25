@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import gh, issue_facts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts, turn_prompts  # noqa: E402
+import test_issue_facts as tif  # noqa: E402
 
 LOOP = {"repo": "acme/w", "id": "l", "base": "main", "read_token": "read",
         "triage": {"maintainers": ["Boss"]}}
@@ -49,6 +50,9 @@ def issue(n, state="open", reason=None, labels=(), title=None, pr=False):
 
 
 class Referenced(unittest.TestCase):
+    def setUp(self):
+        tif.quiet_reviews(self)
+
     def section(self, github):
         with mock.patch.object(gh, "api", side_effect=github.api), \
                 mock.patch.object(gh, "issue_comments_read", side_effect=github.comments):
@@ -195,6 +199,9 @@ for _name in [n for n in dir(Referenced) if n.startswith("test_")]:
 
 
 class InThePrompt(unittest.TestCase):
+    def setUp(self):
+        tif.quiet_reviews(self)
+
     def test_the_reviewer_sees_them_before_the_host_section(self):
         github = GitHub("Follow-up to #20", {20: issue(20, "closed", "completed")})
         row = {"seat": "reviewer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
