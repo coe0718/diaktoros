@@ -9,8 +9,10 @@ variants and requires most of each to be fully transparent, which the boxed logo
 import _home_guard  # noqa: F401  # first import: temp HOME/HERMES_HOME
 from html.parser import HTMLParser
 import pathlib
+import re
 import struct
 import unittest
+import urllib.parse
 
 try:  # Pillow is optional here, as node is for the viewer tests: the pixel check needs it.
     from PIL import Image
@@ -59,6 +61,107 @@ def webp_header(path: pathlib.Path) -> tuple[int, int, bool]:
     # Lossy WebP keeps its alpha in an ALPH chunk; lossless keeps it inside VP8L.
     has_alpha = bool(flags & 0x10) and (b"ALPH" in data or b"VP8L" in data)
     return width, height, has_alpha
+
+
+def srcset_urls(srcset: str) -> list[str]:
+    """The URL of each ``srcset`` candidate, as the HTML spec splits them: a URL is a run of
+    non-space characters (a ``data:`` URL keeps its commas), then any descriptors up to a comma."""
+    urls, pos = [], 0
+    while (m := re.compile(r"[\s,]*(\S+)").match(srcset, pos)) and m.group(1):
+        url, pos = m.group(1), m.end()
+        if url.endswith(","):
+            url = url.rstrip(",")
+        else:                                   # skip this candidate's descriptors
+            comma = srcset.find(",", pos)
+            pos = len(srcset) if comma < 0 else comma + 1
+        urls.append(url)
+    return urls
+
+
+class ImageParser(HTMLParser):
+    """Every image path an HTML page or README loads: each ``<img src>`` and each ``srcset``
+    candidate on an ``<img>`` or a ``<source>``."""
+
+    def __init__(self):
+        super().__init__()
+        self.paths = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "img" and "src" in a:              # an empty src loads no image either
+            self.paths.append(a["src"] or "")
+        if tag in ("img", "source") and a.get("srcset"):     # a browser may pick either
+            self.paths += srcset_urls(a["srcset"])
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+
+def broken_images(text: str, root: pathlib.Path) -> list[str]:
+    """Each image ``text`` loads that is not a file inside ``root`` (#2250). README sits at the
+    root and the page is published there with docs/ beside it, so a relative path on either is a
+    path from the repository root. data: URIs load nothing; a remote, absolute or escaping path
+    is not a repository file, so it is broken too. No image at all is reported as well."""
+    parser = ImageParser()
+    parser.feed(text)
+    found, broken = 0, []
+    for src in parser.paths:
+        url = urllib.parse.urlsplit(src)
+        if url.scheme == "data":
+            continue
+        found += 1
+        path = (root / urllib.parse.unquote(url.path)).resolve()
+        if (url.scheme or url.netloc or url.path.startswith("/") or url.query or url.fragment
+                or not path.is_relative_to(root.resolve()) or not path.is_file()):
+            broken.append(src)
+    return broken if found else ["no image found: the scan reads nothing"]
+
+
+class EveryImageResolves(unittest.TestCase):
+    def test_each_image_in_the_readme_and_the_site_is_a_repository_file(self):
+        # #2250: only the hero <picture> was checked, so a moved README logo shipped broken.
+        for page in (ROOT / "README.md", PAGE):
+            with self.subTest(page.name):
+                self.assertEqual(broken_images(page.read_text(encoding="utf-8"), ROOT), [])
+
+    def test_the_guard_fails_on_a_broken_readme_image_and_passes_a_good_one(self):
+        # #2250: drive the page guard itself on a copy of the repository's two pages.
+        import sys
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "good.png").write_bytes(b"x")
+            (root / "index.html").write_text('<img src="good.png">')
+            for readme, broken in (('<img src="good.png">', 0), ('<img src="moved.png">', 1),
+                                   ('<img src="good.png" srcset="good.png 1x, missing.png 2x">', 1),
+                                   ('<img src="good.png"><img src="">', 1)):
+                with self.subTest(readme):
+                    (root / "README.md").write_text(readme)
+                    result = unittest.TestResult()
+                    module = sys.modules[__name__]
+                    with mock.patch.object(module, "ROOT", root), \
+                            mock.patch.object(module, "PAGE", root / "index.html"):
+                        EveryImageResolves("test_each_image_in_the_readme_and_the_site_is_a_repository_file").run(result)
+                    self.assertEqual(len(result.failures + result.errors), broken)
+
+    def test_the_scan_reports_each_unservable_image_and_passes_a_good_one(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "repo"
+            (root / "img").mkdir(parents=True)
+            (root / "img/good.png").write_bytes(b"x")
+            (root.parent / "outside.png").write_bytes(b"x")
+            ok = '<img src="img/good.png"><source srcset="data:image/png;base64,AAAA">'
+            self.assertEqual(broken_images(ok, root), [])
+            self.assertEqual(broken_images('<source srcset="img/good.png 1x, img/good.png 2x">', root), [])
+            for bad in ("img/missing.png", "/etc/passwd", "../outside.png", "https://x.test/a.png",
+                        "img/good.png?v=1"):
+                with self.subTest(bad):
+                    self.assertEqual(broken_images(f'{ok}<img src="{bad}">', root), [bad])
+            srcset = '<source srcset="img/good.png 1x,img/missing.png 2x">'
+            self.assertEqual(broken_images(srcset, root), ["img/missing.png"])
+            self.assertEqual(broken_images('<img src="data:,x">', root), ["no image found: the scan reads nothing"])
 
 
 class SiteHeroLogoTests(unittest.TestCase):
