@@ -1001,6 +1001,10 @@ def _top_level_names(path: pathlib.Path, imports: bool = False) -> set[str]:
     return names
 
 
+INFERENCE_CORE = ROOT / "diaktoros" / "selftest.py"     # tests/test_selftest_guards.py swaps these
+INFERENCE_OWN = ROOT / "diaktoros" / "selftest_inference.py"
+
+
 class InferenceStepModule(unittest.TestCase):
     def test_the_inference_step_lives_only_in_its_module(self):
         # Step 3 left selftest.py for selftest_inference.py at selftest's size limit. One home
@@ -1015,8 +1019,8 @@ class InferenceStepModule(unittest.TestCase):
     def test_the_inference_step_reads_the_selftest_core_through_selftest(self):
         # So a patch of a core name on selftest (Report, PASS…) reaches step 3 too: nothing of
         # the core is defined again, or imported by name, in selftest_inference (both import json).
-        core = _top_level_names(ROOT / "diaktoros" / "selftest.py")
-        own = _top_level_names(ROOT / "diaktoros" / "selftest_inference.py", imports=True)
+        core = _top_level_names(INFERENCE_CORE)
+        own = _top_level_names(INFERENCE_OWN, imports=True)
         self.assertIn("Report", core)
         self.assertIn("PASS", core)
         self.assertEqual(sorted(core & own), [])
