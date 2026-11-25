@@ -28,6 +28,7 @@ concurrency:
 jobs:
   prune:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30          # paging and deleting old runs; a stuck API call ends here
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
