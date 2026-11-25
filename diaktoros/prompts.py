@@ -415,7 +415,10 @@ What to do:
    the test name or `file:line`), `not met` or `deferred to #N`. If the only finding is a missing deferral number, say in your
    answers which requirement needs an issue; you cannot edit the PR description, so never claim
    a deferral nobody filed, and never file an issue to clear a block. For each finding, fixed (with `file:line`), or why it is not a
-   defect (with evidence), and what you deliberately did not change and why. At most 8 KiB. They
+   defect (with evidence), and what you deliberately did not change and why. Answer each point
+   in the maintainers' comments and reviews on this PR (their section below, when there is one)
+   the same way, under a `Maintainers' points` heading: fixed (with `file:line`), or why not.
+   At most 8 KiB. They
    are posted as a **public** PR comment: write for anyone who can read the PR.
 5. **Then ask for the next review through the broker, with those answers** (command below) —
    GitHub clears a pending review request the moment a verdict lands, so the loop only continues

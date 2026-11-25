@@ -48,6 +48,10 @@ class IssueFacts(unittest.TestCase):
             patch = mock.patch.object(target, repl, side_effect=fn)
             patch.start()
             self.addCleanup(patch.stop)
+        for name in ("reviews_read", "review_comments_read"):   # #515: the PR's other comments
+            patch = mock.patch.object(gh, name, return_value=([], ""))
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def test_section_has_body_and_maintainer_comment_but_not_a_strangers(self):
         text = issue_facts.section(LOOP, 7)

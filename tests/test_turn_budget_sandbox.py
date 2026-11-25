@@ -160,6 +160,8 @@ def driver(spec_path: str) -> None:
              'filename': 'src/lib.rs', 'status': 'modified', 'additions': 1, 'deletions': 0,
              'patch': '@@ -1 +1 @@\n-old\n+new'}], '')), \
          mock.patch.object(gh, 'issue_comments_read', return_value=([], '')), \
+         mock.patch.object(gh, 'reviews_read', return_value=(verdicts, '')), \
+         mock.patch.object(gh, 'review_comments_read', return_value=([], '')), \
          mock.patch.object(trusted_fetch, 'stage', return_value=Path(spec['checkout'])), \
          mock.patch.object(seat_model, 'load_runtime', return_value=spec['runtime']), \
          mock.patch.object(seat_model, 'resolve_seat', return_value=inference), \
