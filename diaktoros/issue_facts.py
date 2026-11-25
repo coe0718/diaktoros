@@ -145,7 +145,7 @@ def pr_points(loop: dict, number: int, newest: int | None = COMMENTS_MAX
             if not isinstance(item, dict) or not str(item.get("body") or "").strip():
                 continue
             author = str((item.get("user") or {}).get("login") or "").lower()
-            if prefix != "MC" and author in seats:
+            if prefix != "MC" and _seat_output(loop, author, seats, item):
                 continue                   # a seat's own verdict is no maintainer point
             if prefix == "MR" and gh.review_state(item) == "PENDING":
                 continue
@@ -163,6 +163,20 @@ def pr_points(loop: dict, number: int, newest: int | None = COMMENTS_MAX
     unread = None in (comments, reviews, inline)
     note = "(Some of the maintainers' comments or reviews could not be read for this turn.)"
     return (tagged if newest is None else tagged[-newest:]), (note if unread else "")
+
+
+def _seat_output(loop: dict, author: str, seats: set, item: dict) -> bool:
+    """Whether a review or inline comment is a seat's own output, not a maintainer's point
+    (#515 F3): by a seat account that is no maintainer, or, when the account is both, one that
+    carries the loop's footer (``attribution.unsign`` strips it), which the host adds to what a
+    seat posts. A maintainer writing by hand from a seat account is kept."""
+    from . import attribution, config
+    if author not in seats:
+        return False
+    if author not in config.maintainers(loop):
+        return True
+    body = str(item.get("body") or "")
+    return attribution.unsign(body) != body
 
 
 def _shown(items: list) -> list:
@@ -419,17 +433,28 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
     return points_refusal(loop, number, verdict, body)
 
 
-# ``MC12: addressed — <evidence>``, ``MR3 — not addressed``, ``MI7: disagree — <reason>``.
-_POINT = re.compile(r"\b(M[CRI]\d{1,20})\b\W{0,6}(not addressed|addressed|disagree)\b(.*)$",
-                    re.IGNORECASE)
+# ``MC12: addressed — <evidence>``, ``MR3 — not addressed``, ``MI7: disagree — <reason>``: a
+# status line starts with its id (after a list marker, if any), never in a quotation (#515 F2).
+_POINT = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,9}[.)])?\s*`?(M[CRI]\d{1,20})`?\s*[:—–-]{0,3}\s*"
+                    r"(not addressed|addressed|disagree)\b(.*)$", re.IGNORECASE)
+_POINTS_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)?\s*Maintainer points\b[\s:*]*$",
+                             re.IGNORECASE)
 
 
 def point_statuses(body: str) -> dict[str, tuple[str, str]]:
     """``{point id: (status, the rest of its line)}`` for each maintainer point the review gives
-    a status (#515), outside fenced code; the last one given for an id counts."""
-    out = {}
+    a status (#515): only status lines of its own ``Maintainer points`` section, outside fenced
+    code, HTML comments and quotations (a line starting ``>`` never matches); a mention of a
+    point id anywhere else is no status. The last one given for an id counts."""
+    out, inside = {}, False
     for line in md_fences.unfenced(body.splitlines()):
-        for found in _POINT.finditer(line):
+        if _POINTS_HEADING.match(line):
+            inside = True
+            continue
+        if inside and _ANY_HEADING.match(line):
+            inside = False
+        found = _POINT.match(line) if inside else None
+        if found:
             out[found.group(1).upper()] = (found.group(2).lower(), found.group(3))
     return out
 
@@ -461,7 +486,8 @@ def points_refusal(loop: dict, number: int, verdict: str, body: str) -> str:
             return (f"an APPROVE cannot leave maintainer point `{point}` not addressed: it is a "
                     "blocking finding (number it F<n>) and the verdict is REQUEST_CHANGES; "
                     "nothing was written, resubmit")
-        if status == "disagree" and not re.search(r"\w", rest):
-            return (f"`{point}: disagree` needs a reason (`{point}: disagree — <reason>`); "
+        if status in ("addressed", "disagree") and not re.search(r"\w", rest):
+            need = "evidence" if status == "addressed" else "a reason"
+            return (f"`{point}: {status}` needs {need} (`{point}: {status} — <{need}>`); "
                     "nothing was written, resubmit")
     return ""
