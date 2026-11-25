@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .. import claimant, run_supervisor, runtime_detect, util
+from .. import claimant, merge_only, run_supervisor, runtime_detect, util
 from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 from .turn_holds import TurnHolds
@@ -57,6 +57,7 @@ class _ClaimRead:
     refused: str = ""
     fence: tuple | None = None
     since: float = 0.0          # when the claim's reads began (#2608: its own limited answers)
+    follow: str | None = None   # a fix round's merge-only new head, read again there (#2743)
 
 
 @dataclass
@@ -301,10 +302,23 @@ class ClaimAndLaunch(TurnHolds):
             if self.production_config:
                 self._claim_read_live(row, read)
             claimed = self._claim_commit(row, read)
+            if claimed is None and read.follow:
+                claimed = self._claim_followed(row['id'], fences)
             if claimed is not None:
                 return claimed
             waits.note(self, row['id'])         # a claim read that failed backs off (#2080)
         return None
+
+    def _claim_followed(self, run_id: str, fences: dict):
+        """A fix round moved to a merge-only head (#2743) is read again there, once, in this claim;
+        moved again meanwhile, it waits for the next claim's reads."""
+        with self._connect() as con:
+            row = con.execute("SELECT * FROM runs WHERE id=? AND state='pending'", (run_id,)).fetchone()
+        if row is None:
+            return None
+        read = _ClaimRead(fence=fences.get((row['repo'], row['pr']), (0, False)), since=time.time())
+        self._claim_read_live(row, read)
+        return None if read.follow else self._claim_commit(row, read)
 
     def _claim_read_reviewer(self, row, read: _ClaimRead) -> None:
         """A reviewer row's claim-time read: the PR's state and head, its review generation,
@@ -446,7 +460,16 @@ class ClaimAndLaunch(TurnHolds):
             if not isinstance(pr, dict) or not isinstance(pr.get('head'), dict):
                 read.read_error = 'PR unreadable (GitHub read failed)'
             elif pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
-                read.superseded = 'fixer verdict superseded'
+                new = pr['head'].get('sha')
+                # #2743: a head that only merged the base since this round was queued keeps the
+                # change request it answers (``merge_only``), so the round moves to it.
+                plain = not any(str(row['turn_key'] or '').startswith(k) for k in (
+                    run_supervisor.SHADOW_FIX_KEY, run_supervisor.CONFLICT_KEY))
+                if (pr.get('state') == 'open' and plain and not ci_fix.is_ci_fix(row['turn_key'])
+                        and merge_only.leads_to(loop, new, row['head'])):
+                    read.follow = new
+                else:
+                    read.superseded = 'fixer verdict superseded'
             elif pr.get('state') != 'open' or pr.get('draft') is not False:
                 read.retry_read = True
             elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
@@ -571,6 +594,21 @@ class ClaimAndLaunch(TurnHolds):
             # the read; never bind a resolved receipt to different row terms.
             if current is None or dict(current) != dict(row):
                 con.execute("COMMIT")
+                return None
+            if read.follow:
+                # #2743: the PR's head only merged its base since this fix round was queued, and
+                # the change request stands there; the round moves to it (a round already there
+                # answers instead, and this one retires).
+                taken = con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                                    "AND turn_key IS ?", (row['repo'], row['pr'], read.follow,
+                                                          row['seat'], row['turn_key'])).fetchone()
+                if taken:
+                    con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
+                                ('fixer verdict superseded', time.time(), row['id']))
+                else:
+                    con.execute("UPDATE runs SET head=?, updated=? WHERE id=?",
+                                (read.follow, time.time(), row['id']))
+                con.execute('COMMIT')
                 return None
             if read.refused:
                 # Not a capacity question: this row can never publish, so it never waits.

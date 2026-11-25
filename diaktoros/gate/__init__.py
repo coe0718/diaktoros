@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from .. import base_merge, config, gh, isolation, observer, state as state_mod
+from .. import base_merge, config, gh, isolation, merge_only, observer, state as state_mod
 from ..util import log, note_gate_hold, now_iso, silence
 from .. import envnames
 from . import shadows   # the shadow review's rules (#218, #1004); they read this core as gate.X
@@ -453,13 +453,17 @@ def reviewed_at_head(reviews: list, loop: dict, head: str) -> bool:
     """A submitted verdict at this head, not a comment, draft, or dismissed review. The
     adjudicator's approval on its ACCEPT is one (#905): dismissing the change request it
     overruled must not make the head look unreviewed, or a fresh review would start. So is an
-    approval the host's base merge carried to it (#1785)."""
+    approval the host's base merge carried to it (#1785), and a change request carried over a
+    merge-only head (#2743): the fixer owes that answer, so a review there would only repeat it."""
     return any(gh.review_state(r) in {"APPROVED", "CHANGES_REQUESTED"} for r in _verdicts_at(reviews, loop, head))
 
 
 def _verdicts_at(reviews: list, loop: dict, head: str) -> list:
-    return (reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head)
-            + base_merge.carried(loop, reviews, head))
+    own = (reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head)
+           + base_merge.carried(loop, reviews, head))
+    if any(gh.review_state(r) in {"APPROVED", "CHANGES_REQUESTED"} for r in own):
+        return own              # the head's own verdict answers; no merge-only read (#2743)
+    return own + merge_only.carried(loop, reviews, head)
 
 
 def reviews_at_head(reviews: list, loop: dict, head: str) -> list:
@@ -570,7 +574,8 @@ def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dic
     REST order is not a verdict. Dismissed reviews and comments do not supersede a verdict;
     an unfamiliar state or undatable verdict cannot authorize a merge instruction. The
     adjudicator's approval on its ACCEPT ruling (``ruled_approvals``, #905) counts too, and so
-    does an approval a base merge carried here (``base_merge.carried``, #1785).
+    does an approval a base merge carried here (``base_merge.carried``, #1785), and a change
+    request carried over a merge-only head (``merge_only.carried``, #2743).
     """
     candidates = []
     for review in _verdicts_at(reviews, loop, head):
@@ -592,9 +597,16 @@ def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dic
 
 
 def changes_at_head(reviews: list, loop: dict, head: str) -> list:
-    return [r for r in reviews
-            if is_reviewer(r, loop) and gh.review_state(r) == "CHANGES_REQUESTED"
-            and r.get("commit_id") == head]
+    """The reviewer's change requests at this head, or, at a merge-only head with none of its
+    own, the one carried from the head before it (``merge_only.carried``, #2743): the fixer's to
+    answer, not a head waiting for its first review."""
+    own = [r for r in reviews
+           if is_reviewer(r, loop) and gh.review_state(r) == "CHANGES_REQUESTED"
+           and r.get("commit_id") == head]
+    if own or any(r.get("commit_id") == head and gh.review_state(r) == "APPROVED"
+                  for r in reviews if isinstance(r, dict) and is_reviewer(r, loop)):
+        return own
+    return [r for r in merge_only.carried(loop, reviews, head) if is_reviewer(r, loop)]
 
 
 def hooks_read(loop: dict) -> tuple[bool | None, str]:

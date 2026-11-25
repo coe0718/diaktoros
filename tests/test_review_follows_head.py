@@ -194,6 +194,18 @@ class SweepDeliversIt(fg.Base):
         self.sweep([])
         self.assertEqual(self.kicks, [])
 
+    def test_a_merge_only_head_after_a_change_request_is_not_asked_again(self):
+        # #2743 (#2700): the change request at the head before still stands at a head that only
+        # merged the base, so the fixer owes the answer and no review is delivered to repeat it.
+        from diaktoros import merge_only
+        self.arm()
+        self.moved = OLD
+        asked = {**fg.verdict(), "commit_id": OLD}
+        with mock.patch.object(merge_only, "source",
+                               side_effect=lambda loop, head: OLD if head == fg.HEAD else None):
+            self.sweep([asked])
+        self.assertEqual(self.kicks, [])
+
     def test_a_head_with_a_verdict_is_not_asked_again(self):
         self.arm()
         self.moved = OLD

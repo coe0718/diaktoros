@@ -1,0 +1,108 @@
+"""Merge-only heads (#2743): a PR head that only merged its base since the head before it.
+
+When someone merges a PR, the other open PRs are brought up to date: by the host
+(``update_behind``, ``review_only_update``), or by a person pressing GitHub's Update branch. The
+merge gives each PR a new head with no verdict on it, though nothing of the PR itself changed. A
+change request at the old head then went nowhere: the sweep delivered a review that repeated it
+(spending a verdict), and the fixer's answer turn queued at the old head was cancelled as
+superseded, leaving the PR with no one to move it (#2700, #2738, #2745).
+
+``source`` answers, from GitHub alone, whether ``head`` is such a merge: a merge commit whose first
+parent is the PR's previous head, and after which the PR's own diff against the base is the same
+file for file (path, status and blob) as before. The base's new commits then touched none of the
+PR's files, so a finding at the old head still stands at the new one. Anything else (a commit
+that is not a merge, a merge that changed a PR file, a diff too large to list, a read that failed)
+is not merge-only, and the head is reviewed as usual.
+
+``carried`` is the change request the old head's latest verdict still makes, as a copy at the new
+head marked ``carried_from``; ``gate`` counts it among the head's verdicts, so no review is
+delivered there and the fixer's owed answer runs at the new head. An approval is not carried here:
+the host's own merges carry it under stricter terms (``base_merge``), and GitHub moves an approval
+to the merged head itself.
+
+The reads are commit and compare GETs on immutable SHAs, so GitHub answers repeats from its
+cache; answers are also kept per process.
+"""
+from __future__ import annotations
+
+import contextvars
+
+from . import gh
+
+# Compare lists at most this many files; a diff that may have been cut is never merge-only.
+FILES_MAX = 300
+# A head merged from a head that was itself merged: followed this deep at most.
+CHAIN_MAX = 8
+_MEMO: dict[tuple[str, str], str] = {}
+_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("merge_only_depth", default=0)
+
+
+def _files(loop: dict, base: str, head: str) -> frozenset | None:
+    """The PR side's diff from ``base`` to ``head`` as (path, status, blob), or None unreadable."""
+    data = gh.api(loop, f"/repos/{loop['repo']}/compare/{base}...{head}", login=loop["read_token"])
+    if not isinstance(data, dict) or not isinstance(data.get("files"), list):
+        return None
+    files = data["files"]
+    if len(files) >= FILES_MAX:
+        return None
+    out = set()
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+            return None
+        out.add((item["filename"], str(item.get("status") or ""), str(item.get("sha") or "")))
+    return frozenset(out)
+
+
+def source(loop: dict, head: str) -> str | None:
+    """The PR head ``head`` merged its base into without changing the PR's own diff, else None."""
+    if not isinstance(head, str) or len(head) != 40:
+        return None
+    key = (loop["repo"], head)
+    if key in _MEMO:
+        return _MEMO[key] or None
+    commit = gh.api(loop, f"/repos/{loop['repo']}/commits/{head}", login=loop["read_token"])
+    if not isinstance(commit, dict) or not isinstance(commit.get("parents"), list):
+        return None                                 # unreadable: not merge-only, not remembered
+    parents = [p.get("sha") if isinstance(p, dict) else None for p in commit["parents"]]
+    if len(parents) != 2 or not all(isinstance(p, str) and len(p) == 40 for p in parents):
+        _MEMO[key] = ""
+        return None
+    old, base = parents
+    before, after = _files(loop, base, old), _files(loop, base, head)
+    if before is None or after is None:
+        return None
+    _MEMO[key] = old if before and before == after else ""
+    return _MEMO[key] or None
+
+
+def leads_to(loop: dict, head: str, old: str) -> bool:
+    """Whether ``head`` follows ``old`` through merge-only heads alone (at most ``CHAIN_MAX``)."""
+    current = head
+    for _ in range(CHAIN_MAX):
+        current = source(loop, current)
+        if current is None:
+            return False
+        if current == old:
+            return True
+    return False
+
+
+def carried(loop: dict, reviews: list, head: str) -> list:
+    """The change request a merge-only ``head`` still owes an answer to: the previous head's latest
+    effective verdict when it requests changes, as a copy at ``head``; ``[]`` otherwise."""
+    from . import gate
+    depth = _DEPTH.get()
+    if depth >= CHAIN_MAX or not isinstance(reviews, list) or not any(
+            isinstance(r, dict) and gh.review_state(r) == "CHANGES_REQUESTED" for r in reviews):
+        return []                                   # nothing to carry: no read at all
+    old = source(loop, head)
+    if old is None:
+        return []
+    token = _DEPTH.set(depth + 1)
+    try:
+        latest = gate.latest_effective_review_at_head(reviews, loop, old)
+    finally:
+        _DEPTH.reset(token)
+    if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
+        return []
+    return [{**latest, "commit_id": head, "carried_from": old}]
