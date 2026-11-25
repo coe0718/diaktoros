@@ -17,10 +17,10 @@ from test_selftest import HEAD, ROOT, SelftestBase  # noqa: E402
 from diaktoros import broker, gh, selftest_denials  # noqa: E402
 
 # The broker's denials the selftest's call cannot meet: it passes the loop's repo and the number
-# and 40-hex head of the PR GitHub just answered for (an unreadable PR stops the step first), role
-# "reviewer" and operation "review" without approve, so the fixer's checks and the conflict check
-# never run.
-UNREACHABLE = {"wrong repository", "invalid PR number or head SHA", "unsupported role or operation",
+# of the PR GitHub just answered for (an unreadable PR stops the step first), role "reviewer" and
+# operation "review" without approve, so the fixer's checks and the conflict check never run. The
+# head is whatever that answer says, so a malformed one meets the format check (#2704).
+UNREACHABLE = {"wrong repository", "unsupported role or operation",
                "operation not permitted for role", "#{number} now conflicts with {loop.get('base')}",
                "PR author is not an authorized fixer", "cannot verify latest fixer verdict",
                "fixer verdict no longer current"}
@@ -98,6 +98,10 @@ class DenialFixKeys(SelftestBase):
                 live.clear()
                 live.update(before)
             self.fx.ids = saved[1]
+        with self.assertRaises(broker.BrokerDenied) as caught:      # a malformed head (#2704)
+            broker.authorize(loop, repo="acme/widgets", number=7, head="bad",
+                             role="reviewer", branch="fix-7", operation="review")
+        raised.add(str(caught.exception))
         self.assertEqual(raised, set(selftest_denials.DENIAL_FIX))
 
     def test_a_token_denial_gets_its_hint_through_the_selftest_run(self):
@@ -108,6 +112,15 @@ class DenialFixKeys(SelftestBase):
         line = text.split("❌ broker:reviewer", 1)[1].splitlines()
         self.assertIn("missing token for fixer", line[0])
         self.assertIn("fix: see the identities step", line[1])
+
+    def test_a_malformed_head_sha_gets_its_hint_through_the_selftest_run(self):
+        """#2704: GitHub's answer for the PR carries no usable head SHA."""
+        self.fx.pr["head"]["sha"] = "bad"
+        rc, text = self.run_selftest(pr=7, model=False)
+        self.assertEqual(rc, 1)
+        line = text.split("❌ broker:reviewer", 1)[1].splitlines()
+        self.assertIn("invalid PR number or head SHA", line[0])
+        self.assertIn("fix: GitHub's answer for the PR had no 40-hex head SHA", line[1])
 
 
 if __name__ == "__main__":
