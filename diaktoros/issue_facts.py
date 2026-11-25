@@ -437,6 +437,7 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
 # status line starts with its id (after a list marker, if any), never in a quotation (#515 F2).
 _POINT = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,9}[.)])?\s*`?(M[CRI]\d{1,20})`?\s*[:—–-]{0,3}\s*"
                     r"(not addressed|addressed|disagree)\b(.*)$", re.IGNORECASE)
+_POINT_STATUS = re.compile(r"\b(not addressed|addressed|disagree)\b", re.IGNORECASE)
 _POINTS_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)?\s*Maintainer points\b[\s:*]*$",
                              re.IGNORECASE)
 
@@ -455,7 +456,12 @@ def point_statuses(body: str) -> dict[str, tuple[str, str]]:
             inside = False
         found = _POINT.match(line) if inside else None
         if found:
-            out[found.group(1).upper()] = (found.group(2).lower(), found.group(3))
+            # Review on #2724 F2: the last status on the line counts, as for requirements
+            # (#2309), so ``MR3: addressed? no — not addressed`` is ``not addressed``.
+            later = list(_POINT_STATUS.finditer(found.group(3)))
+            status, rest = ((later[-1].group(1), found.group(3)[later[-1].end():]) if later
+                            else (found.group(2), found.group(3)))
+            out[found.group(1).upper()] = (status.lower(), rest)
     return out
 
 

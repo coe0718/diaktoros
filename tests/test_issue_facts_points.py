@@ -56,6 +56,12 @@ class Points(unittest.TestCase):
         bare = REQS + "## Maintainer points\n- MR3: addressed\n"
         self.assertIn("needs evidence", issue_facts.check(LOOP, 7, "APPROVE", bare))
 
+    def test_the_last_status_on_a_point_line_counts(self):
+        # Review on #2724 F2 (round 2): `addressed? no — not addressed` is not addressed.
+        self.serve([review(3, "boss", "please add X")])
+        body = REQS + "## Maintainer points\n- MR3: addressed? no — not addressed\n"
+        self.assertIn("not addressed", issue_facts.check(LOOP, 7, "APPROVE", body))
+
     def test_a_quoted_or_out_of_section_status_is_no_status(self):
         # F2: a quotation of an earlier status, or a mention in prose, accounts for nothing.
         self.serve([review(3, "boss", "please add X")])
