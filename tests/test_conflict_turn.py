@@ -298,6 +298,11 @@ class FailedFixSequence(Worker):
         stack.enter_context(mock.patch.object(gh, "api", side_effect=self.fake.api))
         stack.enter_context(mock.patch.object(gh, "reviews",
                                               side_effect=lambda *_a, **_k: list(self.reviews)))
+        # #515: the conflict prompt reads the maintainers' points on the PR; none here.
+        stack.enter_context(mock.patch.object(gh, "issue_comments_read", return_value=([], "")))
+        stack.enter_context(mock.patch.object(gh, "reviews_read",
+                                              side_effect=lambda *_a, **_k: (list(self.reviews), "")))
+        stack.enter_context(mock.patch.object(gh, "review_comments_read", return_value=([], "")))
         return stack
 
     def sweep(self, head):

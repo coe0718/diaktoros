@@ -82,6 +82,11 @@ class FakeGitHub:
     def fetch(self, loop, path, method="GET", body=None, login=None):
         if path.startswith(f"/repos/{REPO}/issues/7/comments?per_page=100") and method == "GET":
             return list(self.comments), ""
+        # #515: the maintainers' points on the PR are read from its reviews and inline comments.
+        if path.startswith(f"/repos/{REPO}/pulls/7/reviews?per_page=100") and method == "GET":
+            return list(self.reviews), ""
+        if path.startswith(f"/repos/{REPO}/pulls/7/comments?per_page=100") and method == "GET":
+            return [], ""
         raise AssertionError(f"unexpected fetch {method} {path}")
 
 

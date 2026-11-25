@@ -59,6 +59,12 @@ class BrokerIPCBase(unittest.TestCase):
         review_patch = mock.patch.object(gh, 'reviews', side_effect=lambda *args: self.reviews)
         review_patch.start()
         self.addCleanup(review_patch.stop)
+        # #515: an APPROVE on a PR that closes an issue reads the maintainers' points on it
+        # (comments, review bodies, inline comments); none here.
+        for name in ("issue_comments_read", "reviews_read", "review_comments_read"):
+            points_patch = mock.patch.object(gh, name, return_value=([], ""))
+            points_patch.start()
+            self.addCleanup(points_patch.stop)
 
     def start(self, role="reviewer", head=HEAD, branch="fix-7", repo=REPO, number=7):
         scope = broker_ipc.RunScope(repo, number, head, role, branch)
