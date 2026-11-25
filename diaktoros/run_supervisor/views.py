@@ -118,11 +118,13 @@ def attention_where(repo: str | None = None, pr: int | None = None,
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
     where += " AND r.seat != 'shadow'"
-    # A failed or cancelled run is superseded once a newer run of the same repo, PR (or issue)
-    # and seat exists (#1364): that run is the one that moves it now. An uncertain run is never
+    # A failed or cancelled run is superseded once a newer run of the same repo, PR (or issue),
+    # head and seat exists (#1364): that run is the one that moves it now. A run at another head
+    # never supersedes it (a head can return after a force-push, and the current head's turn is
+    # never pushed out by turns at other heads, #2613 review, F10). An uncertain run is never
     # dropped, it holds its seat until reconciled; a waiting one is still due to start.
     where += (" AND NOT (r.state IN ('failed','cancelled') AND EXISTS (SELECT 1 FROM runs s "
-              "WHERE s.repo=r.repo AND s.pr=r.pr AND s.seat=r.seat AND "
+              "WHERE s.repo=r.repo AND s.pr=r.pr AND s.head=r.head AND s.seat=r.seat AND "
               "(s.created>r.created OR (s.created=r.created AND s.id>r.id))))")
     if repo is not None:
         where += ' AND r.repo=?'
