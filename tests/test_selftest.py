@@ -996,7 +996,7 @@ def _top_level_names(path: pathlib.Path, imports: bool = False) -> set[str]:
             names.update(n.id for target in targets for n in ast.walk(target)
                          if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
         elif imports and isinstance(node, (ast.Import, ast.ImportFrom)):
-            core = isinstance(node, ast.ImportFrom) and (node.module or "").rpartition(".")[2] == INFERENCE_CORE.stem
+            core = isinstance(node, ast.ImportFrom) and (node.level, node.module) in {(1, "selftest"), (0, "diaktoros.selftest")}
             names.update(n.split(".")[0] for a in node.names for n in {a.asname or a.name, *[a.name] * core})
     return names
 

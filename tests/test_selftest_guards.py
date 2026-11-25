@@ -40,7 +40,8 @@ class CoreNameGuard(unittest.TestCase):
         shapes = {"FAIL, WARN = 'fail', 'warn'\n": "FAIL", "[PASS, *rest] = ['pass']\n": "PASS",
                   "SKIP: str = 'skip'\n": "SKIP", "from .selftest import PASS\n": "PASS",
                   "from .selftest import Report as Report\n": "Report", "def Report():\n    pass\n": "Report",
-                  "from .selftest import PASS as MY_PASS\n": "PASS", "from .selftest import Report as R\n": "Report"}
+                  "from .selftest import PASS as MY_PASS\n": "PASS", "from .selftest import Report as R\n": "Report",
+                  "from diaktoros.selftest import PASS as P\n": "PASS"}
         for source, name in shapes.items():
             with self.subTest(source):
                 failures = self.guard(source)
@@ -49,6 +50,7 @@ class CoreNameGuard(unittest.TestCase):
 
     def test_imports_and_names_that_do_not_clash_pass(self):
         fine = ("import json\nfrom pathlib import Path\nfrom . import selftest\nfrom .other import PASS as OK\n"
+                "from .other.selftest import PASS as OK2\nfrom ..selftest import Report as R\n"
                 "PASSED = 1\ndef check_seats():\n    pass\n")
         self.assertEqual(self.guard(fine), [])
 
