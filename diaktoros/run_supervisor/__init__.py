@@ -911,10 +911,12 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, shadow_turns.Shado
             row = con.execute("SELECT * FROM runs WHERE delivery=?", (delivery,)).fetchone()
             return dict(row) if row else None
 
-    def status(self, repo: str | None = None, pr: int | None = None) -> list[dict]:
-        """Read-only, bounded operator view; no lease or worker is altered."""
+    def status(self, repo: str | None = None, pr: int | None = None,
+               listing: dict | None = None) -> list[dict]:
+        """Read-only, bounded operator view; no lease or worker is altered. With ``listing`` (a
+        fresh open-PR listing), closed-PR rows leave before the cap (``views.runs_view``)."""
         with self._connect() as con:
-            return views.runs_view(con, repo, pr)
+            return views.runs_view(con, repo, pr, listing=listing)
 
     def attention(self, repo: str | None = None) -> list[dict]:
         """Every run ``status`` would list, uncapped (``views.attention_view``): the total its

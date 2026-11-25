@@ -66,8 +66,9 @@ RUNS_CAP = 100
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None,
-              head: str | None = None) -> list[dict]:
-    """The newest ``RUNS_CAP`` failed, waiting, uncertain, push-policy-cancelled and
+              head: str | None = None, listing: dict | None = None) -> list[dict]:
+    """With ``listing`` (a ``fresh_listing``), rows ``closed_history`` calls history are left
+    out before the cap. The newest ``RUNS_CAP`` failed, waiting, uncertain, push-policy-cancelled and
     operator-cancelled runs, oldest first, plus every uncertain one past the cap (#1364: it holds
     its seat until reconciled); or with ``head`` all of that head's, uncapped: no other turn, at
     that head or another, pushes a current head's turn out of its reader's list (#2613 review,
@@ -76,6 +77,9 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
     Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     where, args = attention_where(repo, pr, head)
+    if listing is not None:
+        # Closed-PR rows leave before the cap, so they never push an open PR's row out (#1364).
+        where, args = f"{where} AND NOT {CLOSED_SQL}", args + closed_args(listing)
     # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
     # them; a read-only view never migrates.
     columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
@@ -87,7 +91,7 @@ def runs_view(con, repo: str | None = None, pr: int | None = None,
                        f"WHERE {where} ORDER BY r.created DESC,r.id DESC LIMIT {RUNS_CAP}))",
                        args + args)
     rows = [dict(row) for row in con.execute(
-        "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
+        "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,r.created,"
         f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
         "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
         " ORDER BY r.created,r.id", args)]
@@ -161,7 +165,7 @@ def attention_view(con, repo: str | None = None) -> list[dict]:
     oldest first: the total the capped list is a part of (#1364)."""
     where, args = attention_where(repo)
     return [dict(row) for row in con.execute(
-        "SELECT r.id,r.repo,r.pr,r.seat,r.state,r.error FROM runs r WHERE " + where +
+        "SELECT r.id,r.repo,r.pr,r.seat,r.state,r.error,r.created FROM runs r WHERE " + where +
         " ORDER BY r.created,r.id", args)]
 
 
@@ -220,8 +224,30 @@ def closed_history(row: dict, listing: dict | None) -> bool:
     (#1364): a closed or merged PR has nothing left for them to move. An uncertain run never
     is: it holds its seat until reconciled. Issue seats are keyed by issue number and never
     judged by a PR listing (closed issues: #2709). No listing: False."""
+    # A run created after the listing was read is unknown, not closed: the PR may have been
+    # opened or reopened since that sweep (#1364 review, F3).
     return (listing is not None and row.get('state') != 'uncertain'
-            and row.get('seat') not in run_supervisor.ISSUE_SEATS and row.get('pr') not in listing['numbers'])
+            and row.get('seat') not in run_supervisor.ISSUE_SEATS and row.get('pr') not in listing['numbers']
+            and row.get('created') is not None and float(row['created']) <= listing['at'])
+
+
+# ``closed_history`` as SQL on ``runs r``, for ``runs_view`` to apply before its cap; its
+# arguments are ``closed_args(listing)``. The two must say the same thing.
+CLOSED_SQL = ("(r.state!='uncertain' AND r.seat NOT IN (SELECT value FROM json_each(?)) AND "
+              "r.pr NOT IN (SELECT value FROM json_each(?)) AND r.created<=?)")
+
+
+def closed_args(listing: dict) -> list:
+    """``CLOSED_SQL``'s arguments for a fresh ``listing``."""
+    return [json.dumps(list(run_supervisor.ISSUE_SEATS)), json.dumps(sorted(listing['numbers'])),
+            listing['at']]
+
+
+def open_runs(con, loop: dict, pr: int | None = None) -> list[dict]:
+    """``runs_view`` of ``loop``'s repo with closed-PR rows left out, before the cap when the
+    watchdog's listing is fresh (``fresh_listing``): the Desktop's stuck list."""
+    listing = fresh_listing(open_listing(loop))
+    return split_history(runs_view(con, loop['repo'], pr, listing=listing), loop)[0]
 
 
 def split_history(rows: list[dict], loop: dict) -> tuple[list[dict], list[dict], bool]:
@@ -256,7 +282,7 @@ def read_only_connect(db: str | Path):
 
 
 def read_only_view(db: str | Path, repo: str, pr: int | None = None,
-                   head: str | None = None) -> list[dict] | None:
+                   head: str | None = None, listing: dict | None = None) -> list[dict] | None:
     """``runs_view`` without writing anything — no schema migration, no WAL creation — for
     ``status``/``explain``. None when the ledger is absent or unreadable."""
     try:
@@ -264,7 +290,7 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None,
         if con is None:
             return None
         try:
-            return runs_view(con, repo, pr, head)
+            return runs_view(con, repo, pr, head, listing)
         finally:
             con.close()
     except sqlite3.Error:

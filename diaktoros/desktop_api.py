@@ -857,7 +857,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         # The host's own "what moves it" line, for the runs that are actually not moving.
         # A run on a PR the watchdog's fresh listing shows closed is history, as ``status`` and
         # ``explain`` print it (``split_history``, #1364); an uncertain run always stays.
-        for row in views.split_history(views.runs_view(con, repo, pr), loop)[0]:
+        for row in views.open_runs(con, loop, pr):
             created, _ = stamp.get(row["id"], (None, None))
             view["stuck"].append({"seat": row["seat"], "head": stats.recorded_head(row["head"]),
                                   "state": row["state"], "since": created,

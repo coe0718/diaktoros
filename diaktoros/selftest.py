@@ -1013,13 +1013,13 @@ def check_build(report: Report, loop: dict, settings: dict | None, pr: dict | No
 
 def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict | None) -> None:
     from . import observer
-    from .run_supervisor import Supervisor, presence_marker
+    from .run_supervisor import Supervisor, presence_marker, views
     step = "supervisor"
     db = ledger_path()
     try:
         supervisor = Supervisor(db, presence=presence_marker())
         rows = supervisor.attention(loop["repo"])
-        listed = len(supervisor.status(loop["repo"]))
+        listed = len(supervisor.status(loop["repo"], listing=views.fresh_listing(views.open_listing(loop))))
     except Exception as exc:
         report.add(step, "ledger", FAIL, f"{db}: {type(exc).__name__}: {exc}",
                    f"make {db.parent} writable by you; a corrupt ledger must be moved aside by hand")
@@ -1065,8 +1065,8 @@ def _ledger_attention(report: Report, step: str, loop: dict, db: Path, rows: lis
         text += f" ({len(history)} on closed PRs not counted)"
     elif unknown:
         text += " (no fresh open-PR listing: runs on closed PRs may be counted)"
-    if listed < len(rows) + len(history):
-        text += (f"; `status` lists {listed} of {len(rows) + len(history)}, the newest "
+    if listed < len(rows):
+        text += (f"; `status` lists {listed} of {len(rows)}, the newest "
                  "(every uncertain one included)")
     report.add(step, "ledger:attention", WARN, text,
                f"inspect `python -m diaktoros.run_supervisor status {db}`; an uncertain seat "

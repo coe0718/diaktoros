@@ -207,6 +207,24 @@ class LedgerAttention(unittest.TestCase):
         self.assertIn("1 run(s) need a person in the ledger: 1 failed", text)
         self.assertIn("no fresh open-PR listing", text)
 
+    def test_closed_rows_leave_status_before_the_cap_and_a_run_after_the_listing_stays(self):
+        # Review F2/F4: 100 waiting rows on closed PRs never push PR 7's older failure out of
+        # status, and selftest's "lists N of M" is the actionable count. F3: a failure created
+        # after a fresh listing was read is not judged closed by it.
+        self.run_row(7, "fixer", "failed", "conflict needs a person")
+        self.clock = time.time() - 100
+        for pr in range(100, 100 + views.RUNS_CAP):
+            self.run_row(pr, "reviewer", "waiting", "held: ci")
+        self.listing([7])
+        listing = views.fresh_listing(views.open_listing(self.loop))
+        self.assertEqual([(r["pr"], r["state"]) for r in self.sup.status(REPO, listing=listing)],
+                         [(7, "failed")])
+        self.assertEqual(self.check_ledger(), f"1 run(s) need a person in the ledger: 1 failed "
+                                              f"({views.RUNS_CAP} on closed PRs not counted)")
+        self.clock = time.time() + 50
+        self.run_row(8, "fixer", "failed", "conflict needs a person")   # after the listing
+        self.assertIn("2 run(s) need a person in the ledger: 2 failed", self.check_ledger())
+
     def test_selftest_says_nothing_when_nothing_needs_a_person(self):
         self.run_row(7, "fixer", "failed", "conflict needs a person")
         self.run_row(7, "fixer", "done")
