@@ -160,75 +160,73 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
                    else ""))
 
 
-@refreshes_declined_head
-def decide(payload: dict, reconsider: str | None = None) -> None:
-    """The gate itself, on one payload: queue the review, or ``silence`` with the reason.
-
-    ``main`` feeds it the webhook's stdin; the host's review entry point
-    (``one_shot_action.review``, #1046) calls it directly inside a gate call, so nothing
-    process-wide is touched. ``reconsider`` (#1334) is only ever the host's: a maintainer's
-    reason for one fresh review at a head that already has a verdict. No webhook sets it.
-    """
-    loop, st = gate.context(payload)
-    pr = gate.pr_of(payload)
-    action = payload.get("action", "")
-
-    if action == "closed":
-        number = gate.number_of(payload, pr)
-        # A delayed close can arrive after a reopen, or while GitHub is unavailable. Neither
-        # the event snapshot nor cleanup's quiet zero exit code proves anything was removed.
-        current = gh.pr(loop, number)
-        if (not isinstance(current, dict) or current.get("number") != number
-                or current.get("state") != "closed"):
-            silence("close event is stale or current PR state is unavailable")
-        closing = "merged" if (current.get("merged") or current.get("merged_at")) else "closed"
-        if closing == "merged" and (current.get("base") or {}).get("ref") == loop["base"]:
-            # The base moved: other loop PRs may conflict now. Checked in a minute, not at the
-            # next sweep (conflict_scan); any PR's merge counts, not only the loop's.
-            gate.schedule_conflict_scan(loop, st)
-        gate.reclaim(loop, number, closing)
-        # Cleanup above is unconditional; the notice is only for PRs the loop worked on.
-        if not loop_worked_on(loop, st, number, current):
-            silence()
-        # Reclaim is best-effort and has no success receipt. Report the close, not freed disk.
-        observer.notify(loop, st, "closed", number, (current.get("head") or {}).get("sha") or "",
-                        identity=closing, outcome=closing, next_turn="nothing — cleanup attempted")
+def on_closed(payload: dict, loop: dict, st, pr: dict) -> None:
+    """A ``closed`` event: reclaim the PR's local disk, and notify the close for a PR the loop
+    worked on. Always ends the gate with ``silence``."""
+    number = gate.number_of(payload, pr)
+    # A delayed close can arrive after a reopen, or while GitHub is unavailable. Neither
+    # the event snapshot nor cleanup's quiet zero exit code proves anything was removed.
+    current = gh.pr(loop, number)
+    if (not isinstance(current, dict) or current.get("number") != number
+            or current.get("state") != "closed"):
+        silence("close event is stale or current PR state is unavailable")
+    closing = "merged" if (current.get("merged") or current.get("merged_at")) else "closed"
+    if closing == "merged" and (current.get("base") or {}).get("ref") == loop["base"]:
+        # The base moved: other loop PRs may conflict now. Checked in a minute, not at the
+        # next sweep (conflict_scan); any PR's merge counts, not only the loop's.
+        gate.schedule_conflict_scan(loop, st)
+    gate.reclaim(loop, number, closing)
+    # Cleanup above is unconditional; the notice is only for PRs the loop worked on.
+    if not loop_worked_on(loop, st, number, current):
         silence()
+    # Reclaim is best-effort and has no success receipt. Report the close, not freed disk.
+    observer.notify(loop, st, "closed", number, (current.get("head") or {}).get("sha") or "",
+                    identity=closing, outcome=closing, next_turn="nothing — cleanup attempted")
+    silence()
 
-    if action == "edited":
-        # A base edit is only a hint to re-read the live PR. A stacked child now on trunk at
-        # the same head starts a fresh review situation: the transition's one isolated
-        # reviewer turn, deduplicated by its turn key against redeliveries and the sweep.
-        number = gate.number_of(payload, pr)
-        live = gh.pr(loop, number)
-        if (isinstance(live, dict) and live.get("number") == number and
-                live.get("state") == "open" and
-                (live.get("base") or {}).get("ref") == loop["base"]):
-            if transition.record(loop, st, number, (live.get("head") or {}).get("sha"),
-                                 loop["base"]):
-                status, detail = transition.start_fresh_review(loop, st, number, live=live)
-                log(f"#{number} retarget: fresh review {status} ({detail})")
-                silence(f"base retarget: fresh review {status} — {detail}")
-        silence("base edit observed — no reviewer run")
-    if action not in ACTIONS:
-        silence(f"action {action!r} is not a review trigger")
 
-    sender = ((payload.get("sender") or {}).get("login") or "").lower()
-    if action == "review_requested":
-        # Only an explicit request for THIS seat counts, and only from the fixer side or a loop
-        # maintainer (#375): a request aimed at another reviewer, or from a stranger, is
-        # somebody else's business.
-        requested = ((payload.get("requested_reviewer") or {}).get("login") or "").lower()
-        if requested != loop["reviewer_seat"]:
-            silence(f"review requested from {requested or 'nobody'} — not this seat")
-        # A review-only author (#191) may ask again for a review of their own PR.
-        own = sender in config.review_only(loop) and sender == (
-            ((pr.get("user") or {}).get("login") or "").lower())
-        if (sender not in set(loop["fixers"]) and sender not in loop["reviewers"]
-                and sender not in config.maintainers(loop) and not own):
-            silence(f"sender {sender or 'unknown'} is not a fixer, the reviewer or a maintainer "
-                    "(triage.maintainers)")
+def on_edited(payload: dict, loop: dict, st, pr: dict) -> None:
+    """An ``edited`` event: start a base retarget's fresh review when one is due. Always ends
+    the gate with ``silence``.
 
+    A base edit is only a hint to re-read the live PR. A stacked child now on trunk at the same
+    head starts a fresh review situation: the transition's one isolated reviewer turn,
+    deduplicated by its turn key against redeliveries and the sweep."""
+    number = gate.number_of(payload, pr)
+    live = gh.pr(loop, number)
+    if (isinstance(live, dict) and live.get("number") == number and
+            live.get("state") == "open" and
+            (live.get("base") or {}).get("ref") == loop["base"]):
+        if transition.record(loop, st, number, (live.get("head") or {}).get("sha"),
+                             loop["base"]):
+            status, detail = transition.start_fresh_review(loop, st, number, live=live)
+            log(f"#{number} retarget: fresh review {status} ({detail})")
+            silence(f"base retarget: fresh review {status} — {detail}")
+    silence("base edit observed — no reviewer run")
+
+
+def check_requester(payload: dict, loop: dict, pr: dict, sender: str) -> None:
+    """A ``review_requested`` event counts only when it names this seat and comes from a fixer,
+    the reviewer, a loop maintainer (#375) or a review-only author on their own PR (#191);
+    otherwise it ends the gate with ``silence``."""
+    # Only an explicit request for THIS seat counts, and only from the fixer side or a loop
+    # maintainer (#375): a request aimed at another reviewer, or from a stranger, is
+    # somebody else's business.
+    requested = ((payload.get("requested_reviewer") or {}).get("login") or "").lower()
+    if requested != loop["reviewer_seat"]:
+        silence(f"review requested from {requested or 'nobody'} — not this seat")
+    # A review-only author (#191) may ask again for a review of their own PR.
+    own = sender in config.review_only(loop) and sender == (
+        ((pr.get("user") or {}).get("login") or "").lower())
+    if (sender not in set(loop["fixers"]) and sender not in loop["reviewers"]
+            and sender not in config.maintainers(loop) and not own):
+        silence(f"sender {sender or 'unknown'} is not a fixer, the reviewer or a maintainer "
+                "(triage.maintainers)")
+
+
+def eligible_author(loop: dict, pr: dict) -> str:
+    """The event snapshot's eligibility (not a draft, on the loop's base, by a reviewed author):
+    returns the author's lowercased login, or ends the gate with ``silence``."""
     if pr.get("draft"):
         silence("draft PR")
     if (pr.get("base") or {}).get("ref") != loop["base"]:
@@ -237,10 +235,15 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
     if author not in config.reviewed_authors(loop):
         silence(f"author {author or 'unknown'} is not a fixer or a review-only author for "
                 "this loop")
+    return author
 
-    seat = "reviewer"
-    number = gate.number_of(payload, pr)
-    head = gate.head_of(pr)
+
+def live_pr(loop: dict, st, number: int, head: str, pr: dict) -> tuple[dict, str]:
+    """``(current, fresh_key)``: the live PR at the event's head, and the base retarget's fresh
+    turn key (``""`` when there is no retarget boundary).
+
+    Ends the gate with ``silence`` when the trigger is stale, the live PR is no longer eligible,
+    the trigger is from an older stacked base generation, or a retarget's turn can't be named."""
     # Every trigger can arrive after a push or close. Never claim a seat or escalate
     # using the event snapshot if GitHub now points at another head.
     current = gh.pr(loop, number)
@@ -265,14 +268,15 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
     fresh_key = transition.turn_key(boundary) if boundary else ""
     if boundary and not fresh_key:
         silence("base retarget hold: transition time unreadable — cannot name its fresh turn")
+    return current, fresh_key
 
-    # After a same-head retarget, only host-receipted post-boundary reviews count: a request
-    # is neither a receipt nor a second fresh turn. It can only re-drive the transition's own
-    # turn (same turn key, so the ledger dedups it against the sweep and the edited hook).
-    reviews = transition.effective_reviews(loop, st, number, head, gate.fetch_reviews(loop, number))
-    if not isinstance(reviews, list):
-        silence("host review receipts unreadable — not guessing which reviews count")
-    dispute_key = reconsider_key = ""
+
+def reviewed_head_keys(loop: dict, number: int, head: str, reviews: list, action: str,
+                       sender: str, reconsider: str | None) -> tuple[str, str]:
+    """``(reconsider_key, dispute_key)`` for a head that already has a verdict; both ``""`` for
+    a head with none. A reviewed head with neither a reconsider (#1334) nor a maintainer's
+    request after a dispute (#894) ends the gate with ``silence``."""
+    reconsider_key = dispute_key = ""
     if gate.reviewed_at_head(reviews, loop, head) and reconsider is not None:
         # #1334: a maintainer sends a reviewed head back for one fresh review. One per head: the
         # turn key is the same for every reconsider of it, so the ledger keeps only the first.
@@ -294,6 +298,62 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
             silence(f"head {head[:7]} already has a reviewer's verdict")
         from diaktoros.run_supervisor import DISPUTE_KEY
         dispute_key = f"{DISPUTE_KEY}{int(disputed)}"
+    return reconsider_key, dispute_key
+
+
+def check_caps(loop: dict, st, number: int, head: str, reviews: list, action: str,
+               sender: str, author: str, current: dict, dispute_key: str) -> int:
+    """The escalation and verdict-cap holds: returns the verdict rounds so far, or ends the gate
+    with ``silence`` (escalated, or at the review-only or the fixer cap)."""
+    marker = st.breach_get(number)
+    if gate.escalated(marker, head) and not (
+            dispute_key and ((marker or {}).get("escalated") or {}).get("by") == "dispute"):
+        silence(f"#{number} @ {head[:7]} is escalated to adjudication — no further review here")
+    rounds = len(gate.verdicts(reviews, loop))
+    # A review-only author's PR (#191) spends no fixer rounds and is never adjudicated: the author
+    # answers each verdict by pushing and asking again, up to its own verdict cap (review_only_cap).
+    if author in config.review_only(loop):
+        review_only_cap(loop, st, number, head, rounds, reviews, action, sender, current)
+    elif rounds >= loop["cap"]:
+        breach_at_cap(loop, st, number, head, rounds)
+    return rounds
+
+
+@refreshes_declined_head
+def decide(payload: dict, reconsider: str | None = None) -> None:
+    """The gate itself, on one payload: queue the review, or ``silence`` with the reason.
+
+    ``main`` feeds it the webhook's stdin; the host's review entry point
+    (``one_shot_action.review``, #1046) calls it directly inside a gate call, so nothing
+    process-wide is touched. ``reconsider`` (#1334) is only ever the host's: a maintainer's
+    reason for one fresh review at a head that already has a verdict. No webhook sets it.
+    """
+    loop, st = gate.context(payload)
+    pr = gate.pr_of(payload)
+    action = payload.get("action", "")
+    if action == "closed":
+        on_closed(payload, loop, st, pr)
+    if action == "edited":
+        on_edited(payload, loop, st, pr)
+    if action not in ACTIONS:
+        silence(f"action {action!r} is not a review trigger")
+
+    sender = ((payload.get("sender") or {}).get("login") or "").lower()
+    if action == "review_requested":
+        check_requester(payload, loop, pr, sender)
+    author = eligible_author(loop, pr)
+    number = gate.number_of(payload, pr)
+    head = gate.head_of(pr)
+    current, fresh_key = live_pr(loop, st, number, head, pr)
+
+    # After a same-head retarget, only host-receipted post-boundary reviews count: a request
+    # is neither a receipt nor a second fresh turn. It can only re-drive the transition's own
+    # turn (same turn key, so the ledger dedups it against the sweep and the edited hook).
+    reviews = transition.effective_reviews(loop, st, number, head, gate.fetch_reviews(loop, number))
+    if not isinstance(reviews, list):
+        silence("host review receipts unreadable — not guessing which reviews count")
+    reconsider_key, dispute_key = reviewed_head_keys(loop, number, head, reviews, action,
+                                                     sender, reconsider)
     held = st.human_hold(number, head)
     if isinstance(held, dict):
         # #478: the loop's review of this head ended with its approval left to a person.
@@ -306,18 +366,14 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
     if st.inflight(f"review:{number}:{head}"):
         silence(f"a review for head {head[:7]} is already out")
 
-    marker = st.breach_get(number)
-    if gate.escalated(marker, head) and not (
-            dispute_key and ((marker or {}).get("escalated") or {}).get("by") == "dispute"):
-        silence(f"#{number} @ {head[:7]} is escalated to adjudication — no further review here")
-    rounds = len(gate.verdicts(reviews, loop))
-    # A review-only author's PR (#191) spends no fixer rounds and is never adjudicated: the author
-    # answers each verdict by pushing and asking again, up to its own verdict cap (review_only_cap).
-    if author in config.review_only(loop):
-        review_only_cap(loop, st, number, head, rounds, reviews, action, sender, current)
-    elif rounds >= loop["cap"]:
-        breach_at_cap(loop, st, number, head, rounds)
+    rounds = check_caps(loop, st, number, head, reviews, action, sender, author, current,
+                        dispute_key)
+    queue_review(loop, st, number, head, turn_key, action, sender, author, rounds)
 
+
+def queue_review(loop: dict, st, number: int, head: str, turn_key: str, action: str,
+                 sender: str, author: str, rounds: int) -> None:
+    """Free the fixer's seat on a handoff, then claim the reviewer seat (or queue for it)."""
     # A request *is* the handoff: the fixer pushes, then asks. That is the only signal that means
     # the fixer is finished with this PR, so it is what frees the fixer's slot. A review must never
     # start against a PR the fixer is still working — and everything else (opened, ready_for_review,
@@ -331,7 +387,7 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
     gate.drain_seat(loop, "fixer")
 
     gate.block_pr_agent(
-        loop, st, seat, number, head, turn_key=turn_key,
+        loop, st, "reviewer", number, head, turn_key=turn_key,
         on_queued=lambda: observer.notify(
             loop, st, "handoff" if action == "review_requested" else "opened", number, head,
             identity=action, actor=sender if action == "review_requested" else author,
