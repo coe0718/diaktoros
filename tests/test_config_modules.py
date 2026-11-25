@@ -13,6 +13,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import ast
 import importlib
 import pathlib
+import re
 import sys
 import unittest
 
@@ -20,7 +21,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import config  # noqa: E402
 
 PACKAGE = pathlib.Path(config.__file__).resolve().parent
-SUBMODULES = ("settings_form", "credentials", "host_guards", "blocks", "lists", "loop_checks")
+SUBMODULES = ("settings_form", "credentials", "host_guards", "blocks", "lists", "loop_checks",
+              "number_settings")
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:
@@ -89,6 +91,17 @@ class Split(unittest.TestCase):
                     if isinstance(node, ast.ImportFrom) and node.level == 1 and not node.module:
                         self.fail(f"{name}: `from . import …` binds core names; use "
                                   "`from .. import config`")
+
+    def test_no_config_module_reaches_a_moved_name_through_config(self):
+        # The one-home scan above skips the package's own files; inside it, a moved name read as
+        # ``config.X`` fails only when that path runs (the number parsers, split at the ceiling).
+        moved = {name for sub in SUBMODULES for name in _top_level_names(PACKAGE / f"{sub}.py")}
+        pattern = re.compile(r"\bconfig\.(%s)\b" % "|".join(sorted(map(re.escape, moved))))
+        for path in sorted(PACKAGE.glob("*.py")):
+            code = "\n".join(line.split("#", 1)[0] for line in path.read_text().splitlines())
+            found = pattern.search(code)                       # a comment may name the old path
+            with self.subTest(file=path.name):
+                self.assertIsNone(found, found and f"{path.name}: {found.group(0)}")
 
     def test_the_core_imports_no_submodule_at_module_level(self):
         tree = ast.parse((PACKAGE / "__init__.py").read_text())
