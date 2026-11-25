@@ -72,7 +72,6 @@
     "diaktoros/trusted_turn.py::_export_committed_source": 105,
     "diaktoros/trusted_turn.py::run_turn": 249,
     "diaktoros/watch_stacked.py::reconcile_stacked": 102,
-    "scripts/gate_fixer.py::main": 298,
     "scripts/gate_reviewer.py::decide": 217
   }
 }
