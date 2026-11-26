@@ -210,9 +210,6 @@ class SweepDeliversIt(fg.Base):
     def test_a_merge_only_read_that_recovers_mid_sweep_delivers_nothing(self):
         # Review round 3, F5: GitHub failing, then recovering, inside one sweep of the PR.
         from diaktoros import merge_only
-        for memo in (merge_only._MEMO, merge_only._DECIDED):
-            memo.clear()
-            self.addCleanup(memo.clear)
         self.arm()
         self.moved = OLD
         asked = {**fg.verdict(), "commit_id": OLD}
@@ -223,6 +220,23 @@ class SweepDeliversIt(fg.Base):
         with mock.patch.object(merge_only, "_decide", side_effect=decide):
             self.sweep([asked])
         self.assertEqual(self.kicks, [])
+
+    def test_no_merge_only_answer_stands_for_the_next_sweep(self):
+        # Review round 4, F2: a carry this sweep read is not the next sweep's answer; once the
+        # head reads as not merge-only, the review the head move cancelled is delivered.
+        from diaktoros import merge_only
+        self.arm()
+        self.moved = OLD
+        asked = {**fg.verdict(), "commit_id": OLD}
+        answers = iter([OLD])
+
+        def decide(loop, head):
+            return next(answers, "") if head == fg.HEAD else ""
+        with mock.patch.object(merge_only, "_decide", side_effect=decide):
+            self.sweep([asked])
+            self.assertEqual(self.kicks, [])
+            self.sweep([asked])
+        self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
 
     def test_an_undecided_merge_only_head_is_not_asked_this_sweep(self):
         # #2757 review F5: a failed merge-only read decides nothing, so no review is delivered

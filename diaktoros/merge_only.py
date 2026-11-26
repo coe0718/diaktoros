@@ -9,11 +9,11 @@ superseded, leaving the PR with no one to move it (#2700, #2738, #2745).
 
 ``lookup`` answers, from GitHub alone, whether ``head`` is such a merge: a merge commit whose first
 parent is the PR's previous head and whose second is on the loop's base branch, and after which the
-PR's own diff against the base is the same file for file (path, status and blob) as before. The base's new commits then touched none of the
-PR's files, so a finding at the old head still stands at the new one. Anything else (a commit
-that is not a merge, a merge that changed a PR file, a diff too large to list, a read that failed)
-is not merge-only, and the head is reviewed as usual; a failed read is ``UNKNOWN``, which the fixer's
-claim retries instead of deciding.
+PR's own diff against the base is the same file for file (path, status and blob) as before. The
+base's new commits then touched none of the PR's files, so a finding at the old head still stands
+at the new one. Anything else (a commit that is not a merge, a merge that changed a PR file, a
+diff too large to list) is not merge-only, and the head is reviewed as usual. A failed read is
+``UNKNOWN``: the claims retry it and the sweep delivers no review on it, instead of deciding.
 
 ``carried`` is the change request the old head's latest verdict still makes, as a copy at the new
 head marked ``carried_from``; ``gate`` counts it among the head's verdicts, so no review is
@@ -21,13 +21,14 @@ delivered there and the fixer's owed answer runs at the new head. An approval is
 the host's own merges carry it under stricter terms (``base_merge``), and GitHub moves an approval
 to the merged head itself.
 
-The reads are commit and compare GETs on immutable SHAs, so GitHub answers repeats from its
-cache; answers are also kept per process.
+The reads are commit and compare GETs. What a head's own SHAs fix (its parents, its diff) is kept
+per process; whether its merged parent is on the base is read again for every decision, and inside
+one (``decision``) every ask gets the answer the first one read.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
-import time
 
 from . import gh
 
@@ -77,25 +78,41 @@ def _on_base(loop: dict, commit: str) -> bool | None:
     return data["status"] in ("identical", "ahead") and data.get("behind_by") == 0
 
 
-# One decision reads one answer (#2757 review, round 3, F5): the sweep's checks of a PR and a
-# claim's reads each ask more than once, and an answer that changed between two asks (a read that
-# failed, then recovered) let one check hold and the next proceed. So each answer, UNKNOWN
-# included, stands in this process for DECIDE_S; past it, the base is read again (F2).
-DECIDE_S = 60.0
-_DECIDED: dict[tuple[str, str], tuple[float, str]] = {}
+# One decision reads one answer (#2757 review, rounds 3 and 4, F5): the sweep's checks of a PR and
+# a claim's reads of a row each ask more than once, and an answer that changed between two asks (a
+# read that failed, then recovered) let one check hold and the next proceed. Inside ``decision``
+# the first answer for a head stands until the decision ends, UNKNOWN included; it is never kept
+# past it, so the next decision reads the base again (F2). Keyed by the loop's base as well as the
+# head: an answer for one base is never one for another.
+_SCOPE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("merge_only_decision",
+                                                                     default=None)
+
+
+@contextlib.contextmanager
+def decision():
+    """One decision's reads: every ``lookup`` inside answers as its first one did. A decision
+    inside another is part of it."""
+    if _SCOPE.get() is not None:
+        yield
+        return
+    token = _SCOPE.set({})
+    try:
+        yield
+    finally:
+        _SCOPE.reset(token)
 
 
 def lookup(loop: dict, head: str) -> str:
     """The PR head ``head`` merged its base into without changing the PR's own diff; ``""`` when
-    ``head`` is not such a merge; ``UNKNOWN`` when a read failed (#2757 review, F1). The same
-    answer for ``DECIDE_S`` in this process."""
-    key = (loop["repo"], head)
-    now = time.monotonic()
-    hit = _DECIDED.get(key)
-    if hit is not None and now - hit[0] < DECIDE_S:
-        return hit[1]
+    ``head`` is not such a merge; ``UNKNOWN`` when a read failed (#2757 review, F1). Inside a
+    ``decision``, the same answer every time."""
+    scope = _SCOPE.get()
+    key = (loop["repo"], str(loop.get("base") or ""), head)
+    if scope is not None and key in scope:
+        return scope[key]
     answer = _decide(loop, head)
-    _DECIDED[key] = (now, answer)
+    if scope is not None:
+        scope[key] = answer
     return answer
 
 

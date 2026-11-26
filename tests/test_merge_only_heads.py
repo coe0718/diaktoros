@@ -31,16 +31,9 @@ def review(rid, state, head, minute=0):
 
 
 def fresh(test):
-    """Empty both of ``merge_only``'s per-process caches for ``test``, and give it a clock it can
-    move past the decision window (``test.later()``)."""
-    for memo in (merge_only._MEMO, merge_only._DECIDED):
-        memo.clear()
-        test.addCleanup(memo.clear)
-    test.clock = [1000.0]
-    tick = patch.object(merge_only.time, "monotonic", side_effect=lambda: test.clock[0])
-    tick.start()
-    test.addCleanup(tick.stop)
-    test.later = lambda: test.clock.__setitem__(0, test.clock[0] + merge_only.DECIDE_S)
+    """Empty ``merge_only``'s per-process cache of a head's own facts for ``test``."""
+    merge_only._MEMO.clear()
+    test.addCleanup(merge_only._MEMO.clear)
 
 
 def flaky(api, failures=1):
@@ -110,7 +103,6 @@ class Source(unittest.TestCase):
         # #2757 review F2: the base branch moves, so its answer is never taken from the cache.
         with patch("diaktoros.gh.api", side_effect=self.merge()):
             self.assertEqual(merge_only.lookup(LOOP, B), A)
-        self.later()
         paths = []
         rewritten = self.merge(base={"status": "diverged", "behind_by": 3})
 
@@ -122,13 +114,35 @@ class Source(unittest.TestCase):
         self.assertEqual(paths, [f"/repos/o/r/compare/{BASE}...main"], "only the base is re-read")
 
     def test_one_answer_stands_for_a_decision_and_is_read_again_after_it(self):
-        # #2757 review round 3, F5: two asks inside one decision get the same answer, even when
-        # GitHub recovers between them; the next decision reads again.
+        # #2757 review rounds 3 and 4, F5: two asks inside one decision get the same answer,
+        # however long it runs and even when GitHub recovers between them; the next reads again.
         with patch("diaktoros.gh.api", side_effect=flaky(self.merge())):
-            self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
-            self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
-            self.later()
+            with merge_only.decision():
+                self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
+                with merge_only.decision():         # a decision inside it is part of it
+                    self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
+            with merge_only.decision():
+                self.assertEqual(merge_only.lookup(LOOP, B), A)
+
+    def test_no_answer_outlives_its_decision(self):
+        # #2757 review round 4, F2: a positive answer never stands for a later decision, so a
+        # base rewritten since is read as it is now.
+        with patch("diaktoros.gh.api", side_effect=self.merge()), merge_only.decision():
             self.assertEqual(merge_only.lookup(LOOP, B), A)
+        rewritten = self.merge(base={"status": "diverged", "behind_by": 3})
+        with patch("diaktoros.gh.api", side_effect=rewritten), merge_only.decision():
+            self.assertEqual(merge_only.lookup(LOOP, B), "")
+
+    def test_an_answer_for_one_base_is_never_one_for_another(self):
+        # #2757 review round 4, F2: the same head under a loop whose base is another branch.
+        commits = {B: {"parents": [{"sha": A}, {"sha": BASE}]}}
+        compares = {f"{BASE}...{A}": {"files": PR_FILES}, f"{BASE}...{B}": {"files": PR_FILES},
+                    f"{BASE}...main": ON_BASE, f"{BASE}...release": {"status": "diverged",
+                                                                     "behind_by": 4}}
+        with patch("diaktoros.gh.api", side_effect=github(commits, compares)), \
+                merge_only.decision():
+            self.assertEqual(merge_only.lookup(LOOP, B), A)
+            self.assertEqual(merge_only.lookup({**LOOP, "base": "release"}, B), "")
 
     def test_a_diff_too_large_to_list_is_a_definite_no_not_unknown(self):
         # #2757 review F4: the same 300-file answer comes back on every retry.
@@ -153,7 +167,6 @@ class Source(unittest.TestCase):
                     patch("diaktoros.gh.api", side_effect=github(commits, compares)):
                 self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
                 self.assertIsNone(merge_only.source(LOOP, B))
-            self.later()
         with patch("diaktoros.gh.api", side_effect=self.merge()):
             self.assertEqual(merge_only.source(LOOP, B), A)
 
@@ -357,26 +370,29 @@ class ReviewerClaim(FixerClaim):
 
 
 class ReviewerClaimRecovering(FixerClaim):
-    """A read that fails, then recovers, inside one reviewer claim (#2757 review round 3, F5)."""
+    """A read that fails, then recovers, around one reviewer claim, driven through the real
+    ``_claim`` (#2757 review rounds 3 and 4, F5)."""
 
-    def read_with(self, api):
-        from diaktoros.run_supervisor import turns
+    def claim_with(self, api):
         self.sup.enqueue("review", "o/r", 3, B, "reviewer")
         with self.sup._connect() as con:
-            row = con.execute("SELECT * FROM runs WHERE delivery='review'").fetchone()
+            con.execute("UPDATE runs SET state='pending' WHERE delivery='review'")
+        self.sup.production_config = Path(self.db).parent / "unused-config"
         pull = {"number": 3, "state": "open", "draft": False,
                 "base": {"ref": "main", "sha": BASE, "repo": {"full_name": "o/r"}},
                 "head": {"sha": B, "repo": {"full_name": "o/r"}}}
 
         def answer(loop, path, *a, **k):
             return api(loop, path) if ("/commits/" in path or "/compare/" in path) else pull
-        read = turns._ClaimRead()
         with patch("diaktoros.config.by_repo", return_value=self.loop), \
              patch("diaktoros.gh.api", side_effect=answer), \
              patch("diaktoros.review_receipt.generation_for", return_value="g"), \
              patch("diaktoros.gh.reviews", return_value=[review(1, "CHANGES_REQUESTED", A)]):
-            self.sup._claim_read_reviewer(row, read)
-        return read
+            self.sup._claim()
+        row = self.sup.get("review")
+        with self.sup._connect() as con:
+            con.execute("DELETE FROM runs WHERE delivery='review'")
+        return row
 
     def merge(self):
         return github({B: {"parents": [{"sha": A}, {"sha": BASE}]}},
@@ -384,14 +400,20 @@ class ReviewerClaimRecovering(FixerClaim):
                        f"{BASE}...{B}": {"files": PR_FILES}})
 
     def test_a_read_that_recovers_mid_claim_still_waits(self):
-        read = self.read_with(flaky(self.merge()))
-        self.assertIsNone(read.superseded)
-        self.assertIn("merge-only check unreadable", read.read_error)
+        row = self.claim_with(flaky(self.merge()))
+        self.assertEqual(row["state"], "waiting")
+        self.assertIn("merge-only check unreadable", row["error"])
+
+    def test_an_earlier_unknown_never_decides_a_later_claim(self):
+        # Review round 4: an UNKNOWN read just before the claim began, by the sweep or another
+        # claim, is not this claim's answer; nor does one expire in the middle of it.
+        with patch("diaktoros.gh.api", side_effect=flaky(self.merge())), merge_only.decision():
+            self.assertEqual(merge_only.lookup(self.loop, B), merge_only.UNKNOWN)
+        row = self.claim_with(self.merge())
+        self.assertEqual((row["state"], row["error"]),
+                         ("cancelled", "superseded: reviewed at this head by review"))
 
     def test_the_next_claim_reads_again_and_the_carry_answers(self):
-        self.read_with(flaky(self.merge()))
-        self.later()
-        with self.sup._connect() as con:
-            con.execute("DELETE FROM runs WHERE delivery='review'")
-        read = self.read_with(self.merge())
-        self.assertEqual(read.superseded, "superseded: reviewed at this head by review")
+        self.claim_with(flaky(self.merge()))
+        row = self.claim_with(self.merge())
+        self.assertEqual(row["error"], "superseded: reviewed at this head by review")

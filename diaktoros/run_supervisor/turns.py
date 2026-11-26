@@ -294,17 +294,19 @@ class ClaimAndLaunch(TurnHolds):
                 continue        # still held for CI: the light poll re-timed it (#1648)
             read = _ClaimRead(fence=fences.get((row['repo'], row['pr']), (0, False)),
                               since=time.time())
-            if self.production_config and row['seat'] == 'reviewer':
-                self._claim_read_reviewer(row, read)
-            if self.production_config and row['seat'] == run_supervisor.SHADOW:
-                self._claim_read_shadow(row, read)
-            if row['seat'] not in self.capacity:
-                continue  # a worker spawned with another seat set never claims this row
-            if self.production_config:
-                self._claim_read_live(row, read)
-            claimed = self._claim_commit(row, read)
-            if claimed is None and read.follow_run:
-                claimed = self._claim_followed(read.follow_run, fences)
+            # One row's claim is one decision: its merge-only reads agree (#2757 review, F5).
+            with merge_only.decision():
+                if self.production_config and row['seat'] == 'reviewer':
+                    self._claim_read_reviewer(row, read)
+                if self.production_config and row['seat'] == run_supervisor.SHADOW:
+                    self._claim_read_shadow(row, read)
+                if row['seat'] not in self.capacity:
+                    continue  # a worker spawned with another seat set never claims this row
+                if self.production_config:
+                    self._claim_read_live(row, read)
+                claimed = self._claim_commit(row, read)
+                if claimed is None and read.follow_run:
+                    claimed = self._claim_followed(read.follow_run, fences)
             if claimed is not None:
                 return claimed
             waits.note(self, row['id'])         # a claim read that failed backs off (#2080)

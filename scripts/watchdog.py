@@ -537,7 +537,8 @@ def _scan_stalls(c: _Sweep) -> None:
     for pr in c.prs:
         if (listed := config.loop_pr(loop, pr)) is None:
             continue
-        _judge_pr(c, pr, *listed)
+        with merge_only.decision():       # one PR's checks read one merge-only answer (#2757)
+            _judge_pr(c, pr, *listed)
 
 
 def _judge_pr(c: _Sweep, pr: dict, number: int, head: str, author: str) -> None:
