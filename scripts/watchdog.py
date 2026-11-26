@@ -45,6 +45,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import ci_event, conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
+from diaktoros import merge_only  # noqa: E402
 from diaktoros import push_settle  # noqa: E402
 from diaktoros import review_asks  # noqa: E402
 from diaktoros import ruling_issues  # noqa: E402
@@ -682,8 +683,11 @@ def _stall_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, review
     elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
         pass                                  # #539: the fixer takes this red head first
     else:
+        # #2743: a failed merge-only read decides nothing: no review is delivered that a carried
+        # change request may already answer (the next sweep reads again); a stall is still said.
         kind = _reviewer_kind(c, pr, number, head, author, boundary, observed_at,
-                              head_postdates_arming)
+                              head_postdates_arming,
+                              deliver=not merge_only.undecided(loop, reviews, head))
     return kind
 
 
@@ -756,7 +760,8 @@ def _disputed_kind(c: _Sweep, number: int, head: str, spent: int, latest: dict,
 
 
 def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, boundary,
-                   observed_at: float | None, head_postdates_arming: bool) -> str:
+                   observed_at: float | None, head_postdates_arming: bool,
+                   deliver: bool = True) -> str:
     """No verdict at this head: deliver a pending request the gate never saw (#532), or a
     review a head move cancelled before it started (#2468), and say the reviewer's stall once
     its grace is past, unless its review was cancelled because the head moved on (#2626)."""
@@ -786,7 +791,7 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
              if fresh and not (due and requested) and (
                  watch_mode.TEST or (seen is not None and (c.now - seen) / 60 >= KICK_AFTER_MIN))
              else None)
-    if (due and requested) or moved:
+    if deliver and ((due and requested) or moved):
         try:
             sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
         except Exception as exc:

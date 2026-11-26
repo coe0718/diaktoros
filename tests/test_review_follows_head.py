@@ -206,6 +206,18 @@ class SweepDeliversIt(fg.Base):
             self.sweep([asked])
         self.assertEqual(self.kicks, [])
 
+    def test_an_undecided_merge_only_head_is_not_asked_this_sweep(self):
+        # #2757 review F5: a failed merge-only read decides nothing, so no review is delivered
+        # that the carried change request may already answer; the next sweep reads again.
+        from diaktoros import merge_only
+        self.arm()
+        self.moved = OLD
+        asked = {**fg.verdict(), "commit_id": OLD}
+        with mock.patch.object(merge_only, "lookup",
+                               side_effect=lambda loop, head: merge_only.UNKNOWN):
+            self.sweep([asked])
+        self.assertEqual(self.kicks, [])
+
     def test_a_head_with_a_verdict_is_not_asked_again(self):
         self.arm()
         self.moved = OLD

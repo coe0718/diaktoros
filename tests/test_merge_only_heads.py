@@ -82,6 +82,27 @@ class Source(unittest.TestCase):
         with patch("diaktoros.gh.api", side_effect=self.merge(before=many, after=many)):
             self.assertIsNone(merge_only.source(LOOP, B))
 
+    def test_whether_the_parent_is_on_the_base_is_read_afresh_each_time(self):
+        # #2757 review F2: the base branch moves, so its answer is never taken from the cache.
+        with patch("diaktoros.gh.api", side_effect=self.merge()):
+            self.assertEqual(merge_only.lookup(LOOP, B), A)
+        paths = []
+        rewritten = self.merge(base={"status": "diverged", "behind_by": 3})
+
+        def api(loop, path, *a, **k):
+            paths.append(path)
+            return rewritten(loop, path, *a, **k)
+        with patch("diaktoros.gh.api", side_effect=api):
+            self.assertEqual(merge_only.lookup(LOOP, B), "")
+        self.assertEqual(paths, [f"/repos/o/r/compare/{BASE}...main"], "only the base is re-read")
+
+    def test_a_diff_too_large_to_list_is_a_definite_no_not_unknown(self):
+        # #2757 review F4: the same 300-file answer comes back on every retry.
+        many = [{"filename": f"f{i}.py", "status": "modified", "sha": "1" * 40}
+                for i in range(merge_only.FILES_MAX)]
+        with patch("diaktoros.gh.api", side_effect=self.merge(before=many, after=many)):
+            self.assertEqual(merge_only.lookup(LOOP, B), "")
+
     def test_a_merge_of_a_branch_that_is_not_the_base_is_not(self):
         # #2757 review F2: a feature branch's new file is in neither three-dot diff, so the diff
         # equality alone would pass it; the merged parent must be on the loop's base.
@@ -233,6 +254,27 @@ class FixerClaim(unittest.TestCase):
                 self.assertEqual(self.sup.get("fix")["state"], "cancelled")
                 self.assertIn(self.sup.get("there")["state"], (state, "claimed"))
 
+    def test_an_oversized_merge_falls_back_through_the_real_claim(self):
+        # #2757 review F4, end to end: not merge-only, so the round is superseded as before and
+        # the head is reviewed as usual, never left retrying a read that cannot shrink.
+        self.queue()
+        many = [{"filename": f"f{i}.py", "status": "modified", "sha": "1" * 40}
+                for i in range(merge_only.FILES_MAX)]
+        fake = github({B: {"parents": [{"sha": A}, {"sha": BASE}]}},
+                      {f"{BASE}...main": ON_BASE, f"{BASE}...{A}": {"files": many},
+                       f"{BASE}...{B}": {"files": many}})
+        pull = {"number": 3, "state": "open", "draft": False,
+                "base": {"ref": "main", "sha": BASE, "repo": {"full_name": "o/r"}},
+                "head": {"sha": B, "repo": {"full_name": "o/r"}}}
+
+        def api(loop, path, *a, **k):
+            return fake(loop, path) if ("/commits/" in path or "/compare/" in path) else pull
+        with patch("diaktoros.config.by_repo", return_value=self.loop), \
+             patch("diaktoros.gh.api", side_effect=api), \
+             patch("diaktoros.gh.reviews", return_value=[review(1, "CHANGES_REQUESTED", A)]):
+            self.assertIsNone(self.sup._claim())
+        self.assertEqual(self.sup.get("fix")["error"], "fixer verdict superseded")
+
     def test_a_ci_fix_turn_does_not_follow(self):
         from diaktoros import ci_fix
         self.queue(turn_key=f"{ci_fix.KEY}{A}")
@@ -242,3 +284,37 @@ class FixerClaim(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewerClaim(FixerClaim):
+    """A review queued at a merge-only head whose change request stands there (#2757 review F5)."""
+
+    def read(self, merges):
+        from diaktoros.run_supervisor import turns
+        self.sup.enqueue("review", "o/r", 3, B, "reviewer")
+        with self.sup._connect() as con:
+            row = con.execute("SELECT * FROM runs WHERE delivery='review'").fetchone()
+        pull = {"number": 3, "state": "open", "draft": False,
+                "base": {"ref": "main", "sha": BASE, "repo": {"full_name": "o/r"}},
+                "head": {"sha": B, "repo": {"full_name": "o/r"}}}
+        read = turns._ClaimRead()
+        with patch("diaktoros.config.by_repo", return_value=self.loop), \
+             patch("diaktoros.gh.api", return_value=pull), \
+             patch("diaktoros.review_receipt.generation_for", return_value="g"), \
+             patch("diaktoros.gh.reviews", return_value=[review(1, "CHANGES_REQUESTED", A)]), \
+             patch.object(merge_only, "lookup", side_effect=lookups(merges)):
+            self.sup._claim_read_reviewer(row, read)
+        return read
+
+    def test_a_carried_change_request_answers_a_queued_review(self):
+        read = self.read({B: A})
+        self.assertEqual(read.superseded, "superseded: reviewed at this head by review")
+
+    def test_an_undecided_carry_waits_instead_of_reviewing(self):
+        read = self.read({B: merge_only.UNKNOWN})
+        self.assertIsNone(read.superseded)
+        self.assertIn("merge-only check unreadable", read.read_error)
+
+    def test_a_head_that_is_not_merge_only_is_reviewed(self):
+        read = self.read({})
+        self.assertEqual((read.superseded, read.read_error), (None, ""))

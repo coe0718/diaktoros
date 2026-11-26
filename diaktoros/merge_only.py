@@ -34,7 +34,11 @@ from . import gh
 FILES_MAX = 300
 # A head merged from a head that was itself merged: followed this deep at most.
 CHAIN_MAX = 8
-_MEMO: dict[tuple[str, str], str] = {}
+TOO_LARGE = frozenset({("", "too large", "")})
+# Per head, what can't change: its merged parents and whether the PR's diff is the same file for
+# file (or "" for a head that is not a two-parent merge, or whose diff changed). Whether the merged
+# parent is on the base is read afresh each time: the base branch moves (#2757 review, F2).
+_MEMO: dict[tuple[str, str], tuple | str] = {}
 _DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("merge_only_depth", default=0)
 
 
@@ -43,14 +47,15 @@ def _read(loop: dict, path: str):
     return gh.api(loop, path, login=loop.get("read_token"))
 
 
-def _files(loop: dict, base: str, head: str) -> frozenset | None:
-    """The PR side's diff from ``base`` to ``head`` as (path, status, blob), or None unreadable."""
+def _files(loop: dict, base: str, head: str):
+    """The PR side's diff from ``base`` to ``head`` as (path, status, blob); ``TOO_LARGE`` when
+    GitHub may have cut the list; None unreadable."""
     data = _read(loop, f"/repos/{loop['repo']}/compare/{base}...{head}")
     if not isinstance(data, dict) or not isinstance(data.get("files"), list):
         return None
     files = data["files"]
     if len(files) >= FILES_MAX:
-        return None
+        return TOO_LARGE            # readable, and as large on every retry: never merge-only (F4)
     out = set()
     for item in files:
         if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
@@ -77,26 +82,58 @@ def lookup(loop: dict, head: str) -> str:
     if not isinstance(head, str) or len(head) != 40:
         return ""
     key = (loop["repo"], head)
-    if key in _MEMO:
-        return _MEMO[key]
+    facts = _MEMO.get(key)
+    if facts is None:
+        facts = _facts(loop, head)
+        if facts == UNKNOWN:
+            return UNKNOWN
+        _MEMO[key] = facts
+    if not facts:
+        return ""
+    old, base = facts
+    on_base = _on_base(loop, base)
+    if on_base is None:
+        return UNKNOWN
+    return old if on_base else ""
+
+
+def _facts(loop: dict, head: str):
+    """``(old head, merged parent)`` for a two-parent merge that left the PR's diff unchanged,
+    ``""`` for any other head, ``UNKNOWN`` when a read failed."""
     commit = _read(loop, f"/repos/{loop['repo']}/commits/{head}")
     if not isinstance(commit, dict) or not isinstance(commit.get("parents"), list):
         return UNKNOWN
     parents = [p.get("sha") if isinstance(p, dict) else None for p in commit["parents"]]
     if len(parents) != 2 or not all(isinstance(p, str) and len(p) == 40 for p in parents):
-        _MEMO[key] = ""
         return ""
     old, base = parents
-    on_base = _on_base(loop, base)
-    if on_base is None:
-        return UNKNOWN
-    if not on_base:
-        return ""                  # not remembered: the branch may reach the base later
     before, after = _files(loop, base, old), _files(loop, base, head)
     if before is None or after is None:
         return UNKNOWN
-    _MEMO[key] = old if before and before == after else ""
-    return _MEMO[key]
+    same = before is not TOO_LARGE and after is not TOO_LARGE and before and before == after
+    return (old, base) if same else ""
+
+
+def undecided(loop: dict, reviews: list, head: str) -> bool:
+    """Whether a change request might be carried to ``head`` but a read failed on the way: the
+    sweep delivers no review and a queued review waits, instead of reviewing a head whose answer
+    may already stand (#2757 review, F5)."""
+    from . import gate
+    if not isinstance(reviews, list) or not any(
+            isinstance(r, dict) and gh.review_state(r) == "CHANGES_REQUESTED" for r in reviews):
+        return False
+    current = head
+    for _ in range(CHAIN_MAX):
+        if current != head and any(gh.review_state(r) in ("APPROVED", "CHANGES_REQUESTED")
+                                   for r in gate.reviews_at_head(reviews, loop, current)):
+            return False                 # an earlier head with its own verdict: decided
+        found = lookup(loop, current)
+        if found == UNKNOWN:
+            return True
+        if not found:
+            return False
+        current = found
+    return False
 
 
 def source(loop: dict, head: str) -> str | None:

@@ -60,7 +60,7 @@ class AppSeat(fa.Base):
 
     def setUp(self):
         # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
-        off = mock.patch.object(merge_only, "source", return_value=None)
+        off = mock.patch.object(merge_only, "lookup", return_value="")
         off.start()
         self.addCleanup(off.stop)
         super().setUp()

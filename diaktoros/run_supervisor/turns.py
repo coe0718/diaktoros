@@ -384,9 +384,14 @@ class ClaimAndLaunch(TurnHolds):
                     else:
                         answered = [r for r in gate.reviews_at_head(reviews, loop, row['head'])
                                     if gh.review_state(r) in ('APPROVED', 'CHANGES_REQUESTED')]
+                        # #2743: a change request carried over a merge-only head answers it too,
+                        # and an undecided carry waits rather than review it (#2757 review, F5).
+                        answered = answered or merge_only.carried(loop, reviews, row['head'])
                         if answered:
                             who = gate.reviewer_login(answered[-1]) or 'a reviewer'
                             read.superseded = f'superseded: reviewed at this head by {who}'
+                        elif merge_only.undecided(loop, reviews, row['head']):
+                            read.read_error = 'merge-only check unreadable (GitHub read failed)'
         except ReceiptDenied as exc:
             read.unavailable = f'review generation unavailable: {exc}'
         except Exception as exc:
