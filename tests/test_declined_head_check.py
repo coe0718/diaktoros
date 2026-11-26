@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import ci, config, gh, merge_check, ready  # noqa: E402
+from diaktoros import merge_only  # noqa: E402
 from scripts import gate_reviewer  # noqa: E402
 
 OWNER = "owner-human"
@@ -26,6 +27,10 @@ OLD = "c" * 40
 
 class DeclinedHead(fg.Base):
     def setUp(self):
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "lookup", return_value="")
+        off.start()
+        self.addCleanup(off.stop)
         super().setUp()
         path = config.config_dir() / "one.json"
         data = json.loads(path.read_text())

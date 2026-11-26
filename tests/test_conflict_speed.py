@@ -20,7 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import conflict_scan, gate, gh, pr_hold  # noqa: E402
+from diaktoros import conflict_scan, gate, gh, merge_only, pr_hold  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros import watch_conflicts  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
@@ -35,6 +35,10 @@ APPROVED = object()                 # the fixture's reviews: an approval at the 
 class Detection(fg.Base):
     def setUp(self):
         super().setUp()
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "lookup", return_value="")
+        off.start()
+        self.addCleanup(off.stop)
         self.set_push(True)
 
     def patches(self, reads, hold=(None, ""), prs=None, armed=True, reviews=APPROVED):
