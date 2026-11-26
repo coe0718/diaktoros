@@ -201,8 +201,26 @@ class SweepDeliversIt(fg.Base):
         self.arm()
         self.moved = OLD
         asked = {**fg.verdict(), "commit_id": OLD}
-        with mock.patch.object(merge_only, "source",
-                               side_effect=lambda loop, head: OLD if head == fg.HEAD else None):
+        # A readable lookup (review round 3, F6): the carry itself must hold the review back.
+        with mock.patch.object(merge_only, "lookup",
+                               side_effect=lambda loop, head: OLD if head == fg.HEAD else ""):
+            self.sweep([asked])
+        self.assertEqual(self.kicks, [])
+
+    def test_a_merge_only_read_that_recovers_mid_sweep_delivers_nothing(self):
+        # Review round 3, F5: GitHub failing, then recovering, inside one sweep of the PR.
+        from diaktoros import merge_only
+        for memo in (merge_only._MEMO, merge_only._DECIDED):
+            memo.clear()
+            self.addCleanup(memo.clear)
+        self.arm()
+        self.moved = OLD
+        asked = {**fg.verdict(), "commit_id": OLD}
+        answers = iter([merge_only.UNKNOWN])
+
+        def decide(loop, head):
+            return next(answers, OLD) if head == fg.HEAD else ""
+        with mock.patch.object(merge_only, "_decide", side_effect=decide):
             self.sweep([asked])
         self.assertEqual(self.kicks, [])
 

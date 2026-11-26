@@ -27,6 +27,7 @@ cache; answers are also kept per process.
 from __future__ import annotations
 
 import contextvars
+import time
 
 from . import gh
 
@@ -76,9 +77,30 @@ def _on_base(loop: dict, commit: str) -> bool | None:
     return data["status"] in ("identical", "ahead") and data.get("behind_by") == 0
 
 
+# One decision reads one answer (#2757 review, round 3, F5): the sweep's checks of a PR and a
+# claim's reads each ask more than once, and an answer that changed between two asks (a read that
+# failed, then recovered) let one check hold and the next proceed. So each answer, UNKNOWN
+# included, stands in this process for DECIDE_S; past it, the base is read again (F2).
+DECIDE_S = 60.0
+_DECIDED: dict[tuple[str, str], tuple[float, str]] = {}
+
+
 def lookup(loop: dict, head: str) -> str:
     """The PR head ``head`` merged its base into without changing the PR's own diff; ``""`` when
-    ``head`` is not such a merge; ``UNKNOWN`` when a read failed (#2757 review, F1)."""
+    ``head`` is not such a merge; ``UNKNOWN`` when a read failed (#2757 review, F1). The same
+    answer for ``DECIDE_S`` in this process."""
+    key = (loop["repo"], head)
+    now = time.monotonic()
+    hit = _DECIDED.get(key)
+    if hit is not None and now - hit[0] < DECIDE_S:
+        return hit[1]
+    answer = _decide(loop, head)
+    _DECIDED[key] = (now, answer)
+    return answer
+
+
+def _decide(loop: dict, head: str) -> str:
+    """``lookup``'s reads: the immutable facts from the cache, the base afresh."""
     if not isinstance(head, str) or len(head) != 40:
         return ""
     key = (loop["repo"], head)

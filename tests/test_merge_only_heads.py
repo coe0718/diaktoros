@@ -30,6 +30,31 @@ def review(rid, state, head, minute=0):
             "submitted_at": f"2026-01-01T00:{minute:02d}:00Z"}
 
 
+def fresh(test):
+    """Empty both of ``merge_only``'s per-process caches for ``test``, and give it a clock it can
+    move past the decision window (``test.later()``)."""
+    for memo in (merge_only._MEMO, merge_only._DECIDED):
+        memo.clear()
+        test.addCleanup(memo.clear)
+    test.clock = [1000.0]
+    tick = patch.object(merge_only.time, "monotonic", side_effect=lambda: test.clock[0])
+    tick.start()
+    test.addCleanup(tick.stop)
+    test.later = lambda: test.clock.__setitem__(0, test.clock[0] + merge_only.DECIDE_S)
+
+
+def flaky(api, failures=1):
+    """``api`` with its first ``failures`` commit reads failing, as a transient GitHub error does."""
+    left = [failures]
+
+    def call(loop, path, *a, **k):
+        if "/commits/" in path and left[0] > 0:
+            left[0] -= 1
+            return None
+        return api(loop, path, *a, **k)
+    return call
+
+
 def sources(mapping):
     """A fake ``merge_only.source``: each head's merge-only parent, from ``mapping``."""
     return lambda loop, head: mapping.get(head)
@@ -53,8 +78,7 @@ def github(commits, compares):
 
 class Source(unittest.TestCase):
     def setUp(self):
-        merge_only._MEMO.clear()
-        self.addCleanup(merge_only._MEMO.clear)
+        fresh(self)
 
     def merge(self, before=PR_FILES, after=PR_FILES, base=None):
         commits = {B: {"parents": [{"sha": A}, {"sha": BASE}]}}
@@ -86,6 +110,7 @@ class Source(unittest.TestCase):
         # #2757 review F2: the base branch moves, so its answer is never taken from the cache.
         with patch("diaktoros.gh.api", side_effect=self.merge()):
             self.assertEqual(merge_only.lookup(LOOP, B), A)
+        self.later()
         paths = []
         rewritten = self.merge(base={"status": "diverged", "behind_by": 3})
 
@@ -95,6 +120,15 @@ class Source(unittest.TestCase):
         with patch("diaktoros.gh.api", side_effect=api):
             self.assertEqual(merge_only.lookup(LOOP, B), "")
         self.assertEqual(paths, [f"/repos/o/r/compare/{BASE}...main"], "only the base is re-read")
+
+    def test_one_answer_stands_for_a_decision_and_is_read_again_after_it(self):
+        # #2757 review round 3, F5: two asks inside one decision get the same answer, even when
+        # GitHub recovers between them; the next decision reads again.
+        with patch("diaktoros.gh.api", side_effect=flaky(self.merge())):
+            self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
+            self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
+            self.later()
+            self.assertEqual(merge_only.lookup(LOOP, B), A)
 
     def test_a_diff_too_large_to_list_is_a_definite_no_not_unknown(self):
         # #2757 review F4: the same 300-file answer comes back on every retry.
@@ -119,6 +153,7 @@ class Source(unittest.TestCase):
                     patch("diaktoros.gh.api", side_effect=github(commits, compares)):
                 self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
                 self.assertIsNone(merge_only.source(LOOP, B))
+            self.later()
         with patch("diaktoros.gh.api", side_effect=self.merge()):
             self.assertEqual(merge_only.source(LOOP, B), A)
 
@@ -175,6 +210,7 @@ class FixerClaim(unittest.TestCase):
     """The fixer's answer turn, queued at the reviewed head, runs at the merge-only head."""
 
     def setUp(self):
+        fresh(self)
         tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(tmp.cleanup)
         env = patch.dict(os.environ, {"HERMES_HOME": tmp.name,
@@ -318,3 +354,44 @@ class ReviewerClaim(FixerClaim):
     def test_a_head_that_is_not_merge_only_is_reviewed(self):
         read = self.read({})
         self.assertEqual((read.superseded, read.read_error), (None, ""))
+
+
+class ReviewerClaimRecovering(FixerClaim):
+    """A read that fails, then recovers, inside one reviewer claim (#2757 review round 3, F5)."""
+
+    def read_with(self, api):
+        from diaktoros.run_supervisor import turns
+        self.sup.enqueue("review", "o/r", 3, B, "reviewer")
+        with self.sup._connect() as con:
+            row = con.execute("SELECT * FROM runs WHERE delivery='review'").fetchone()
+        pull = {"number": 3, "state": "open", "draft": False,
+                "base": {"ref": "main", "sha": BASE, "repo": {"full_name": "o/r"}},
+                "head": {"sha": B, "repo": {"full_name": "o/r"}}}
+
+        def answer(loop, path, *a, **k):
+            return api(loop, path) if ("/commits/" in path or "/compare/" in path) else pull
+        read = turns._ClaimRead()
+        with patch("diaktoros.config.by_repo", return_value=self.loop), \
+             patch("diaktoros.gh.api", side_effect=answer), \
+             patch("diaktoros.review_receipt.generation_for", return_value="g"), \
+             patch("diaktoros.gh.reviews", return_value=[review(1, "CHANGES_REQUESTED", A)]):
+            self.sup._claim_read_reviewer(row, read)
+        return read
+
+    def merge(self):
+        return github({B: {"parents": [{"sha": A}, {"sha": BASE}]}},
+                      {f"{BASE}...main": ON_BASE, f"{BASE}...{A}": {"files": PR_FILES},
+                       f"{BASE}...{B}": {"files": PR_FILES}})
+
+    def test_a_read_that_recovers_mid_claim_still_waits(self):
+        read = self.read_with(flaky(self.merge()))
+        self.assertIsNone(read.superseded)
+        self.assertIn("merge-only check unreadable", read.read_error)
+
+    def test_the_next_claim_reads_again_and_the_carry_answers(self):
+        self.read_with(flaky(self.merge()))
+        self.later()
+        with self.sup._connect() as con:
+            con.execute("DELETE FROM runs WHERE delivery='review'")
+        read = self.read_with(self.merge())
+        self.assertEqual(read.superseded, "superseded: reviewed at this head by review")
