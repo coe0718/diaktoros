@@ -316,8 +316,7 @@ def _moved(loop: dict, pr: int, confirm_head: str, found: dict) -> str:
 
 
 def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confirm_head: str | None = None,
-            resolve_head=None, read_pr=None, reveal_errors: bool = False,
-            run_id: str | None = None) -> dict:
+            resolve_head=None, read_pr=None, reveal_errors: bool = False, run_id=None) -> dict:
     """Re-arm what ``retry`` would re-arm, and answer in structured form.
 
     The result carries the lines the CLI prints and the facts the Desktop page shows:
@@ -326,8 +325,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
 
     ``reveal_errors`` is the CLI's: its line names the run's recorded error, which a page must
     never render (a turn's error can carry transport text). The page's answers are built from
-    the states and the retry's own refusal message only. ``run_id`` re-arms only that run
-    (``plan``).
+    the states and the retry's own refusal message only.
     """
     if seat is not None and seat not in SEATS:
         raise ValueError(f"seat must be one of {', '.join(SEATS)}")
@@ -357,23 +355,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
     if closed:
         out["message"] = closed
         return out
-    rearmed, refused = 0, 0
-    for row in found["offered"]:
-        entry = {"id": row["id"], "seat": row["seat"], "head": found["head"],
-                 "head7": found["head7"], "state": row["state"],
-                 "turn_key": str(row.get("turn_key") or "")}
-        if reveal_errors:
-            entry["error"] = row["error"] or ""
-        try:
-            # The loop's budget now (#49): a turn killed at its budget reruns on the raised one.
-            sup.retry(row["id"], budget=config.turn_budget(loop, row["seat"]))
-        except ValueError as exc:
-            refused += 1
-            entry["reason"] = bounded(exc)
-            out["refused"].append(entry)
-            continue
-        rearmed += 1
-        out["rearmed"].append(entry)
+    rearmed, refused = _rearm(loop, sup, found, out, reveal_errors)
     if rearmed:
         # #482: retry releases the PR's hold only after at least one committed re-arm, even
         # on CLI partial success. The plan is only a preview: retry re-checks write evidence
@@ -395,6 +377,29 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
                              "no private runtime file — the run stays pending until one exists")
     out["ok"] = bool(rearmed and not refused)
     return out
+
+
+def _rearm(loop: dict, sup, found: dict, out: dict, reveal_errors: bool) -> tuple[int, int]:
+    """Re-arm each of the plan's offered rows into ``out``'s ``rearmed`` or ``refused``; the two
+    counts."""
+    rearmed, refused = 0, 0
+    for row in found["offered"]:
+        entry = {"id": row["id"], "seat": row["seat"], "head": found["head"],
+                 "head7": found["head7"], "state": row["state"],
+                 "turn_key": str(row.get("turn_key") or "")}
+        if reveal_errors:
+            entry["error"] = row["error"] or ""
+        try:
+            # The loop's budget now (#49): a turn killed at its budget reruns on the raised one.
+            sup.retry(row["id"], budget=config.turn_budget(loop, row["seat"]))
+        except ValueError as exc:
+            refused += 1
+            entry["reason"] = bounded(exc)
+            out["refused"].append(entry)
+            continue
+        rearmed += 1
+        out["rearmed"].append(entry)
+    return rearmed, refused
 
 
 def _profile_seats(loop: dict, profile: str) -> list[str]:
