@@ -58,6 +58,12 @@ def lookups(mapping):
     return lambda loop, head: mapping.get(head, "")
 
 
+def chain(top, bottom, links):
+    """A ``lookup`` map: ``top`` merged from ``bottom`` through exactly ``links`` merge-only links."""
+    heads = [top] + [f"{i:02x}" * 20 for i in range(1, links)] + [bottom]
+    return dict(zip(heads, heads[1:]))
+
+
 def github(commits, compares):
     """A fake ``gh.api`` answering commit and compare reads from two maps (None: unreadable)."""
     def api(loop, path, *a, **k):
@@ -227,6 +233,19 @@ class Verdicts(unittest.TestCase):
             approved = dated + [review(2, "APPROVED", A, minute=1)]
             self.assertEqual(merge_only.carried(LOOP, approved, B), [])
             self.assertFalse(merge_only.undecided(LOOP, approved, B))
+
+    def test_the_last_link_followed_is_read_for_a_verdict_too(self):
+        # Review of #2757, round 7: ``carried`` reads the head CHAIN_MAX links back, so an undated
+        # change request there is undecided as well; one link further neither reads it.
+        undated = [{**review(1, "CHANGES_REQUESTED", A), "submitted_at": None}]
+        dated = [review(1, "CHANGES_REQUESTED", A)]
+        for links, reach in ((merge_only.CHAIN_MAX, True), (merge_only.CHAIN_MAX + 1, False)):
+            with self.subTest(links=links), \
+                    patch.object(merge_only, "lookup", side_effect=lookups(chain(C, A, links))):
+                self.assertEqual(len(merge_only.carried(LOOP, dated, C)), int(reach))
+                self.assertFalse(merge_only.undecided(LOOP, dated, C))
+                self.assertEqual(merge_only.carried(LOOP, undated, C), [])
+                self.assertEqual(merge_only.undecided(LOOP, undated, C), reach)
 
     def test_no_read_when_the_head_has_its_own_verdict_or_nothing_could_be_carried(self):
         with patch.object(merge_only, "source") as source:
@@ -399,6 +418,13 @@ class ReviewerClaim(FixerClaim):
         self.assertEqual(read.read_error, merge_only.UNDECIDED_WHY)
         settled = [review(1, "CHANGES_REQUESTED", A), review(2, "APPROVED", A, minute=1)]
         self.assertEqual((self.read({B: A}, settled).read_error), "")
+
+    def test_an_unordered_verdict_at_the_last_link_waits_too(self):
+        # Review of #2757, round 7: CHAIN_MAX links back is still read; dated, it is carried.
+        far = chain(B, A, merge_only.CHAIN_MAX)
+        read = self.read(far, [{**review(1, "CHANGES_REQUESTED", A), "submitted_at": None}])
+        self.assertEqual((read.superseded, read.read_error), (None, merge_only.UNDECIDED_WHY))
+        self.assertEqual(self.read(far).superseded, "superseded: reviewed at this head by review")
 
     def test_a_head_that_is_not_merge_only_is_reviewed(self):
         read = self.read({})

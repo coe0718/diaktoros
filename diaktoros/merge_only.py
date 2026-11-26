@@ -167,11 +167,15 @@ def undecided(loop: dict, reviews: list, head: str) -> bool:
             isinstance(r, dict) and gh.review_state(r) == "CHANGES_REQUESTED" for r in reviews):
         return False
     current = head
-    for _ in range(CHAIN_MAX):
+    # The head CHAIN_MAX links back is one ``carried`` reads too, so its verdicts are checked here
+    # as well; only the link past it is never followed (#2757 review, round 7).
+    for link in range(CHAIN_MAX + 1):
         if current != head and any(gh.review_state(r) not in gate.NOT_VERDICTS
                                    for r in gate.reviews_at_head(reviews, loop, current)):
             # An earlier head with its own verdict decides, when its latest one can be told.
             return gate.latest_effective_review_at_head(reviews, loop, current) is None
+        if link == CHAIN_MAX:
+            break
         found = lookup(loop, current)
         if found == UNKNOWN:
             return True

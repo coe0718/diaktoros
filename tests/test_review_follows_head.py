@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
+import test_merge_only_heads as tmo  # noqa: E402
 from diaktoros import base_merge, gate, gh, review_only_conflict, run_supervisor  # noqa: E402
 from diaktoros import watch_conflicts, watch_mode  # noqa: E402
 from diaktoros.run_supervisor import merge_hold, turns, views  # noqa: E402
@@ -254,6 +255,16 @@ class SweepDeliversIt(fg.Base):
                         "submitted_at": "2026-01-02T00:00:00Z"}
             self.sweep([asked, approved])
         self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
+
+    def test_an_unordered_verdict_at_the_last_link_is_not_asked_over(self):
+        # Review of #2757, round 7: the head CHAIN_MAX merge-only links back is read as well.
+        from diaktoros import merge_only
+        self.arm()
+        self.moved = OLD
+        far = tmo.lookups(tmo.chain(fg.HEAD, OLD, merge_only.CHAIN_MAX))
+        with mock.patch.object(merge_only, "lookup", side_effect=far):
+            self.sweep([{**fg.verdict(), "commit_id": OLD, "submitted_at": None}])
+        self.assertEqual(self.kicks, [])
 
     def test_an_undecided_merge_only_head_is_not_asked_this_sweep(self):
         # #2757 review F5: a failed merge-only read decides nothing, so no review is delivered

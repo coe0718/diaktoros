@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 import test_base_merge as tbm
+import test_merge_only_heads as tmo
 from diaktoros import base_merge, merge_only, ready, safe_push, state as state_mod
 
 REAL_LOOKUP = merge_only.lookup          # before ``tbm.Base`` stubs it
@@ -154,6 +155,16 @@ class MergeOnlyUndecided(NotPushed, tbm.Base):
         with self.lookup(), mock.patch.object(base_merge, "log") as log:
             self.assertEqual(self.update(), "")
         self.assertIn("changes are requested at the head", str(log.call_args_list[-1]))
+
+    def test_an_unordered_verdict_at_the_last_link_waits_too(self):
+        # Review of #2757, round 7: the head CHAIN_MAX merge-only links back is read as well.
+        far = tmo.chain(self.head, self.OLD, merge_only.CHAIN_MAX)
+        self.reviews = [tbm.approval(self.OLD, review_id=12, state="CHANGES_REQUESTED", at=None)]
+        with mock.patch.object(merge_only, "lookup", side_effect=tmo.lookups(far)), \
+                mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assert_not_pushed()
+        self.assertIn(merge_only.UNDECIDED_WHY, str(log.call_args_list[-1]))
 
     def test_a_settled_verdict_before_the_merge_is_merged(self):
         # F8's definite case: the head merged from was approved after its change request.

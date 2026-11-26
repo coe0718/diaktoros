@@ -24,6 +24,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
+import test_merge_only_heads as tmo  # noqa: E402
 import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import (broker, config, contained, gh, # noqa: E402
@@ -600,6 +601,14 @@ class MergeAuthorization(unittest.TestCase):
                     "submitted_at": "2026-01-02T00:00:00Z"}
         receipt = self.merge_only_push(merged_from, more=(approved,))
         self.assertEqual(receipt["outcome"], "published")
+
+    def test_an_unordered_verdict_at_the_last_link_stops_a_merge_push(self):
+        # Review of #2757, round 7: the head CHAIN_MAX merge-only links back is read as well.
+        from diaktoros import watch_conflicts
+        far = tmo.lookups(tmo.chain(tsp.HEAD, self.OLD, merge_only.CHAIN_MAX))
+        with self.assertRaisesRegex(broker.BrokerDenied, re.escape(watch_conflicts.UNDECIDED)):
+            self.merge_only_push(far, at=None)
+        self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
 
     def test_a_carry_read_that_recovers_inside_the_check_still_stops_it(self):
         from diaktoros import watch_conflicts
