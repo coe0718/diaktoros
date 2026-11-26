@@ -35,7 +35,7 @@ from __future__ import annotations
 import contextvars
 import time
 
-from . import broker, ci, config, gate, gh, observer, safe_push, transition
+from . import broker, ci, config, gate, gh, merge_only, observer, safe_push, transition
 from . import state as state_mod
 from .util import log
 
@@ -184,12 +184,17 @@ def _review_waits(loop: dict, number: int, head: str, reviews) -> str:
     sweep's read and again right before the push (#2288)."""
     if not isinstance(reviews, list):
         return "its reviews could not be read"
-    latest = gate.latest_effective_review_at_head(reviews, loop, head)
-    if latest is None and any(gh.review_state(r) not in gate.NOT_VERDICTS
-                              for r in gate._verdicts_at(reviews, loop, head)):
-        # A verdict is here but none is provably the latest (an undated or unfamiliar one): a
-        # change request may stand, so the merge waits (review on #2576). No verdict: nothing.
-        return "its verdicts at the head cannot be ordered"
+    with merge_only.decision():           # the carry and its undecided check read one answer
+        latest = gate.latest_effective_review_at_head(reviews, loop, head)
+        if latest is None and any(gh.review_state(r) not in gate.NOT_VERDICTS
+                                  for r in gate._verdicts_at(reviews, loop, head)):
+            # A verdict is here but none is provably the latest (an undated or unfamiliar one):
+            # a change request may stand, so the merge waits (review on #2576). None: nothing.
+            return "its verdicts at the head cannot be ordered"
+        if latest is None and merge_only.undecided(loop, reviews, head):
+            # #2743 (review of #2757, F7, F8): a change request carried over a merge-only head
+            # may stand here, and nothing decides it; the merge waits for a read that does.
+            return merge_only.UNDECIDED_WHY
     if latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
         # The fixer answers it, or a ruling does at the cap (#1907): a merge would move the head
         # under either, and the merged head would be reviewed with the findings still open.

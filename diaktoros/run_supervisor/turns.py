@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .. import claimant, run_supervisor, runtime_detect, util
+from .. import claimant, merge_only, run_supervisor, runtime_detect, util
 from ..state import ledger
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 from .turn_holds import TurnHolds
@@ -57,6 +57,8 @@ class _ClaimRead:
     refused: str = ""
     fence: tuple | None = None
     since: float = 0.0          # when the claim's reads began (#2608: its own limited answers)
+    follow: str | None = None   # a fix round's merge-only new head, read again there (#2743)
+    follow_run: str | None = None   # the round left to read at that head
 
 
 @dataclass
@@ -292,19 +294,55 @@ class ClaimAndLaunch(TurnHolds):
                 continue        # still held for CI: the light poll re-timed it (#1648)
             read = _ClaimRead(fence=fences.get((row['repo'], row['pr']), (0, False)),
                               since=time.time())
-            if self.production_config and row['seat'] == 'reviewer':
-                self._claim_read_reviewer(row, read)
-            if self.production_config and row['seat'] == run_supervisor.SHADOW:
-                self._claim_read_shadow(row, read)
-            if row['seat'] not in self.capacity:
-                continue  # a worker spawned with another seat set never claims this row
-            if self.production_config:
-                self._claim_read_live(row, read)
-            claimed = self._claim_commit(row, read)
+            # One row's claim is one decision: its merge-only reads agree (#2757 review, F5).
+            with merge_only.decision():
+                if self.production_config and row['seat'] == 'reviewer':
+                    self._claim_read_reviewer(row, read)
+                if self.production_config and row['seat'] == run_supervisor.SHADOW:
+                    self._claim_read_shadow(row, read)
+                if row['seat'] not in self.capacity:
+                    continue  # a worker spawned with another seat set never claims this row
+                if self.production_config:
+                    self._claim_read_live(row, read)
+                claimed = self._claim_commit(row, read)
+                if claimed is None and read.follow_run:
+                    claimed = self._claim_followed(read.follow_run, fences)
             if claimed is not None:
                 return claimed
             waits.note(self, row['id'])         # a claim read that failed backs off (#2080)
         return None
+
+    def _move_to_merge_only(self, con, row, read: _ClaimRead) -> None:
+        """#2743: the PR's head only merged its base since this fix round was queued, and the change
+        request stands there, so the round moves to it, inside the claim's transaction. A round
+        already at that head with the same key answers instead: a live or finished one as it is,
+        a cancelled or failed one that never wrote re-armed (#2757 review, F3), and this one
+        retires. ``read.follow_run`` is the round left to read at the new head, if any."""
+        now = time.time()
+        there = con.execute("SELECT id, state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                            "AND turn_key IS ?", (row['repo'], row['pr'], read.follow, row['seat'],
+                                                  row['turn_key'])).fetchone()
+        if there is None:
+            con.execute("UPDATE runs SET head=?, updated=? WHERE id=?", (read.follow, now, row['id']))
+            read.follow_run = row['id']
+            return
+        con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
+                    (f"fixer round moved to the merge-only head {read.follow[:7]}", now, row['id']))
+        if (there['state'] in run_supervisor.REARMABLE
+                and run_supervisor.write_evidence(con, there['id']) is None):
+            self._rearm(con, there['id'], reset=True)
+            read.follow_run = there['id']
+
+    def _claim_followed(self, run_id: str, fences: dict):
+        """A fix round moved to a merge-only head (#2743) is read again there, once, in this claim;
+        moved again meanwhile, it waits for the next claim's reads."""
+        with self._connect() as con:
+            row = con.execute("SELECT * FROM runs WHERE id=? AND state='pending'", (run_id,)).fetchone()
+        if row is None:
+            return None
+        read = _ClaimRead(fence=fences.get((row['repo'], row['pr']), (0, False)), since=time.time())
+        self._claim_read_live(row, read)
+        return None if read.follow else self._claim_commit(row, read)
 
     def _claim_read_reviewer(self, row, read: _ClaimRead) -> None:
         """A reviewer row's claim-time read: the PR's state and head, its review generation,
@@ -348,9 +386,14 @@ class ClaimAndLaunch(TurnHolds):
                     else:
                         answered = [r for r in gate.reviews_at_head(reviews, loop, row['head'])
                                     if gh.review_state(r) in ('APPROVED', 'CHANGES_REQUESTED')]
+                        # #2743: a change request carried over a merge-only head answers it too,
+                        # and an undecided carry waits rather than review it (#2757 review, F5).
+                        answered = answered or merge_only.carried(loop, reviews, row['head'])
                         if answered:
                             who = gate.reviewer_login(answered[-1]) or 'a reviewer'
                             read.superseded = f'superseded: reviewed at this head by {who}'
+                        elif merge_only.undecided(loop, reviews, row['head']):
+                            read.read_error = merge_only.UNDECIDED_WHY
         except ReceiptDenied as exc:
             read.unavailable = f'review generation unavailable: {exc}'
         except Exception as exc:
@@ -446,7 +489,20 @@ class ClaimAndLaunch(TurnHolds):
             if not isinstance(pr, dict) or not isinstance(pr.get('head'), dict):
                 read.read_error = 'PR unreadable (GitHub read failed)'
             elif pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
-                read.superseded = 'fixer verdict superseded'
+                new = pr['head'].get('sha')
+                # #2743: a head that only merged the base since this round was queued keeps the
+                # change request it answers (``merge_only``), so the round moves to it.
+                plain = not any(str(row['turn_key'] or '').startswith(k) for k in (
+                    run_supervisor.SHADOW_FIX_KEY, run_supervisor.CONFLICT_KEY))
+                follows = (merge_only.leads_to(loop, new, row['head'])
+                           if pr.get('state') == 'open' and plain
+                           and not ci_fix.is_ci_fix(row['turn_key']) else False)
+                if follows is None:     # a read failed: retried and bounded, never decided (F1)
+                    read.read_error = 'merge-only check unreadable (GitHub read failed)'
+                elif follows:
+                    read.follow = new
+                else:
+                    read.superseded = 'fixer verdict superseded'
             elif pr.get('state') != 'open' or pr.get('draft') is not False:
                 read.retry_read = True
             elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
@@ -571,6 +627,10 @@ class ClaimAndLaunch(TurnHolds):
             # the read; never bind a resolved receipt to different row terms.
             if current is None or dict(current) != dict(row):
                 con.execute("COMMIT")
+                return None
+            if read.follow:
+                self._move_to_merge_only(con, row, read)
+                con.execute('COMMIT')
                 return None
             if read.refused:
                 # Not a capacity question: this row can never publish, so it never waits.
