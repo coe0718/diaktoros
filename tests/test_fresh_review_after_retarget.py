@@ -24,6 +24,7 @@ from unittest import mock
 from diaktoros import explain, gate, transition, state as state_mod
 from diaktoros.state import ledger
 from diaktoros import watch_mode  # noqa: E402
+from diaktoros import merge_only  # noqa: E402
 from diaktoros.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog
 from tests.test_stacked_situation import A, B, C, D, pr
@@ -40,6 +41,10 @@ def review(review_id, state, *, head=C, minute=0, login="critic", user_id=PRINCI
 
 class FreshReviewTest(unittest.TestCase):
     def setUp(self):
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "lookup", return_value="")
+        off.start()
+        self.addCleanup(off.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="fresh-review-")
         self.addCleanup(self.temp.cleanup)
         root = pathlib.Path(self.temp.name)
