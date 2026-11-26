@@ -125,7 +125,8 @@ def newest(rows: list[dict]) -> dict:
     return max(rows, key=lambda row: (row["updated"] or 0, row["id"]))
 
 
-def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None) -> dict:
+def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None,
+         run_id: str | None = None) -> dict:
     """What re-arming this PR (or this seat's run) would pick, from the ledger.
 
     The head is the newest one that still has an offerable row — the ledger-only answer, which is
@@ -137,8 +138,13 @@ def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None) ->
     Every row is classified: ``rearmable`` ones would actually be re-armed (write evidence is
     checked here, with the same function ``Supervisor.retry`` re-checks inside its transaction),
     and ``blocked`` maps an offered row's id to why it would be refused.
+
+    ``run_id`` pins the plan to that one row, at its own head, whatever else is newest: ``unstick``
+    re-arms exactly the turn it inspected, never another head's or another turn key's (#2760 F1, F2).
     """
     rows = rows_for(con, repo, pr, seat)
+    if run_id is not None:
+        rows = [row for row in rows if row["id"] == run_id]
     out = {"head": "", "head7": "", "rows": rows, "offered": [], "rearmable": [], "blocked": {},
            "disputed": False, "message": ""}
     if not rows:
@@ -310,7 +316,8 @@ def _moved(loop: dict, pr: int, confirm_head: str, found: dict) -> str:
 
 
 def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confirm_head: str | None = None,
-            resolve_head=None, read_pr=None, reveal_errors: bool = False) -> dict:
+            resolve_head=None, read_pr=None, reveal_errors: bool = False,
+            run_id: str | None = None) -> dict:
     """Re-arm what ``retry`` would re-arm, and answer in structured form.
 
     The result carries the lines the CLI prints and the facts the Desktop page shows:
@@ -319,7 +326,8 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
 
     ``reveal_errors`` is the CLI's: its line names the run's recorded error, which a page must
     never render (a turn's error can carry transport text). The page's answers are built from
-    the states and the retry's own refusal message only.
+    the states and the retry's own refusal message only. ``run_id`` re-arms only that run
+    (``plan``).
     """
     if seat is not None and seat not in SEATS:
         raise ValueError(f"seat must be one of {', '.join(SEATS)}")
@@ -335,7 +343,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
     # transaction (workers may take the locks in the opposite order).
     held = scope_lock.snapshot(loop, pr)
     with sup._connect() as con:
-        found = plan(con, loop["repo"], pr, seat, resolve_head=resolve_head)
+        found = plan(con, loop["repo"], pr, seat, resolve_head=resolve_head, run_id=run_id)
     out["head"], out["head7"] = found["head"], found["head7"]
     if found["message"]:
         out["message"] = f"[{loop['id']}] " + found["message"]

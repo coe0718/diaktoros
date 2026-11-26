@@ -48,15 +48,16 @@ def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
         if latest is None and merge_only.undecided(loop, reviews, head):
             return _out(2, f"{at}: {merge_only.UNDECIDED_WHY} — nothing done; try again")
         step = _owed(loop, st, number, head, pr, reviews, latest)
-    if isinstance(step, tuple):
+    if isinstance(step, tuple) and isinstance(step[0], int):
         return _out(*step)
+    step, run_id = step if isinstance(step, tuple) else (step, None)
     if dry_run:
         return _out(0, f"{at}: would {step}")
-    return _take(loop, number, head, pr, step)
+    return _take(loop, number, head, pr, step, run_id)
 
 
 def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, latest):
-    """The step owed at ``head`` as a phrase (``FIX``, ``REFIX``, ``REVIEW``, ``REREVIEW``), or
+    """The step owed at ``head``: ``FIX`` or ``REVIEW``, ``(REFIX or REREVIEW, run id)``, or
     ``(code, line)`` when nothing is the loop's to do."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
     state = gh.review_state(latest) if latest is not None else ""
@@ -80,6 +81,11 @@ def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, lates
             return 1, (f"{at}: changes requested, and fixer pushes are off — run "
                        f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         return _turn_step(loop, number, head, "fixer", FIX, REFIX)
+    held = st.human_hold(number, head)
+    if isinstance(held, dict):
+        # #478, as the sweep and the reviewer gate read it: no review is owed here (#2760 F3).
+        return 1, (f"{at}: waits for a person's approval (human_paths: "
+                   f"{held.get('why') or 'reserved paths'}) — no review is owed")
     if review_only and spent >= config.review_only_cap(loop) and not st.review_cap_granted(
             number, head, spent):
         return 1, (f"{at}: review cap reached — `hermes dk review --loop {loop['id']} --pr "
@@ -94,26 +100,27 @@ REREVIEW = "re-arm the review turn at this head"
 
 
 def _turn_step(loop: dict, number: int, head: str, seat: str, new: str, again: str):
-    """``new`` with no ``seat`` turn at ``head`` (under the gate's key, for the fixer), ``again``
-    when one ended there, and nothing when one is queued or running. An unreadable ledger reads
-    as none: the enqueue and the gate's delivery dedup against any turn there."""
+    """``new`` with no ``seat`` turn at ``head`` (under the gate's key, for the fixer),
+    ``(again, run id)`` when one ended there, and nothing when one is queued or running. An
+    unreadable ledger reads as none: the enqueue and the gate's delivery dedup against any turn
+    there."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
-    state = fix_rescue.turn_at(config.host_path("ledger"), loop["repo"], number, head, seat)
-    if state in run_supervisor.NOT_ENDED:
-        return 1, f"{at}: a {seat} turn is already {state} here — nothing to unstick"
-    if state is None:
+    turn = fix_rescue.turn_at(config.host_path("ledger"), loop["repo"], number, head, seat)
+    if turn is None:
         return new
-    return again
+    if turn["state"] in run_supervisor.NOT_ENDED:
+        return 1, f"{at}: a {seat} turn is already {turn['state']} here — nothing to unstick"
+    return again, turn["id"]
 
 
-def _take(loop: dict, number: int, head: str, pr: dict, step: str) -> dict:
-    """Take ``step`` and say what came of it."""
+def _take(loop: dict, number: int, head: str, pr: dict, step: str, run_id) -> dict:
+    """Take ``step`` and say what came of it. A re-arm is of ``run_id`` alone, the turn
+    ``_turn_step`` found at this head (#2760 F1, F2)."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
     if step in (REFIX, REREVIEW):
         from . import retry_action
         result = retry_action.perform(loop, number, "fixer" if step == REFIX else "reviewer",
-                                      resolve_head=lambda: head, read_pr=lambda: pr,
-                                      reveal_errors=True)
+                                      read_pr=lambda: pr, reveal_errors=True, run_id=run_id)
         lines = [f"{at}: {result['message']}"] if result["message"] else []
         lines += [f"{at}: {e['seat']} re-armed (was {e['state']}: {e.get('error') or 'no reason'})"
                   for e in result["rearmed"]]

@@ -53,11 +53,21 @@ class Ledger(fg.Base):
         self.db.parent.mkdir(parents=True, exist_ok=True)
         run_supervisor.Supervisor(self.db)
 
-    def turn(self, state, error="", head=OLD, seat="fixer", key="", created=None):
-        row = rfh.queue(self.db, state, seat=seat, head=head)
+    def turn(self, state, error="", head=OLD, seat="fixer", key="", created=None, updated=None):
+        """One turn of PR 7 in ``state``; its run id."""
+        self.n = getattr(self, "n", 0) + 1
+        run_id, now = f"r{self.n}", time.time()
         with contextlib.closing(sqlite3.connect(self.db)) as con, con:
-            con.execute("UPDATE runs SET error=?, turn_key=?, created=? WHERE id=?",
-                        (error, key, time.time() if created is None else created, row["id"]))
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, attempts, "
+                        "error, created, updated, turn_key, push_admitted, retries) "
+                        "VALUES (?, ?, ?, 7, ?, ?, ?, 0, ?, ?, ?, ?, 1, 0)",
+                        (run_id, f"d{run_id}", fg.REPO, head, seat, state, error,
+                         now if created is None else created, now if updated is None else updated,
+                         key))
+        return run_id
+
+    def state(self, run_id):
+        return rfh.read_row(self.db, run_id)["state"]
 
 
 class Owed(Ledger):
@@ -171,7 +181,7 @@ class Unstick(Ledger):
     """``hermes dk unstick``: the step owed, through the real decision, with GitHub faked."""
 
     def unstick(self, reviews, *, dry_run=False, pr=None, lookup=merged_from_old, hold=(None, "")):
-        self.queued, self.kicked, self.retried = [], [], []
+        self.queued, self.kicked = [], []
 
         def queue(loop, number, head):
             self.queued.append((number, head))
@@ -180,18 +190,14 @@ class Unstick(Ledger):
         def kick(loop, pr, head, sender, tag):
             self.kicked.append((pr["number"], head, tag))
             return True
-
-        def retry(loop, number, seat, **kw):
-            self.retried.append((number, seat, kw["resolve_head"]()))
-            return {"ok": True, "message": "", "refused": [],
-                    "rearmed": [{"seat": seat, "state": "failed", "error": "x"}]}
+        # The real retry re-arms; only its worker start is stubbed.
         with mock.patch.object(gh, "pr", return_value=pr or fg.LIVE), \
                 mock.patch.object(gh, "reviews", return_value=reviews), \
                 mock.patch.object(pr_hold, "read", return_value=hold), \
                 mock.patch.object(merge_only, "lookup", side_effect=lookup), \
                 mock.patch.object(fix_rescue, "queue", side_effect=queue), \
                 mock.patch.object(review_kick, "kick", side_effect=kick), \
-                mock.patch.object(retry_action, "perform", side_effect=retry):
+                mock.patch.object(retry_action.gate, "resume_isolated", return_value=True):
             return unstick.perform(self.loop, 7, dry_run=dry_run)
 
     def test_a_carried_change_request_with_no_fix_turn_gets_one(self):
@@ -205,23 +211,44 @@ class Unstick(Ledger):
         self.assertEqual((out["code"], self.queued), (0, []))
         self.assertIn(f"would {unstick.FIX}", out["lines"][0])
 
-    def test_a_fix_turn_at_the_head_that_ended_is_re_armed(self):
-        self.turn("failed", TIMEOUT, head=fg.HEAD)
+    def test_a_fix_turn_at_the_head_that_ended_is_re_armed_and_no_other(self):
+        # Review of #2760, F1 and F2: a failed turn at an older head, updated since, and a failed
+        # CI-fix turn at this head, are not the change request's answer and stay as they were.
+        here = self.turn("failed", TIMEOUT, head=fg.HEAD, updated=time.time() - 600)
+        older = self.turn("failed", TIMEOUT)
+        cifix = self.turn("failed", TIMEOUT, head=fg.HEAD, key="cifix:")
         out = self.unstick([fg.verdict()])
-        self.assertEqual((out["code"], self.retried, self.queued), (0, [(7, "fixer", fg.HEAD)], []))
+        self.assertEqual(out["code"], 0, out["lines"])
+        self.assertEqual([self.state(i) for i in (here, older, cifix)],
+                         ["pending", "failed", "failed"])
+        self.assertEqual(self.queued, [])
+        self.assertIn(f"@ {fg.HEAD[:7]}: fixer re-armed (was failed", out["lines"][0])
 
     def test_a_turn_already_out_is_left_alone(self):
         self.turn("pending", head=fg.HEAD)
         out = self.unstick([fg.verdict()])
-        self.assertEqual((out["code"], self.queued, self.retried), (1, [], []))
+        self.assertEqual((out["code"], self.queued), (1, []))
         self.assertIn("already pending", out["lines"][0])
 
     def test_no_verdict_delivers_the_review_request_or_re_arms_the_review(self):
         out = self.unstick([])
         self.assertEqual((out["code"], self.kicked), (0, [(7, fg.HEAD, "unstick-review-7")]))
-        self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer")
+        here = self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer",
+                         updated=time.time() - 600)
+        older = self.turn("failed", TIMEOUT, seat="reviewer")        # F1, for the reviewer
         out = self.unstick([])
-        self.assertEqual((out["code"], self.retried, self.kicked), (0, [(7, "reviewer", fg.HEAD)], []))
+        self.assertEqual((out["code"], self.kicked), (0, []), out["lines"])
+        self.assertEqual([self.state(i) for i in (here, older)], ["pending", "failed"])
+
+    def test_a_head_left_to_a_persons_approval_is_owed_no_review(self):
+        # Review of #2760, F3: human_paths, as the sweep and the reviewer gate read it.
+        self.st.human_hold_set(7, fg.HEAD, "person must approve")
+        out = self.unstick([])
+        self.assertEqual((out["code"], self.kicked), (1, []))
+        self.assertIn("person must approve", out["lines"][0])
+        failed = self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer")
+        self.assertEqual(self.unstick([])["code"], 1)
+        self.assertEqual(self.state(failed), "failed")
 
     def test_what_is_not_the_loops_to_do_is_said_and_left(self):
         approved = [fg.verdict(6, "APPROVED")]
@@ -229,8 +256,7 @@ class Unstick(Ledger):
         for reviews, why in ((approved, "approved"), (capped, "3/3 verdicts spent")):
             with self.subTest(why=why):
                 out = self.unstick(reviews)
-                self.assertEqual((out["code"], self.queued, self.kicked, self.retried),
-                                 (1, [], [], []))
+                self.assertEqual((out["code"], self.queued, self.kicked), (1, [], []))
                 self.assertIn(why, out["lines"][0])
         out = self.unstick([fg.verdict()], hold=({"by": "coe0718"}, ""))
         self.assertEqual((out["code"], self.queued), (1, []))
