@@ -22,6 +22,7 @@ import _ledger_guard  # noqa: E402,F401  refuses the operator's real ledger (#10
 A, B, C, BASE = "a" * 40, "b" * 40, "c" * 40, "e" * 40
 LOOP = {"repo": "o/r", "base": "main", "read_token": "read", "reviewers": ["review"]}
 PR_FILES = [{"filename": "diaktoros/x.py", "status": "modified", "sha": "1" * 40}]
+ON_BASE = {"status": "ahead", "behind_by": 0}      # the merged parent is an ancestor of main
 
 
 def review(rid, state, head, minute=0):
@@ -32,6 +33,11 @@ def review(rid, state, head, minute=0):
 def sources(mapping):
     """A fake ``merge_only.source``: each head's merge-only parent, from ``mapping``."""
     return lambda loop, head: mapping.get(head)
+
+
+def lookups(mapping):
+    """A fake ``merge_only.lookup``: ``""`` (not merge-only) for any head not in ``mapping``."""
+    return lambda loop, head: mapping.get(head, "")
 
 
 def github(commits, compares):
@@ -50,9 +56,10 @@ class Source(unittest.TestCase):
         merge_only._MEMO.clear()
         self.addCleanup(merge_only._MEMO.clear)
 
-    def merge(self, before=PR_FILES, after=PR_FILES):
+    def merge(self, before=PR_FILES, after=PR_FILES, base=None):
         commits = {B: {"parents": [{"sha": A}, {"sha": BASE}]}}
-        compares = {f"{BASE}...{A}": {"files": before}, f"{BASE}...{B}": {"files": after}}
+        compares = {f"{BASE}...{A}": {"files": before}, f"{BASE}...{B}": {"files": after},
+                    f"{BASE}...main": ON_BASE if base is None else base}
         return github(commits, compares)
 
     def test_a_merge_that_leaves_the_prs_diff_unchanged_is_merge_only(self):
@@ -75,17 +82,31 @@ class Source(unittest.TestCase):
         with patch("diaktoros.gh.api", side_effect=self.merge(before=many, after=many)):
             self.assertIsNone(merge_only.source(LOOP, B))
 
-    def test_an_unreadable_compare_is_not_and_is_read_again(self):
+    def test_a_merge_of_a_branch_that_is_not_the_base_is_not(self):
+        # #2757 review F2: a feature branch's new file is in neither three-dot diff, so the diff
+        # equality alone would pass it; the merged parent must be on the loop's base.
+        for answer in ({"status": "diverged", "behind_by": 2}, {"status": "behind", "behind_by": 1}):
+            with self.subTest(answer=answer), \
+                    patch("diaktoros.gh.api", side_effect=self.merge(base=answer)):
+                self.assertEqual(merge_only.lookup(LOOP, B), "")
+
+    def test_an_unreadable_read_is_unknown_and_is_read_again(self):
         commits = {B: {"parents": [{"sha": A}, {"sha": BASE}]}}
-        with patch("diaktoros.gh.api", side_effect=github(commits, {f"{BASE}...{A}": None})):
-            self.assertIsNone(merge_only.source(LOOP, B))
+        for compares in ({f"{BASE}...main": None},
+                         {f"{BASE}...main": ON_BASE, f"{BASE}...{A}": None}):
+            with self.subTest(compares=list(compares)), \
+                    patch("diaktoros.gh.api", side_effect=github(commits, compares)):
+                self.assertEqual(merge_only.lookup(LOOP, B), merge_only.UNKNOWN)
+                self.assertIsNone(merge_only.source(LOOP, B))
         with patch("diaktoros.gh.api", side_effect=self.merge()):
             self.assertEqual(merge_only.source(LOOP, B), A)
 
     def test_a_chain_of_merges_leads_back_to_the_reviewed_head(self):
-        with patch.object(merge_only, "source", side_effect=sources({C: B, B: A})):
+        with patch.object(merge_only, "lookup", side_effect=lookups({C: B, B: A})):
             self.assertTrue(merge_only.leads_to(LOOP, C, A))
             self.assertFalse(merge_only.leads_to(LOOP, C, "d" * 40))
+        with patch.object(merge_only, "lookup", side_effect=lookups({C: merge_only.UNKNOWN})):
+            self.assertIsNone(merge_only.leads_to(LOOP, C, A))
 
 
 class Verdicts(unittest.TestCase):
@@ -157,8 +178,17 @@ class FixerClaim(unittest.TestCase):
         with patch("diaktoros.config.by_repo", return_value=self.loop), \
              patch("diaktoros.gh.api", return_value=pull), \
              patch("diaktoros.gh.reviews", return_value=[review(1, "CHANGES_REQUESTED", A)]), \
-             patch.object(merge_only, "source", side_effect=sources(merges)):
+             patch.object(merge_only, "lookup", side_effect=lookups(merges)), \
+             patch.object(merge_only, "source", side_effect=sources(
+                 {k: v for k, v in merges.items() if v != merge_only.UNKNOWN})):
             return self.sup._claim()
+
+    def there(self, state):
+        """A same-key round already at the merge-only head, in ``state``."""
+        self.sup.enqueue("there", "o/r", 3, B, "fixer")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state=?, push_admitted=1, error='earlier' "
+                        "WHERE delivery='there'", (state,))
 
     def test_the_round_moves_to_the_merge_only_head_and_is_claimed_there(self):
         self.queue()
@@ -172,6 +202,36 @@ class FixerClaim(unittest.TestCase):
         row = self.sup.get("fix")
         self.assertEqual((row["state"], row["error"], row["head"]),
                          ("cancelled", "fixer verdict superseded", A))
+
+    def test_an_unreadable_merge_check_backs_off_and_the_round_moves_once_it_reads(self):
+        # #2757 review F1: a failed read used to cancel the only answer for good.
+        self.queue()
+        self.assertIsNone(self.claim({B: merge_only.UNKNOWN}))
+        row = self.sup.get("fix")
+        self.assertEqual((row["state"], row["head"]), ("waiting", A))
+        self.assertIn("merge-only check unreadable", row["error"])
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='pending', retry_at=NULL WHERE delivery='fix'")
+        self.assertIsNotNone(self.claim({B: A}))
+        self.assertEqual(self.sup.get("fix")["head"], B)
+
+    def test_a_cancelled_round_already_at_the_head_is_rearmed_to_answer(self):
+        # #2757 review F3: a terminal row there used to retire the only live answer too.
+        self.queue()
+        self.there("cancelled")
+        self.assertIsNotNone(self.claim({B: A}))
+        self.assertEqual(self.sup.get("there")["state"], "claimed")
+        self.assertEqual(self.sup.get("fix")["state"], "cancelled")
+
+    def test_a_round_already_answering_there_is_left_to_answer(self):
+        for state in ("pending", "succeeded"):
+            with self.subTest(state=state):
+                self.setUp()
+                self.queue()
+                self.there(state)
+                self.claim({B: A})
+                self.assertEqual(self.sup.get("fix")["state"], "cancelled")
+                self.assertIn(self.sup.get("there")["state"], (state, "claimed"))
 
     def test_a_ci_fix_turn_does_not_follow(self):
         from diaktoros import ci_fix

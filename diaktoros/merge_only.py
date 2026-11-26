@@ -7,12 +7,13 @@ change request at the old head then went nowhere: the sweep delivered a review t
 (spending a verdict), and the fixer's answer turn queued at the old head was cancelled as
 superseded, leaving the PR with no one to move it (#2700, #2738, #2745).
 
-``source`` answers, from GitHub alone, whether ``head`` is such a merge: a merge commit whose first
-parent is the PR's previous head, and after which the PR's own diff against the base is the same
-file for file (path, status and blob) as before. The base's new commits then touched none of the
+``lookup`` answers, from GitHub alone, whether ``head`` is such a merge: a merge commit whose first
+parent is the PR's previous head and whose second is on the loop's base branch, and after which the
+PR's own diff against the base is the same file for file (path, status and blob) as before. The base's new commits then touched none of the
 PR's files, so a finding at the old head still stands at the new one. Anything else (a commit
 that is not a merge, a merge that changed a PR file, a diff too large to list, a read that failed)
-is not merge-only, and the head is reviewed as usual.
+is not merge-only, and the head is reviewed as usual; a failed read is ``UNKNOWN``, which the fixer's
+claim retries instead of deciding.
 
 ``carried`` is the change request the old head's latest verdict still makes, as a copy at the new
 head marked ``carried_from``; ``gate`` counts it among the head's verdicts, so no review is
@@ -58,34 +59,61 @@ def _files(loop: dict, base: str, head: str) -> frozenset | None:
     return frozenset(out)
 
 
-def source(loop: dict, head: str) -> str | None:
-    """The PR head ``head`` merged its base into without changing the PR's own diff, else None."""
-    if not isinstance(head, str) or len(head) != 40:
+UNKNOWN = "unknown"      # a read failed: neither merge-only nor not, and never remembered
+
+
+def _on_base(loop: dict, commit: str) -> bool | None:
+    """Whether ``commit`` is on the loop's base branch (an ancestor of its tip, or the tip), or
+    None unreadable. A merge from any other branch is not a base merge (#2757 review, F2)."""
+    data = _read(loop, f"/repos/{loop['repo']}/compare/{commit}...{loop['base']}")
+    if not isinstance(data, dict) or not isinstance(data.get("status"), str):
         return None
+    return data["status"] in ("identical", "ahead") and data.get("behind_by") == 0
+
+
+def lookup(loop: dict, head: str) -> str:
+    """The PR head ``head`` merged its base into without changing the PR's own diff; ``""`` when
+    ``head`` is not such a merge; ``UNKNOWN`` when a read failed (#2757 review, F1)."""
+    if not isinstance(head, str) or len(head) != 40:
+        return ""
     key = (loop["repo"], head)
     if key in _MEMO:
-        return _MEMO[key] or None
+        return _MEMO[key]
     commit = _read(loop, f"/repos/{loop['repo']}/commits/{head}")
     if not isinstance(commit, dict) or not isinstance(commit.get("parents"), list):
-        return None                                 # unreadable: not merge-only, not remembered
+        return UNKNOWN
     parents = [p.get("sha") if isinstance(p, dict) else None for p in commit["parents"]]
     if len(parents) != 2 or not all(isinstance(p, str) and len(p) == 40 for p in parents):
         _MEMO[key] = ""
-        return None
+        return ""
     old, base = parents
+    on_base = _on_base(loop, base)
+    if on_base is None:
+        return UNKNOWN
+    if not on_base:
+        return ""                  # not remembered: the branch may reach the base later
     before, after = _files(loop, base, old), _files(loop, base, head)
     if before is None or after is None:
-        return None
+        return UNKNOWN
     _MEMO[key] = old if before and before == after else ""
-    return _MEMO[key] or None
+    return _MEMO[key]
 
 
-def leads_to(loop: dict, head: str, old: str) -> bool:
-    """Whether ``head`` follows ``old`` through merge-only heads alone (at most ``CHAIN_MAX``)."""
+def source(loop: dict, head: str) -> str | None:
+    """``lookup``'s merge-only parent, or None: not merge-only, or unknown."""
+    found = lookup(loop, head)
+    return None if found in ("", UNKNOWN) else found
+
+
+def leads_to(loop: dict, head: str, old: str) -> bool | None:
+    """Whether ``head`` follows ``old`` through merge-only heads alone (at most ``CHAIN_MAX``);
+    None when a read on the way failed, so the caller retries rather than decides."""
     current = head
     for _ in range(CHAIN_MAX):
-        current = source(loop, current)
-        if current is None:
+        current = lookup(loop, current)
+        if current == UNKNOWN:
+            return None
+        if not current:
             return False
         if current == old:
             return True

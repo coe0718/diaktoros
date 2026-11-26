@@ -58,6 +58,7 @@ class _ClaimRead:
     fence: tuple | None = None
     since: float = 0.0          # when the claim's reads began (#2608: its own limited answers)
     follow: str | None = None   # a fix round's merge-only new head, read again there (#2743)
+    follow_run: str | None = None   # the round left to read at that head
 
 
 @dataclass
@@ -302,12 +303,33 @@ class ClaimAndLaunch(TurnHolds):
             if self.production_config:
                 self._claim_read_live(row, read)
             claimed = self._claim_commit(row, read)
-            if claimed is None and read.follow:
-                claimed = self._claim_followed(row['id'], fences)
+            if claimed is None and read.follow_run:
+                claimed = self._claim_followed(read.follow_run, fences)
             if claimed is not None:
                 return claimed
             waits.note(self, row['id'])         # a claim read that failed backs off (#2080)
         return None
+
+    def _move_to_merge_only(self, con, row, read: _ClaimRead) -> None:
+        """#2743: the PR's head only merged its base since this fix round was queued, and the change
+        request stands there, so the round moves to it, inside the claim's transaction. A round
+        already at that head with the same key answers instead: a live or finished one as it is,
+        a cancelled or failed one that never wrote re-armed (#2757 review, F3), and this one
+        retires. ``read.follow_run`` is the round left to read at the new head, if any."""
+        now = time.time()
+        there = con.execute("SELECT id, state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                            "AND turn_key IS ?", (row['repo'], row['pr'], read.follow, row['seat'],
+                                                  row['turn_key'])).fetchone()
+        if there is None:
+            con.execute("UPDATE runs SET head=?, updated=? WHERE id=?", (read.follow, now, row['id']))
+            read.follow_run = row['id']
+            return
+        con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
+                    (f"fixer round moved to the merge-only head {read.follow[:7]}", now, row['id']))
+        if (there['state'] in run_supervisor.REARMABLE
+                and run_supervisor.write_evidence(con, there['id']) is None):
+            self._rearm(con, there['id'], reset=True)
+            read.follow_run = there['id']
 
     def _claim_followed(self, run_id: str, fences: dict):
         """A fix round moved to a merge-only head (#2743) is read again there, once, in this claim;
@@ -465,8 +487,12 @@ class ClaimAndLaunch(TurnHolds):
                 # change request it answers (``merge_only``), so the round moves to it.
                 plain = not any(str(row['turn_key'] or '').startswith(k) for k in (
                     run_supervisor.SHADOW_FIX_KEY, run_supervisor.CONFLICT_KEY))
-                if (pr.get('state') == 'open' and plain and not ci_fix.is_ci_fix(row['turn_key'])
-                        and merge_only.leads_to(loop, new, row['head'])):
+                follows = (merge_only.leads_to(loop, new, row['head'])
+                           if pr.get('state') == 'open' and plain
+                           and not ci_fix.is_ci_fix(row['turn_key']) else False)
+                if follows is None:     # a read failed: retried and bounded, never decided (F1)
+                    read.read_error = 'merge-only check unreadable (GitHub read failed)'
+                elif follows:
                     read.follow = new
                 else:
                     read.superseded = 'fixer verdict superseded'
@@ -596,18 +622,7 @@ class ClaimAndLaunch(TurnHolds):
                 con.execute("COMMIT")
                 return None
             if read.follow:
-                # #2743: the PR's head only merged its base since this fix round was queued, and
-                # the change request stands there; the round moves to it (a round already there
-                # answers instead, and this one retires).
-                taken = con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
-                                    "AND turn_key IS ?", (row['repo'], row['pr'], read.follow,
-                                                          row['seat'], row['turn_key'])).fetchone()
-                if taken:
-                    con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
-                                ('fixer verdict superseded', time.time(), row['id']))
-                else:
-                    con.execute("UPDATE runs SET head=?, updated=? WHERE id=?",
-                                (read.follow, time.time(), row['id']))
+                self._move_to_merge_only(con, row, read)
                 con.execute('COMMIT')
                 return None
             if read.refused:
