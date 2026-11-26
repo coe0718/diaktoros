@@ -156,7 +156,9 @@ When a PR body says `Fixes #N` (or `Closes`/`Resolves`), the host gives the revi
 fixer the closing issues' title and body, plus the loop maintainers' comments, as data. Bounds:
 at most three issues; title 256 bytes and body 8,000 bytes; the 20 newest maintainer comments,
 4,000 bytes each and 16 KiB in total. Anyone else's comment is not shown. Maintainers' comments
-on the PR itself are read too, so a deferral can live there (#666).
+on the PR itself are read too, so a deferral can live there (#666). Those PR comments, with the
+same bounds, reach both seats even on a PR that closes no issue (#2311); strangers' comments
+still do not.
 
 Every other issue or pull request the PR names by number (`deferred to #N`, `Follow-up to #N`,
 any `#N` in its description or in any maintainer's comment on it, including those older than
