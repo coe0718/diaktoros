@@ -1,0 +1,137 @@
+"""``hermes dk unstick``: do the one next step a stuck PR is owed (#2759).
+
+``explain`` says why a PR is not moving; before this, ending it meant picking among ``retry``
+(a failed turn only), ``drain`` (a queued one only), ``review --reconsider`` (which spends a
+verdict) and re-delivering a webhook by hand. ``unstick`` reads the PR live and takes the step its
+state owes, or says whose move it is:
+
+- a change request at the head: a fix turn at the head that ended is re-armed (``retry``'s rules);
+  with none there, one is queued (``fix_rescue``, without the sweep's wait);
+- no verdict at the head: a review turn at the head that ended is re-armed; with none there, the
+  review request is delivered to the reviewer gate (the sweep's own delivery, #532 / #2468);
+- a turn already queued or running, an approval, a maintainer's hold, a ruling pending, a spent
+  cap, a review-only author's move, or a loop without fixer pushes: nothing is done, and the
+  line names the command that is the operator's.
+
+Nothing here posts on GitHub or spends a verdict: each step only queues or re-arms a turn, and the
+loop's own gates and claims still decide it. ``dry_run`` says the step without taking it.
+"""
+from __future__ import annotations
+
+from . import config, fix_rescue, gate, gh, merge_only, pr_hold, review_kick, run_supervisor
+from . import state as state_mod
+from . import transition
+
+
+def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
+    """``{"lines", "code"}``: 0 when a step was taken (or, dry, would be), 1 when nothing is the
+    loop's to do (the line says whose move it is), 2 when the PR could not be read."""
+    tag = f"[{loop['id']}] #{number}"
+    pr = gh.pr(loop, number)
+    if not isinstance(pr, dict) or pr.get("number") != number:
+        return _out(2, f"{tag}: the PR could not be read — nothing done")
+    head = gate.head_of(pr)
+    at = f"{tag} @ {head[:7]}"
+    if pr.get("state") != "open" or (pr.get("base") or {}).get("ref") != loop["base"]:
+        return _out(1, f"{tag}: not an open PR on {loop['base']} — nothing to unstick")
+    hold, hold_error = pr_hold.read(loop, number)
+    if hold_error:
+        return _out(2, f"{tag}: whether a maintainer holds it could not be read — nothing done")
+    if hold:
+        return _out(1, f"{at}: a maintainer holds it — release the hold first")
+    st = state_mod.state_for(loop)
+    reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
+    if not isinstance(reviews, list):
+        return _out(2, f"{tag}: its reviews could not be read — nothing done")
+    with merge_only.decision():
+        latest = gate.latest_effective_review_at_head(reviews, loop, head)
+        if latest is None and merge_only.undecided(loop, reviews, head):
+            return _out(2, f"{at}: {merge_only.UNDECIDED_WHY} — nothing done; try again")
+        step = _owed(loop, st, number, head, pr, reviews, latest)
+    if isinstance(step, tuple):
+        return _out(*step)
+    if dry_run:
+        return _out(0, f"{at}: would {step}")
+    return _take(loop, number, head, pr, step)
+
+
+def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, latest):
+    """The step owed at ``head`` as a phrase (``FIX``, ``REFIX``, ``REVIEW``, ``REREVIEW``), or
+    ``(code, line)`` when nothing is the loop's to do."""
+    at = f"[{loop['id']}] #{number} @ {head[:7]}"
+    state = gh.review_state(latest) if latest is not None else ""
+    author = ((pr.get("user") or {}).get("login") or "").lower()
+    review_only = author in config.review_only(loop)
+    spent = len(gate.verdicts(reviews, loop))
+    if state == "APPROVED":
+        return 1, f"{at}: approved — nothing is owed; the merge is yours"
+    marker = st.breach_get(number)
+    if gate.escalated(marker, head) or (not review_only and spent >= loop["cap"]
+                                        and gate.breach_delivery_status(marker, head)):
+        return 1, (f"{at}: parked for a ruling — the adjudicator's; `hermes dk explain --loop "
+                   f"{loop['id']} --pr {number}` follows it")
+    if not review_only and spent >= loop["cap"]:
+        return 1, (f"{at}: {spent}/{loop['cap']} verdicts spent — `hermes dk escalate --loop "
+                   f"{loop['id']} --pr {number}` sends it for a ruling")
+    if state == "CHANGES_REQUESTED":
+        if review_only:
+            return 1, f"{at}: changes requested on a review-only PR — the author's move"
+        if not config.unattended_fixer_push_enabled(loop):
+            return 1, (f"{at}: changes requested, and fixer pushes are off — run "
+                       f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
+        return _turn_step(loop, number, head, "fixer", FIX, REFIX)
+    if review_only and spent >= config.review_only_cap(loop) and not st.review_cap_granted(
+            number, head, spent):
+        return 1, (f"{at}: review cap reached — `hermes dk review --loop {loop['id']} --pr "
+                   f"{number} --another-round` grants one more")
+    return _turn_step(loop, number, head, "reviewer", REVIEW, REREVIEW)
+
+
+FIX = "queue the fix turn owed at this head"
+REFIX = "re-arm the fix turn at this head"
+REVIEW = "deliver the review request to the reviewer gate"
+REREVIEW = "re-arm the review turn at this head"
+
+
+def _turn_step(loop: dict, number: int, head: str, seat: str, new: str, again: str):
+    """``new`` with no ``seat`` turn at ``head`` (under the gate's key, for the fixer), ``again``
+    when one ended there, and nothing when one is queued or running. An unreadable ledger reads
+    as none: the enqueue and the gate's delivery dedup against any turn there."""
+    at = f"[{loop['id']}] #{number} @ {head[:7]}"
+    state = fix_rescue.turn_at(config.host_path("ledger"), loop["repo"], number, head, seat)
+    if state in run_supervisor.NOT_ENDED:
+        return 1, f"{at}: a {seat} turn is already {state} here — nothing to unstick"
+    if state is None:
+        return new
+    return again
+
+
+def _take(loop: dict, number: int, head: str, pr: dict, step: str) -> dict:
+    """Take ``step`` and say what came of it."""
+    at = f"[{loop['id']}] #{number} @ {head[:7]}"
+    if step in (REFIX, REREVIEW):
+        from . import retry_action
+        result = retry_action.perform(loop, number, "fixer" if step == REFIX else "reviewer",
+                                      resolve_head=lambda: head, read_pr=lambda: pr,
+                                      reveal_errors=True)
+        lines = [f"{at}: {result['message']}"] if result["message"] else []
+        lines += [f"{at}: {e['seat']} re-armed (was {e['state']}: {e.get('error') or 'no reason'})"
+                  for e in result["rearmed"]]
+        lines += [f"{at}: {e['seat']} {e['state']}: {e['reason']}" for e in result["refused"]]
+        return {"lines": lines or [f"{at}: nothing re-armed"], "code": 0 if result["ok"] else 2}
+    try:
+        if step == FIX:
+            outcome = fix_rescue.queue(loop, number, head)
+            done = outcome in gate.SCHEDULED_OUTCOMES
+            return _out(0 if done else 1, f"{at}: fixer {outcome}")
+        author = ((pr.get("user") or {}).get("login") or "").lower()
+        sent = review_kick.kick(loop, pr, head, author, f"unstick-review-{number}")
+    except Exception as exc:
+        return _out(2, f"{at}: {step} failed: {type(exc).__name__}: {exc}")
+    return (_out(0, f"{at}: review request delivered — the reviewer gate decides") if sent
+            else _out(2, f"{at}: the review request was not delivered (no reviewer route, or "
+                         "the gateway did not answer)"))
+
+
+def _out(code: int, line: str) -> dict:
+    return {"lines": [line], "code": code}

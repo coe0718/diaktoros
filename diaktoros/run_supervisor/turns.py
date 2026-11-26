@@ -502,7 +502,7 @@ class ClaimAndLaunch(TurnHolds):
                 elif follows:
                     read.follow = new
                 else:
-                    read.superseded = 'fixer verdict superseded'
+                    read.superseded = run_supervisor.FIX_VERDICT_SUPERSEDED
             elif pr.get('state') != 'open' or pr.get('draft') is not False:
                 read.retry_read = True
             elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
@@ -531,7 +531,7 @@ class ClaimAndLaunch(TurnHolds):
                         # landing after a retarget): a wait, like a draft.
                         read.retry_read = True
                     elif gh.review_state(latest) != 'CHANGES_REQUESTED':
-                        read.superseded = 'fixer verdict superseded'
+                        read.superseded = run_supervisor.FIX_VERDICT_SUPERSEDED
         except Exception as exc:
             read.read_error = f'{type(exc).__name__}: {exc}'[:200]
 

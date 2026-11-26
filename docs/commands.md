@@ -112,6 +112,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
+| get a stuck PR moving again (queue or re-arm what it is owed) | [`unstick`](#unstick) |
 | stop a queued, blocked, waiting or running turn | [`cancel`](#cancel) |
 | finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
@@ -2173,6 +2174,39 @@ hermes dk retry --loop "<loop-id>" --seat fixer --clear-hold
 | `--pr` | `PR` |  | the pull request whose failed run to re-arm (required unless --clear-hold) |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
 | `--clear-hold` |  |  | with --seat: reopen the account that seat draws on (a provider outage or usage-window hold) and run its held turns now, e.g. after switching its model; with --pr, then re-arm that PR's run too |
+<!-- /flags -->
+
+### unstick
+
+Takes the one next step a stuck PR is owed, so you don't have to work it out from
+[`explain`](#explain) and pick among `retry`, `drain` and `review --reconsider`. It reads the PR
+live, then:
+
+- **Changes requested at the head** (its own, or one carried over a base merge): a fix turn at the
+  head that ended is re-armed, under `retry`'s rules. With no fix turn at the head, one is queued.
+- **No verdict at the head:** a review turn at the head that ended is re-armed. With none there,
+  the review request is delivered to the reviewer gate, as the watchdog's sweep delivers one.
+- **Anything else:** nothing is done, and the line says whose move it is and the command to run.
+  That covers a turn already queued or running, an approval, a maintainer's hold, a pending
+  ruling, a spent cap (`escalate`), a review-only author's move or review cap
+  (`review --another-round`), and a loop with fixer pushes off.
+
+Nothing is posted on GitHub and no verdict is spent: each step only queues or re-arms a turn, and
+the loop's gates and claims still decide it. `--dry-run` says the step without taking it. Exit
+`0` when a step was taken, `1` when nothing is the loop's to do, `2` when the PR could not be read
+or the step failed.
+
+```bash
+hermes dk unstick --loop "<loop-id>" --pr 12 --dry-run
+hermes dk unstick --loop "<loop-id>" --pr 12
+```
+
+<!-- flags:unstick -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
+| `--pr` | `PR` | **required** | the pull request to unstick |
+| `--dry-run` |  |  | only say the step it would take |
 <!-- /flags -->
 
 ### cancel

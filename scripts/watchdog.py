@@ -44,6 +44,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import ci_event, conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
+from diaktoros import fix_rescue  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import merge_only  # noqa: E402
 from diaktoros import push_settle  # noqa: E402
@@ -698,10 +699,33 @@ def _fixer_kind(c: _Sweep, number: int, head: str, latest: dict) -> str:
     this head is not a stall: the grace covers a turn's run, not its wait in the queue (behind
     another PR, paced, held)."""
     mins = age_min(latest.get("submitted_at"))
+    if _rescued_fix(c, number, head, mins, latest):
+        return ""
     if past(mins, c.grace["fixer"]) and not watch_health.live_turn(c.loop, number, head, "fixer"):
         return (f"fixer never pushed — changes requested {ago(mins)} at head "
                 f"{head[:7]} by {gate.reviewer_login(latest)}")
     return ""
+
+
+def _rescued_fix(c: _Sweep, number: int, head: str, mins: float | None, latest: dict) -> bool:
+    """#2759: the fix turn a head move ended (or a verdict's webhook never queued) is queued at
+    this head, once the verdict and the head have stood one sweep interval: the gate's own turn
+    key, so a late webhook or a later sweep is the same turn. True when one was scheduled."""
+    seen = c.current_heads[str(number)].get("first_seen_at")
+    seen = seen if seen is not None else watch_mode.valid_clock(c.watch.get("armed_since"), c.now)
+    if not (watch_mode.TEST or (past(mins, KICK_AFTER_MIN) and seen is not None
+                                and (c.now - seen) / 60 >= KICK_AFTER_MIN)):
+        return False
+    if fix_rescue.owed(c.loop, config.host_path("ledger"), number, head, latest) is not True:
+        return False
+    try:
+        outcome = fix_rescue.queue(c.loop, number, head)
+    except Exception as exc:
+        log(f"#{number} @ {head[:7]}: the owed fix turn was not queued: "
+            f"{type(exc).__name__}: {exc}")
+        return False
+    log(f"#{number} @ {head[:7]}: the fix a head move ended is owed here — fixer {outcome}")
+    return outcome in gate.SCHEDULED_OUTCOMES
 
 
 def _cap_spent_kind(c: _Sweep, number: int, head: str, spent: int) -> str:

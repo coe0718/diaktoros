@@ -812,12 +812,16 @@ def _run_blockers(c) -> None:
     # one that ended with no push (failed, cancelled, succeeded) is named as such (#2077).
     if (c.at_head and not c.fix_live and not c.queued_seat and not c.push_off
             and not c.review_only and not c.ruling and not c.disputed and not c.cap_spent):
+        # #2759: the one command that takes the step, rather than a webhook re-delivered by hand.
+        unstick = f"`hermes dk unstick --loop {c.loop['id']} --pr {c.number}`"
         if not c.fixer_turn:
             c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run "
-                              f"out — the fixer gate did not start one for that delivery")
+                              f"out — the fixer gate did not start one for that delivery; "
+                              f"{unstick} queues it")
         elif c.fixer_turn not in LIVE_TURN:
             c.blockers.append(f"{explain_next.shown_turn(c)} at head {c.short} is "
-                              f"{c.fixer_turn} with no fix pushed — nothing restarts it by itself")
+                              f"{c.fixer_turn} with no fix pushed — nothing restarts it by itself; "
+                              f"{unstick} re-arms it")
     if (c.request_pending and not c.held and not c.inflight_review and not c.at_head
             and not c.approved and not c.ruling and "reviewer" not in c.ledgered):
         c.blockers.append(f"a review request for {c.loop['reviewer_seat']} is pending at head "
