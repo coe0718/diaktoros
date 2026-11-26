@@ -393,7 +393,7 @@ class ClaimAndLaunch(TurnHolds):
                             who = gate.reviewer_login(answered[-1]) or 'a reviewer'
                             read.superseded = f'superseded: reviewed at this head by {who}'
                         elif merge_only.undecided(loop, reviews, row['head']):
-                            read.read_error = 'merge-only check unreadable (GitHub read failed)'
+                            read.read_error = merge_only.UNDECIDED_WHY
         except ReceiptDenied as exc:
             read.unavailable = f'review generation unavailable: {exc}'
         except Exception as exc:

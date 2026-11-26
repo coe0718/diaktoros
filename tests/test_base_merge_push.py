@@ -110,12 +110,11 @@ class MergeOnlyUndecided(NotPushed, tbm.Base):
         with self.lookup(), mock.patch.object(base_merge, "log") as log:
             self.assertEqual(self.update(), "")
         self.assert_not_pushed()
-        self.assertIn("carries over the merge to this head could not be read",
-                      str(log.call_args_list[-1]))
+        self.assertIn(merge_only.UNDECIDED_WHY, str(log.call_args_list[-1]))
 
     def test_a_carry_unreadable_right_before_the_push_stops_it(self):
-        for answer, why in ((merge_only.UNKNOWN, "carries over the merge to this head could not be "
-                             "read, read again before the push"),
+        for answer, why in ((merge_only.UNKNOWN, f"{merge_only.UNDECIDED_WHY}, read again before "
+                             "the push"),
                             (self.OLD, "changes are requested at the head, read again before the "
                              "push")):
             with self.subTest(answer=answer), self.lookup(), \
@@ -134,7 +133,36 @@ class MergeOnlyUndecided(NotPushed, tbm.Base):
                 mock.patch.object(base_merge, "log") as log:
             self.assertEqual(self.update(), "")
         self.assert_not_pushed()
-        self.assertIn("could not be read", str(log.call_args_list[-1]))
+        self.assertIn(merge_only.UNDECIDED_WHY, str(log.call_args_list[-1]))
+
+    def test_an_unordered_verdict_before_the_merge_waits_and_an_ordered_one_is_carried(self):
+        # Review of #2757, F8: an undated change request at the head merged from proves no latest
+        # verdict there, so nothing is carried and nothing is decided; the update waits, at the
+        # sweep's read and at the read right before the push. Dated, it is the carried request.
+        self.answer = self.OLD
+        undated = tbm.approval(self.OLD, review_id=12, state="CHANGES_REQUESTED", at=None)
+        for at_sweep, why in ((True, merge_only.UNDECIDED_WHY),
+                              (False, f"{merge_only.UNDECIDED_WHY}, read again before the push")):
+            with self.subTest(at_sweep=at_sweep), self.lookup(), \
+                    during_merge(lambda: setattr(self, "reviews", [undated])), \
+                    mock.patch.object(base_merge, "log") as log:
+                self.reviews = [undated] if at_sweep else []
+                self.assertEqual(self.update(), "")
+                self.assert_not_pushed()
+                self.assertIn(why, str(log.call_args_list[-1]))
+        self.reviews = [tbm.approval(self.OLD, review_id=12, state="CHANGES_REQUESTED")]
+        with self.lookup(), mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assertIn("changes are requested at the head", str(log.call_args_list[-1]))
+
+    def test_a_settled_verdict_before_the_merge_is_merged(self):
+        # F8's definite case: the head merged from was approved after its change request.
+        self.answer = self.OLD
+        self.reviews.append(tbm.approval(self.OLD, review_id=13, at="2026-11-10T03:00:00Z"))
+        with self.lookup():
+            new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
 
     def test_a_head_that_is_definitely_not_merge_only_is_merged(self):
         with self.lookup():

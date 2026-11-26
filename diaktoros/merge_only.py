@@ -67,6 +67,9 @@ def _files(loop: dict, base: str, head: str):
 
 
 UNKNOWN = "unknown"      # a read failed: neither merge-only nor not, and never remembered
+# Why a guard waits on ``undecided`` (#2757 review, F7, F8).
+UNDECIDED_WHY = ("whether a change request carries over the merge to this head is undecided "
+                 "(a read failed, or the verdicts before it cannot be ordered)")
 
 
 def _on_base(loop: dict, commit: str) -> bool | None:
@@ -154,18 +157,21 @@ def _facts(loop: dict, head: str):
 
 
 def undecided(loop: dict, reviews: list, head: str) -> bool:
-    """Whether a change request might be carried to ``head`` but a read failed on the way: the
-    sweep delivers no review and a queued review waits, instead of reviewing a head whose answer
-    may already stand (#2757 review, F5)."""
+    """Whether a change request might be carried to ``head`` but nothing decides it: a read
+    failed on the way (#2757 review, F5), or the head it merged from has verdicts none of which is
+    provably the latest (an undated or unfamiliar one, F8), so ``carried`` finds none. The sweep
+    delivers no review, a queued review waits, and the host's and the conflict merges wait,
+    instead of acting on a head whose change request may still be owed."""
     from . import gate
     if not isinstance(reviews, list) or not any(
             isinstance(r, dict) and gh.review_state(r) == "CHANGES_REQUESTED" for r in reviews):
         return False
     current = head
     for _ in range(CHAIN_MAX):
-        if current != head and any(gh.review_state(r) in ("APPROVED", "CHANGES_REQUESTED")
+        if current != head and any(gh.review_state(r) not in gate.NOT_VERDICTS
                                    for r in gate.reviews_at_head(reviews, loop, current)):
-            return False                 # an earlier head with its own verdict: decided
+            # An earlier head with its own verdict decides, when its latest one can be told.
+            return gate.latest_effective_review_at_head(reviews, loop, current) is None
         found = lookup(loop, current)
         if found == UNKNOWN:
             return True

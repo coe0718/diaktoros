@@ -192,9 +192,9 @@ def _review_waits(loop: dict, number: int, head: str, reviews) -> str:
             # a change request may stand, so the merge waits (review on #2576). None: nothing.
             return "its verdicts at the head cannot be ordered"
         if latest is None and merge_only.undecided(loop, reviews, head):
-            # #2743 (review of #2757, F7): a change request carried over a merge-only head may
-            # stand here, and its read failed; the merge waits for a read that decides it.
-            return "whether a change request carries over the merge to this head could not be read"
+            # #2743 (review of #2757, F7, F8): a change request carried over a merge-only head
+            # may stand here, and nothing decides it; the merge waits for a read that does.
+            return merge_only.UNDECIDED_WHY
     if latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
         # The fixer answers it, or a ruling does at the cap (#1907): a merge would move the head
         # under either, and the merged head would be reviewed with the findings still open.

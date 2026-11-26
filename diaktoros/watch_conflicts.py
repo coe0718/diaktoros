@@ -16,8 +16,8 @@ from diaktoros.util import log
 
 # fix_owed's answer when the PR's reviews could not be read: wait, a later read decides (#1907).
 UNREAD = "its reviews could not be read"
-# #2743 (review of #2757, F7): whether a change request carries to this merge-only head is unread.
-UNDECIDED = "whether a change request carries over the merge to this head could not be read"
+# #2743 (review of #2757, F7, F8): nothing decides whether a change request carries to this head.
+UNDECIDED = merge_only.UNDECIDED_WHY
 
 # GitHub computes a PR's mergeability lazily: the first read after its base moves usually
 # answers null/"unknown" and starts the computation. One short wait, then one re-read.
@@ -168,7 +168,7 @@ def _queue_turn(loop: dict, st: state_mod.LoopState, number: int, head: str, bas
     owed = fix_owed(loop, st, number, head)
     if owed:
         log(f"#{number} @ {head[:7]} conflict turn not queued: {owed}")
-        if owed in (UNREAD, UNDECIDED):   # nothing was read: no fix turn to retry
+        if owed in (UNREAD, UNDECIDED):   # nothing decided: no fix turn to retry
             return (f"{owed} at {head[:7]}, so {loop['base']} is not merged in yet; a later sweep "
                     "re-reads them, then merges it or waits for the fixer's answer")
         return (f"the fixer answers the changes requested at {head[:7]} first ({owed}); the "

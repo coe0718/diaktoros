@@ -238,6 +238,23 @@ class SweepDeliversIt(fg.Base):
             self.sweep([asked])
         self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
 
+    def test_an_unordered_verdict_before_the_merge_is_not_asked_over(self):
+        # Review of #2757, F8: the head merged from has an undated change request, so nothing
+        # proves it answered; no review is delivered. Approved there since: it is delivered.
+        from diaktoros import merge_only
+        self.arm()
+        self.moved = OLD
+        undated = {**fg.verdict(), "commit_id": OLD, "submitted_at": None}
+        merged_from = lambda loop, head: OLD if head == fg.HEAD else ""  # noqa: E731
+        with mock.patch.object(merge_only, "lookup", side_effect=merged_from):
+            self.sweep([undated])
+            self.assertEqual(self.kicks, [])
+            asked = {**fg.verdict(), "commit_id": OLD}
+            approved = {**fg.verdict(6, "APPROVED"), "commit_id": OLD,
+                        "submitted_at": "2026-01-02T00:00:00Z"}
+            self.sweep([asked, approved])
+        self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
+
     def test_an_undecided_merge_only_head_is_not_asked_this_sweep(self):
         # #2757 review F5: a failed merge-only read decides nothing, so no review is delivered
         # that the carried change request may already answer; the next sweep reads again.

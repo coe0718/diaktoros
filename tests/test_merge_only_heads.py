@@ -212,6 +212,22 @@ class Verdicts(unittest.TestCase):
         with patch.object(merge_only, "source", return_value=None):
             self.assertFalse(gate.reviewed_at_head(reviews, LOOP, B))
 
+    def test_an_unordered_verdict_before_the_merge_is_undecided_not_none(self):
+        # Review of #2757, F8: an undated change request at A has no provable latest verdict, so
+        # nothing is carried to B, and that is undecided; dated, it is carried and decided.
+        undated = [{**review(1, "CHANGES_REQUESTED", A), "submitted_at": None}]
+        with patch.object(merge_only, "lookup", side_effect=lookups({C: B, B: A})):
+            for head in (B, C):                          # through a chain of merges too
+                with self.subTest(head=head):
+                    self.assertEqual(merge_only.carried(LOOP, undated, head), [])
+                    self.assertTrue(merge_only.undecided(LOOP, undated, head))
+            dated = [review(1, "CHANGES_REQUESTED", A)]
+            self.assertEqual(len(merge_only.carried(LOOP, dated, B)), 1)
+            self.assertFalse(merge_only.undecided(LOOP, dated, B))
+            approved = dated + [review(2, "APPROVED", A, minute=1)]
+            self.assertEqual(merge_only.carried(LOOP, approved, B), [])
+            self.assertFalse(merge_only.undecided(LOOP, approved, B))
+
     def test_no_read_when_the_head_has_its_own_verdict_or_nothing_could_be_carried(self):
         with patch.object(merge_only, "source") as source:
             gate.reviewed_at_head([review(1, "CHANGES_REQUESTED", B)], LOOP, B)
@@ -349,7 +365,7 @@ if __name__ == "__main__":
 class ReviewerClaim(FixerClaim):
     """A review queued at a merge-only head whose change request stands there (#2757 review F5)."""
 
-    def read(self, merges):
+    def read(self, merges, reviews=None):
         from diaktoros.run_supervisor import turns
         self.sup.enqueue("review", "o/r", 3, B, "reviewer")
         with self.sup._connect() as con:
@@ -361,7 +377,8 @@ class ReviewerClaim(FixerClaim):
         with patch("diaktoros.config.by_repo", return_value=self.loop), \
              patch("diaktoros.gh.api", return_value=pull), \
              patch("diaktoros.review_receipt.generation_for", return_value="g"), \
-             patch("diaktoros.gh.reviews", return_value=[review(1, "CHANGES_REQUESTED", A)]), \
+             patch("diaktoros.gh.reviews",
+                   return_value=reviews or [review(1, "CHANGES_REQUESTED", A)]), \
              patch.object(merge_only, "lookup", side_effect=lookups(merges)):
             self.sup._claim_read_reviewer(row, read)
         return read
@@ -373,7 +390,15 @@ class ReviewerClaim(FixerClaim):
     def test_an_undecided_carry_waits_instead_of_reviewing(self):
         read = self.read({B: merge_only.UNKNOWN})
         self.assertIsNone(read.superseded)
-        self.assertIn("merge-only check unreadable", read.read_error)
+        self.assertEqual(read.read_error, merge_only.UNDECIDED_WHY)
+
+    def test_an_unordered_verdict_before_the_merge_waits_too(self):
+        # Review of #2757, F8: undated, the change request at A proves no latest verdict there.
+        read = self.read({B: A}, [{**review(1, "CHANGES_REQUESTED", A), "submitted_at": None}])
+        self.assertIsNone(read.superseded)
+        self.assertEqual(read.read_error, merge_only.UNDECIDED_WHY)
+        settled = [review(1, "CHANGES_REQUESTED", A), review(2, "APPROVED", A, minute=1)]
+        self.assertEqual((self.read({B: A}, settled).read_error), "")
 
     def test_a_head_that_is_not_merge_only_is_reviewed(self):
         read = self.read({})
@@ -413,7 +438,7 @@ class ReviewerClaimRecovering(FixerClaim):
     def test_a_read_that_recovers_mid_claim_still_waits(self):
         row = self.claim_with(flaky(self.merge()))
         self.assertEqual(row["state"], "waiting")
-        self.assertIn("merge-only check unreadable", row["error"])
+        self.assertIn(merge_only.UNDECIDED_WHY, row["error"])
 
     def test_an_earlier_unknown_never_decides_a_later_claim(self):
         # Review round 4: an UNKNOWN read just before the claim began, by the sweep or another

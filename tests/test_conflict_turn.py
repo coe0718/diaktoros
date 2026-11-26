@@ -14,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -564,11 +565,12 @@ class MergeAuthorization(unittest.TestCase):
             self.push(self.review("CHANGES_REQUESTED"), self.MERGE)
         self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
 
-    def merge_only_push(self, lookup=None, decide=None):
-        """A merge push at a head merged from ``OLD``, where changes were requested."""
+    def merge_only_push(self, lookup=None, decide=None, at="2026-01-01T00:00:00Z", more=()):
+        """A merge push at a head merged from ``OLD``, where changes were requested ``at``."""
         self.fake.branch_head = self.fake.pr_head = tsp.HEAD
         self.loop = {**self.loop, "cap": 3}
-        asked = [{**self.review("CHANGES_REQUESTED")[0], "commit_id": self.OLD}]
+        asked = [{**self.review("CHANGES_REQUESTED")[0], "commit_id": self.OLD,
+                  "submitted_at": at}, *more]
         target = ("lookup", lookup) if decide is None else ("_decide", decide)
         with mock.patch.object(merge_only, target[0], side_effect=target[1]):
             return self.push(asked, self.MERGE)
@@ -583,13 +585,26 @@ class MergeAuthorization(unittest.TestCase):
                     self.assertRaisesRegex(broker.BrokerDenied, "a merge waits for the fixer here"):
                 self.merge_only_push(lambda loop, head: answer if head == tsp.HEAD else "")
             self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
-        with self.assertRaisesRegex(broker.BrokerDenied, watch_conflicts.UNDECIDED):
+        with self.assertRaisesRegex(broker.BrokerDenied, re.escape(watch_conflicts.UNDECIDED)):
             self.merge_only_push(lambda loop, head: merge_only.UNKNOWN)
+
+    def test_an_unordered_verdict_before_the_merge_stops_a_merge_push(self):
+        # Review of #2757, F8: an undated change request at the head merged from decides nothing.
+        from diaktoros import watch_conflicts
+        merged_from = lambda loop, head: self.OLD if head == tsp.HEAD else ""  # noqa: E731
+        with self.assertRaisesRegex(broker.BrokerDenied, re.escape(watch_conflicts.UNDECIDED)):
+            self.merge_only_push(merged_from, at=None)
+        self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
+        # Settled there (approved after the change request): the merge is pushed.
+        approved = {**self.review("APPROVED")[0], "id": 42, "commit_id": self.OLD,
+                    "submitted_at": "2026-01-02T00:00:00Z"}
+        receipt = self.merge_only_push(merged_from, more=(approved,))
+        self.assertEqual(receipt["outcome"], "published")
 
     def test_a_carry_read_that_recovers_inside_the_check_still_stops_it(self):
         from diaktoros import watch_conflicts
         answers = iter([merge_only.UNKNOWN])
-        with self.assertRaisesRegex(broker.BrokerDenied, watch_conflicts.UNDECIDED):
+        with self.assertRaisesRegex(broker.BrokerDenied, re.escape(watch_conflicts.UNDECIDED)):
             self.merge_only_push(decide=lambda loop, head: next(answers, self.OLD)
                                  if head == tsp.HEAD else "")
         self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
