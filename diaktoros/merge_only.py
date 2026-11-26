@@ -37,9 +37,14 @@ _MEMO: dict[tuple[str, str], str] = {}
 _DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("merge_only_depth", default=0)
 
 
+def _read(loop: dict, path: str):
+    """One GET as the reader; None when it failed, and the head is reviewed as usual."""
+    return gh.api(loop, path, login=loop.get("read_token"))
+
+
 def _files(loop: dict, base: str, head: str) -> frozenset | None:
     """The PR side's diff from ``base`` to ``head`` as (path, status, blob), or None unreadable."""
-    data = gh.api(loop, f"/repos/{loop['repo']}/compare/{base}...{head}", login=loop["read_token"])
+    data = _read(loop, f"/repos/{loop['repo']}/compare/{base}...{head}")
     if not isinstance(data, dict) or not isinstance(data.get("files"), list):
         return None
     files = data["files"]
@@ -60,7 +65,7 @@ def source(loop: dict, head: str) -> str | None:
     key = (loop["repo"], head)
     if key in _MEMO:
         return _MEMO[key] or None
-    commit = gh.api(loop, f"/repos/{loop['repo']}/commits/{head}", login=loop["read_token"])
+    commit = _read(loop, f"/repos/{loop['repo']}/commits/{head}")
     if not isinstance(commit, dict) or not isinstance(commit.get("parents"), list):
         return None                                 # unreadable: not merge-only, not remembered
     parents = [p.get("sha") if isinstance(p, dict) else None for p in commit["parents"]]

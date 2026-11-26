@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from diaktoros import base_merge, broker, ci, config, gate, gh, observer, ready  # noqa: E402
 from diaktoros import ruled_approval, safe_push, watch_conflicts  # noqa: E402
+from diaktoros import merge_only  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
@@ -50,6 +51,10 @@ class Base(unittest.TestCase):
     MAIN = "disjoint"           # what main changes after the PR branched: disjoint, same-file, conflict
 
     def setUp(self):
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "source", return_value=None)
+        off.start()
+        self.addCleanup(off.stop)
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)

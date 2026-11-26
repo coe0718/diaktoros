@@ -30,6 +30,7 @@ from diaktoros import (broker, config, contained, gh, # noqa: E402
 from diaktoros.state import ledger
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import fixer_answers, wire  # noqa: E402
+from diaktoros import merge_only  # noqa: E402
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BASE_SHA = "b" * 40
@@ -270,6 +271,10 @@ class FailedFixSequence(Worker):
     FIXED, MERGED_HEAD = "e" * 40, "f" * 40
 
     def setUp(self):
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "source", return_value=None)
+        off.start()
+        self.addCleanup(off.stop)
         super().setUp()
         tokens = {login: self.key_file(login + ".pat", "DUMMY_SECRET_" + login)
                   for login in ("read", "review", "fix")}

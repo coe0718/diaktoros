@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_answers as fa  # noqa: E402
 from diaktoros import broker, config, explain, gate, github_app, review_kick, state as state_mod  # noqa: E402
 from diaktoros import routes, watch_mode  # noqa: E402
+from diaktoros import merge_only  # noqa: E402
 
 
 class Predicate(unittest.TestCase):
@@ -58,6 +59,10 @@ class AppSeat(fa.Base):
     principal and token are the App path's (``github_app``), proven live in M1b."""
 
     def setUp(self):
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "source", return_value=None)
+        off.start()
+        self.addCleanup(off.stop)
         super().setUp()
         key = self.root / "review.pem"
         key.write_text("k")
