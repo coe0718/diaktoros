@@ -95,24 +95,30 @@ class ProfileFixNamesNoRefusedApply(RouteEdits, Base):
                          gate_shims.divergence(config.load_id("widgets"), contract=True))
         self.assert_apply_rebinds(secret)
 
-    def test_owned_fix_names_repair_then_apply_for_a_reworded_route_moved_twice(self):
-        # #2058: the record holds the route with its gate and secret but the profile the config
-        # had before (critic, old prompt); since then the config moved to default and something
-        # rebound the live entry to a third profile. Apply refuses it (the record no longer
-        # matches its profile), repair restores and upgrades it, then apply rebinds it.
+    def test_owned_fix_names_no_repair_for_a_reworded_route_moved_twice(self):
+        # #2058, revised by #1446: the record holds the route with its gate and secret but the
+        # profile the config had before (critic, old prompt); since then the config moved to
+        # default and something rebound the live entry to a third profile. Record, live route
+        # and config name three profiles: the repair touches nothing there (it would move the
+        # seat to critic, which the config does not name), so no fix may name it first.
         self.full_install()
         secret = self.reworded("widgets-review", prompt=OLD_REVIEWER)
         self.edit_registry(lambda data: data["widgets-review"].update(profile="other"))
         self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="default"))
         loop = config.load_id("widgets")
         self.assertEqual(routes.route_profile(route_intent.load(loop)["widgets-review"]), "critic")
-        self.assertEqual(gate_shims.divergence(loop, contract=True)["widgets-review"][1],
-                         f"{REPAIR}, then {REBIND}")
+        divergence_fix, doctor_fix = self.fixes()
+        for fix in (divergence_fix, doctor_fix):
+            with self.subTest(fix=fix):
+                self.assertNotIn(REPAIR, fix)
+                self.assertNotIn("--repair", fix)
         self.assert_apply_refuses()
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
+        self.assertIn(routes.PROFILE_CONFLICT, out)
         live = routes.route("widgets-review")
-        self.assertEqual((live["profile"], live["prompt"]), ("critic", prompts.REVIEWER), out)
-        self.assert_apply_rebinds(secret)
+        self.assertEqual((live["profile"], live["prompt"], live["secret"]),
+                         ("other", OLD_REVIEWER, secret), out)
+        self.assertEqual(route_intent.load(loop)["widgets-review"]["profile"], "critic")
 
 
 if __name__ == "__main__":

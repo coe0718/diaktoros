@@ -44,6 +44,10 @@ REPAIR_FIX = ("the next armed watchdog sweep restores it from the plugin's inten
               "same secret — or run `hermes dk doctor --repair` now (that one command "
               "repairs it); if the change was intended, make it with the plugin's own commands "
               "(`set`, `apply`, `uninstall`), not by hand")
+PROFILE_CONFLICT_FIX = ("the loop config, the plugin's intent record and the live route name three "
+                        "different profiles, so the repair moves nothing (#1446): decide which "
+                        "profile the seat serves, set it in the loop config, then `hermes dk "
+                        "apply` (or `apply --recreate-routes` if apply refuses the route)")
 
 
 def _intent_overlay(loop: dict, data: dict, checks: list[doctor.Check]) -> list[doctor.Check]:
@@ -83,7 +87,11 @@ def _intent_overlay(loop: dict, data: dict, checks: list[doctor.Check]) -> list[
         else:
             check.detail += f" ({what})"
         live = data.get(name)
-        if isinstance(live, dict) and not route_intent.owned(live):
+        if routes.PROFILE_CONFLICT in fields:
+            # The repair touches nothing here (#1446): the record, the live route and the
+            # config name three profiles. Keep the route check's own fix, else name the conflict.
+            check.fix = check.fix or PROFILE_CONFLICT_FIX
+        elif isinstance(live, dict) and not route_intent.owned(live):
             # Repair reports a route something else now runs as a conflict and never overwrites
             # it, so it can only be the second step.
             check.fix = (f"remove or rename that entry (it now runs {live.get('script')!r}, not a "

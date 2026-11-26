@@ -352,6 +352,19 @@ or self-heal may restore your manual change. A durability error after publicatio
 means the new registry may be visible but not crash-durable: read actual state before
 retry. For observer destination mismatches follow [observer binding rules](observer.md#privacy-and-destination-binding).
 
+A route's profile is healed against three sides: the loop config, the intent record and
+the live route (#1446). The heal never moves a seat to a profile the config does not name:
+
+- live route = config, record stale: the record is refreshed to the live profile; nothing moves.
+- live route = record, config differs: nothing moves; the heal and doctor say to run `apply`.
+- live route differs from both, record = config: the record's profile is restored.
+- record differs from the config and the live route serves neither (or is missing): reported
+  as a profile conflict; neither the route nor the record is touched. Set the profile you want
+  in the loop config, then `apply` (or `apply --recreate-routes` if apply refuses the route).
+
+A role whose config names no profile keeps the old rule: the record's profile is restored.
+The "apply" notice repeats on every armed sweep until `apply` runs.
+
 ## Disk usage keeps growing
 
 **Cause:** concurrent isolated builds, checkout/scratch/cache limits, incomplete closed-PR
