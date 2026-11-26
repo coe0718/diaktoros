@@ -9,13 +9,15 @@ from __future__ import annotations
 import re
 import time
 
-from diaktoros import base_merge, config, conflict_person, gate, gh, observer, pr_hold
+from diaktoros import base_merge, config, conflict_person, gate, gh, merge_only, observer, pr_hold
 from diaktoros import review_only_conflict, watch_mode
 from diaktoros import state as state_mod
 from diaktoros.util import log
 
 # fix_owed's answer when the PR's reviews could not be read: wait, a later read decides (#1907).
 UNREAD = "its reviews could not be read"
+# #2743 (review of #2757, F7): whether a change request carries to this merge-only head is unread.
+UNDECIDED = "whether a change request carries over the merge to this head could not be read"
 
 # GitHub computes a PR's mergeability lazily: the first read after its base moves usually
 # answers null/"unknown" and starts the computation. One short wait, then one re-read.
@@ -166,7 +168,7 @@ def _queue_turn(loop: dict, st: state_mod.LoopState, number: int, head: str, bas
     owed = fix_owed(loop, st, number, head)
     if owed:
         log(f"#{number} @ {head[:7]} conflict turn not queued: {owed}")
-        if owed == UNREAD:        # nothing was read: no change request, no fix turn to retry
+        if owed in (UNREAD, UNDECIDED):   # nothing was read: no fix turn to retry
             return (f"{owed} at {head[:7]}, so {loop['base']} is not merged in yet; a later sweep "
                     "re-reads them, then merges it or waits for the fixer's answer")
         return (f"the fixer answers the changes requested at {head[:7]} first ({owed}); the "
@@ -192,7 +194,9 @@ def fix_owed(loop: dict, st: state_mod.LoopState, number: int, head: str) -> str
     first moves the head under it, so the fix turn is left answering a stale head and the merged
     head is reviewed as a round with the findings still open. On #1875 a fix turn timed out, the
     merge went first, and its review spent the PR's last round. Reviews that cannot be read wait
-    too, until a later sweep reads them. Approved, unreviewed, or at the cap: no wait, as before.
+    too, until a later sweep reads them, and so does a merge-only head whose carried change
+    request could not be read (``merge_only.undecided``, #2743). Approved, unreviewed, or at the
+    cap: no wait, as before.
     The sweep asks before queueing the turn, the worker again at its claim and launch (a verdict
     can land after it was queued), and ``safe_push`` once more right before the merge is pushed.
     """
@@ -202,7 +206,10 @@ def fix_owed(loop: dict, st: state_mod.LoopState, number: int, head: str) -> str
         reviews = transition.effective_reviews(loop, st, number, head, reviews)
     if not isinstance(reviews, list):
         return UNREAD
-    latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    with merge_only.decision():           # the carry and its undecided check read one answer
+        latest = gate.latest_effective_review_at_head(reviews, loop, head)
+        if latest is None and merge_only.undecided(loop, reviews, head):
+            return UNDECIDED
     if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
         return ""
     if gate.breach_holds(st.breach_get(number), head, len(gate.verdicts(reviews, loop)),

@@ -16,7 +16,9 @@ import unittest
 from unittest import mock
 
 import test_base_merge as tbm
-from diaktoros import base_merge, ready, safe_push, state as state_mod
+from diaktoros import base_merge, merge_only, ready, safe_push, state as state_mod
+
+REAL_LOOKUP = merge_only.lookup          # before ``tbm.Base`` stubs it
 
 
 def during_merge(change):
@@ -86,6 +88,59 @@ class ReadAgain(NotPushed, tbm.Base):
         new = self.update()
         self.assertEqual(new, self.remote_head())
         self.assertEqual(self.carried(new)["from"], self.head)
+
+
+class MergeOnlyUndecided(NotPushed, tbm.Base):
+    """Review of #2757, F7: a head merged from one with a change request, whose merge-only read
+    fails. The host's update waits, at the sweep's read and at the read right before the push."""
+
+    OLD = "9" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.reviews = [tbm.approval(self.OLD, review_id=12, state="CHANGES_REQUESTED")]
+        self.answer = ""
+
+    def lookup(self):
+        return mock.patch.object(merge_only, "lookup", side_effect=lambda loop, head:
+                                 self.answer if head == self.head else "")
+
+    def test_an_unreadable_carry_at_the_sweeps_read_waits(self):
+        self.answer = merge_only.UNKNOWN
+        with self.lookup(), mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assert_not_pushed()
+        self.assertIn("carries over the merge to this head could not be read",
+                      str(log.call_args_list[-1]))
+
+    def test_a_carry_unreadable_right_before_the_push_stops_it(self):
+        for answer, why in ((merge_only.UNKNOWN, "carries over the merge to this head could not be "
+                             "read, read again before the push"),
+                            (self.OLD, "changes are requested at the head, read again before the "
+                             "push")):
+            with self.subTest(answer=answer), self.lookup(), \
+                    during_merge(lambda: setattr(self, "answer", answer)), \
+                    mock.patch.object(base_merge, "log") as log:
+                self.answer = ""
+                self.assertEqual(self.update(), "")
+                self.assert_not_pushed()
+                self.assertIn(why, str(log.call_args_list[-1]))
+
+    def test_a_read_that_recovers_inside_the_check_still_waits(self):
+        answers = iter([merge_only.UNKNOWN])
+        with mock.patch.object(merge_only, "lookup", REAL_LOOKUP), \
+                mock.patch.object(merge_only, "_decide", side_effect=lambda loop, head:
+                                  next(answers, self.OLD) if head == self.head else ""), \
+                mock.patch.object(base_merge, "log") as log:
+            self.assertEqual(self.update(), "")
+        self.assert_not_pushed()
+        self.assertIn("could not be read", str(log.call_args_list[-1]))
+
+    def test_a_head_that_is_definitely_not_merge_only_is_merged(self):
+        with self.lookup():
+            new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
 
 
 class RecordFirst(tbm.Base):

@@ -42,6 +42,13 @@ MERGED = {"tree": TREE, "conflicted": ["a.py"], "entries": [], "skipped": [], "a
 class Claim(fg.Base):
     """A conflict row needs no verdict to be claimed; a plain fixer row still does."""
 
+    def setUp(self):
+        super().setUp()
+        # #2743: no head in these fixtures is a merge-only one; nothing reads GitHub for it.
+        off = mock.patch.object(merge_only, "lookup", return_value="")
+        off.start()
+        self.addCleanup(off.stop)
+
     def claim(self, turn_key: str):
         self.set_push(True)
         settings = self.root / "runtime.json"
@@ -556,6 +563,40 @@ class MergeAuthorization(unittest.TestCase):
         with self.assertRaisesRegex(broker.BrokerDenied, "a merge waits for the fixer here"):
             self.push(self.review("CHANGES_REQUESTED"), self.MERGE)
         self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
+
+    def merge_only_push(self, lookup=None, decide=None):
+        """A merge push at a head merged from ``OLD``, where changes were requested."""
+        self.fake.branch_head = self.fake.pr_head = tsp.HEAD
+        self.loop = {**self.loop, "cap": 3}
+        asked = [{**self.review("CHANGES_REQUESTED")[0], "commit_id": self.OLD}]
+        target = ("lookup", lookup) if decide is None else ("_decide", decide)
+        with mock.patch.object(merge_only, target[0], side_effect=target[1]):
+            return self.push(asked, self.MERGE)
+
+    OLD = "9" * 40
+
+    def test_an_unreadable_carry_stops_a_merge_push(self):
+        # Review of #2757, F7: a failed merge-only read is not "no change request".
+        from diaktoros import watch_conflicts
+        for answer in (merge_only.UNKNOWN, self.OLD):
+            with self.subTest(answer=answer), \
+                    self.assertRaisesRegex(broker.BrokerDenied, "a merge waits for the fixer here"):
+                self.merge_only_push(lambda loop, head: answer if head == tsp.HEAD else "")
+            self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
+        with self.assertRaisesRegex(broker.BrokerDenied, watch_conflicts.UNDECIDED):
+            self.merge_only_push(lambda loop, head: merge_only.UNKNOWN)
+
+    def test_a_carry_read_that_recovers_inside_the_check_still_stops_it(self):
+        from diaktoros import watch_conflicts
+        answers = iter([merge_only.UNKNOWN])
+        with self.assertRaisesRegex(broker.BrokerDenied, watch_conflicts.UNDECIDED):
+            self.merge_only_push(decide=lambda loop, head: next(answers, self.OLD)
+                                 if head == tsp.HEAD else "")
+        self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
+
+    def test_a_head_that_is_definitely_not_merge_only_is_merged(self):
+        receipt = self.merge_only_push(lambda loop, head: "")
+        self.assertEqual(receipt["outcome"], "published")
 
     def test_an_ordinary_push_without_a_change_request_is_still_refused(self):
         for reviews in (self.review("APPROVED"), []):

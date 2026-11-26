@@ -219,6 +219,17 @@ class Verdicts(unittest.TestCase):
         source.assert_not_called()
 
 
+class ConflictNotice(unittest.TestCase):
+    def test_an_undecided_carry_queues_no_merge_and_says_a_later_sweep_reads_again(self):
+        # Review of #2757, F7: not "the fixer answers first": nothing decided a change request.
+        from diaktoros import watch_conflicts
+        with patch.object(watch_conflicts, "fix_owed", return_value=watch_conflicts.UNDECIDED), \
+                patch.object(gate, "enqueue_isolated") as queued:
+            notice = watch_conflicts._queue_turn(LOOP, None, 3, B, BASE)
+        queued.assert_not_called()
+        self.assertIn("a later sweep re-reads", notice)
+
+
 class FixerClaim(unittest.TestCase):
     """The fixer's answer turn, queued at the reviewed head, runs at the merge-only head."""
 
