@@ -108,7 +108,13 @@ REREVIEW = "re-arm the review turn owed at this head"
 
 def _fix_step(loop: dict, number: int, head: str):
     """``FIX`` with no fix turn at ``head`` under the gate's key, else ``_rearm_step``'s answer
-    for it. An unreadable ledger reads as none: the enqueue dedups against any turn there."""
+    for it; nothing (said) while a fixer turn of any key (a CI fix's, a conflict's) is queued or
+    running here, as for the reviewer (#2760 F8): an ended one of those answers no verdict. An
+    unreadable ledger reads as none: the enqueue dedups against any turn there."""
+    live = _live_at(loop, number, head, "fixer")
+    if live:
+        return 1, (f"[{loop['id']}] #{number} @ {head[:7]}: a fixer turn is already {live} "
+                   "here — nothing to unstick")
     turn = _turn_at(loop, number, head, "fixer", "")
     return FIX if turn is None else _rearm_step(loop, number, head, "fixer", turn)
 

@@ -232,6 +232,18 @@ class Unstick(Ledger):
         self.assertEqual((out["code"], self.queued), (1, []))
         self.assertIn("already pending", out["lines"][0])
 
+    def test_a_fix_turn_of_any_key_already_out_is_left_alone(self):
+        # Review of #2760, F8: a CI fix running at the head, and the change request's own turn
+        # not queued yet. Once the CI fix has ended it answers no verdict: the plain one is owed.
+        cifix = self.turn("running", head=fg.HEAD, key="cifix:")
+        out = self.unstick([fg.verdict()])
+        self.assertEqual((out["code"], self.queued), (1, []))
+        self.assertIn("fixer turn is already running", out["lines"][0])
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (cifix,))
+        out = self.unstick([fg.verdict()])
+        self.assertEqual((out["code"], self.queued), (0, [(7, fg.HEAD)]), out["lines"])
+
     def gate(self, reviews):
         """The review request delivered to the real reviewer gate, in process, as the host's
         ``review`` calls it; its ledger is this one, and no worker starts."""
