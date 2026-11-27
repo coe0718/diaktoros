@@ -335,6 +335,24 @@ class Unstick(Ledger):
         self.assertTrue(transition.unrecorded(self.loop, self.st, 7, fg.HEAD))
         self.assertIn(f"would {unstick.REVIEW}", self.unstick([], dry_run=True)["lines"][0])
 
+    def test_no_verdict_from_before_a_retarget_still_to_be_recorded_counts(self):
+        # Review of #2760, F9: the PR moved off a stacked base at the same head, and no gate has
+        # recorded it yet. The stacked review's change request or approval is no verdict on the
+        # root base: the fresh review is owed, and the reviewer gate records the boundary.
+        watch = self.st.watch()
+        watch.setdefault("stacked_wait", {})["7"] = {"head": OLD, "base": "stack"}
+        self.st.watch_save(watch)
+        for old in (fg.verdict(), fg.verdict(6, "APPROVED")):
+            with self.subTest(state=old["state"]):
+                out = self.unstick([old])
+                self.assertEqual(out["code"], 0, out["lines"])
+                self.assertEqual((self.queued, self.kicked), ([], [(7, fg.HEAD, "unstick-review-7")]))
+        running = self.turn("running", head=fg.HEAD, seat="reviewer", key="retarget:stack:1")
+        out = self.unstick([fg.verdict()])
+        self.assertEqual((out["code"], self.queued, self.kicked), (1, [], []))
+        self.assertIn("reviewer turn is already running", out["lines"][0])
+        self.assertEqual(self.state(running), "running")
+
     def test_a_retarget_without_a_baseline_is_said(self):
         self.st.transition_set(7, {"head": fg.HEAD, "from_base": "stack", "at": 1000,
                                    "old_review_ids": None})

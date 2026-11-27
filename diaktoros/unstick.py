@@ -47,20 +47,33 @@ def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
     if hold:
         return _out(1, f"{at}: a maintainer holds it — release the hold first")
     st = state_mod.state_for(loop)
-    reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
-    if not isinstance(reviews, list):
-        return _out(2, f"{tag}: its reviews could not be read — nothing done")
-    with merge_only.decision():
-        latest = gate.latest_effective_review_at_head(reviews, loop, head)
-        if latest is None and merge_only.undecided(loop, reviews, head):
-            return _out(2, f"{at}: {merge_only.UNDECIDED_WHY} — nothing done; try again")
-        step = _owed(loop, st, number, head, pr, reviews, latest)
+    if transition.unrecorded(loop, st, number, head):
+        # #2760 F9: a same-head retarget the gates have still to record. No review from before
+        # it is a verdict on the root base (the gates record the boundary before reading any),
+        # so the step is the fresh review it owes; the reviewer gate records it and names it.
+        step = _review_live(loop, number, head) or REVIEW
+    else:
+        step = _read_owed(loop, st, number, head, pr)
     if isinstance(step, tuple) and isinstance(step[0], int):
         return _out(*step)
     step, run_id = step if isinstance(step, tuple) else (step, None)
     if dry_run:
         return _out(0, f"{at}: would {step}")
     return _take(loop, number, head, pr, step, run_id)
+
+
+def _read_owed(loop: dict, st, number: int, head: str, pr: dict):
+    """``_owed``, from the PR's effective reviews; ``(2, line)`` when they cannot be read or a
+    merge-only carry is undecided."""
+    at = f"[{loop['id']}] #{number} @ {head[:7]}"
+    reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
+    if not isinstance(reviews, list):
+        return 2, f"[{loop['id']}] #{number}: its reviews could not be read — nothing done"
+    with merge_only.decision():
+        latest = gate.latest_effective_review_at_head(reviews, loop, head)
+        if latest is None and merge_only.undecided(loop, reviews, head):
+            return 2, f"{at}: {merge_only.UNDECIDED_WHY} — nothing done; try again"
+        return _owed(loop, st, number, head, pr, reviews, latest)
 
 
 def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, latest):
@@ -124,13 +137,11 @@ def _review_step(loop: dict, st, number: int, head: str, reviews: list):
     ``_rearm_step``'s answer for it; nothing (said) while a reviewer turn of any key is queued or
     running here (#2760 F7). The key is the gate's own (``gate_reviewer.decide``): a dismissal's,
     else a recorded retarget's, else the plain one (F4). A retarget the gate has still to record
-    names a turn not yet written, so the request is delivered for the gate to record it."""
+    is ``perform``'s, before any review is read (F9)."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
-    live = _live_at(loop, number, head, "reviewer")
+    live = _review_live(loop, number, head)
     if live:
-        return 1, f"{at}: a reviewer turn is already {live} here — nothing to unstick"
-    if transition.unrecorded(loop, st, number, head):
-        return REVIEW
+        return live
     entry = transition.hold(st, number, head)
     fresh = transition.turn_key(entry) if entry is not None else ""
     if entry is not None and (transition.baseline_missing(entry) or not fresh):
@@ -139,6 +150,14 @@ def _review_step(loop: dict, st, number: int, head: str, reviews: list):
         return 1, f"{at}: base retarget hold — {why}"
     turn = _turn_at(loop, number, head, "reviewer", gate.dismissed_key(reviews, loop, head) or fresh)
     return REVIEW if turn is None else _rearm_step(loop, number, head, "reviewer", turn)
+
+
+def _review_live(loop: dict, number: int, head: str):
+    """``(1, line)`` while a reviewer turn of any key is queued or running at ``head``, else
+    None (#2760 F7)."""
+    live = _live_at(loop, number, head, "reviewer")
+    return (1, (f"[{loop['id']}] #{number} @ {head[:7]}: a reviewer turn is already {live} here "
+                "— nothing to unstick")) if live else None
 
 
 def _rearm_step(loop: dict, number: int, head: str, seat: str, turn: dict):

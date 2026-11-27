@@ -2190,7 +2190,8 @@ live, then:
   retarget asks for). If that turn ended, it is re-armed when `retry` would re-arm it, even after
   the redeliveries that the gate allows have run out; when it wouldn't, the line says why. With
   no turn there yet, the review request is delivered to the reviewer gate, as the watchdog's sweep
-  delivers one, and the gate queues it.
+  delivers one, and the gate queues it. A PR moved off a stacked base at the same commit, before
+  any gate has recorded the move, counts as having no verdict: reviews from before the move don't.
 - **Anything else:** nothing is done, and the line says whose move it is and the command to run.
   That covers a turn already queued or running, an approval, a maintainer's hold, a pending
   ruling, a spent cap (`escalate`), a review-only author's move or review cap
