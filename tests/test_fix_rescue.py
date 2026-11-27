@@ -22,9 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 import test_merge_only_heads as tmo  # noqa: E402
 import test_review_follows_head as rfh  # noqa: E402
-from diaktoros import config, fix_rescue, gh, merge_only, pr_hold  # noqa: E402
-from diaktoros import retry_action, review_kick, run_supervisor, unstick  # noqa: E402
-from diaktoros import util  # noqa: E402
+from diaktoros import config, fix_rescue, gate, gh, merge_check, merge_only  # noqa: E402
+from diaktoros import observer, one_shot_action, pr_hold, retry_action, review_kick  # noqa: E402
+from diaktoros import run_supervisor, transition, unstick, util  # noqa: E402
 
 OLD = rfh.OLD
 SUPERSEDED = run_supervisor.FIX_VERDICT_SUPERSEDED
@@ -53,17 +53,18 @@ class Ledger(fg.Base):
         self.db.parent.mkdir(parents=True, exist_ok=True)
         run_supervisor.Supervisor(self.db)
 
-    def turn(self, state, error="", head=OLD, seat="fixer", key="", created=None, updated=None):
+    def turn(self, state, error="", head=OLD, seat="fixer", key="", created=None, updated=None,
+             retries=0):
         """One turn of PR 7 in ``state``; its run id."""
         self.n = getattr(self, "n", 0) + 1
         run_id, now = f"r{self.n}", time.time()
         with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, attempts, "
                         "error, created, updated, turn_key, push_admitted, retries) "
-                        "VALUES (?, ?, ?, 7, ?, ?, ?, 0, ?, ?, ?, ?, 1, 0)",
+                        "VALUES (?, ?, ?, 7, ?, ?, ?, 0, ?, ?, ?, ?, 1, ?)",
                         (run_id, f"d{run_id}", fg.REPO, head, seat, state, error,
                          now if created is None else created, now if updated is None else updated,
-                         key))
+                         key, retries))
         return run_id
 
     def state(self, run_id):
@@ -180,23 +181,24 @@ class SweepQueuesIt(Ledger):
 class Unstick(Ledger):
     """``hermes dk unstick``: the step owed, through the real decision, with GitHub faked."""
 
-    def unstick(self, reviews, *, dry_run=False, pr=None, lookup=merged_from_old, hold=(None, "")):
+    def unstick(self, reviews, *, dry_run=False, pr=None, lookup=merged_from_old, hold=(None, ""),
+                kick=None):
         self.queued, self.kicked = [], []
 
         def queue(loop, number, head):
             self.queued.append((number, head))
             return "enqueued"
 
-        def kick(loop, pr, head, sender, tag):
+        def kicked(loop, pr, head, sender, tag):
             self.kicked.append((pr["number"], head, tag))
-            return True
+            return kick(loop, pr, head, sender) if kick else True
         # The real retry re-arms; only its worker start is stubbed.
         with mock.patch.object(gh, "pr", return_value=pr or fg.LIVE), \
                 mock.patch.object(gh, "reviews", return_value=reviews), \
                 mock.patch.object(pr_hold, "read", return_value=hold), \
                 mock.patch.object(merge_only, "lookup", side_effect=lookup), \
                 mock.patch.object(fix_rescue, "queue", side_effect=queue), \
-                mock.patch.object(review_kick, "kick", side_effect=kick), \
+                mock.patch.object(review_kick, "kick", side_effect=kicked), \
                 mock.patch.object(retry_action.gate, "resume_isolated", return_value=True):
             return unstick.perform(self.loop, 7, dry_run=dry_run)
 
@@ -230,27 +232,103 @@ class Unstick(Ledger):
         self.assertEqual((out["code"], self.queued), (1, []))
         self.assertIn("already pending", out["lines"][0])
 
-    def test_no_verdict_delivers_the_review_request_for_the_gate_to_name_the_turn(self):
-        # Review of #2760, F4: an ended review turn at the head need not be the one owed (after a
-        # dismissal the gate's key is ``dismissed:<id>``), so the gate names it, and re-arms a
-        # failed one of its own; unstick re-arms no review turn itself.
-        out = self.unstick([])
-        self.assertEqual((out["code"], self.kicked), (0, [(7, fg.HEAD, "unstick-review-7")]))
-        for state in ("succeeded", "failed"):
-            with self.subTest(state=state):
-                ended = self.turn(state, TIMEOUT if state == "failed" else "", head=fg.HEAD,
-                                  seat="reviewer")
-                out = self.unstick([])
-                self.assertEqual((out["code"], self.kicked), (0, [(7, fg.HEAD, "unstick-review-7")]))
-                self.assertEqual(self.state(ended), state, "the gate's, not unstick's")
-                with contextlib.closing(sqlite3.connect(self.db)) as con, con:
-                    con.execute("DELETE FROM runs")
+    def gate(self, reviews):
+        """The review request delivered to the real reviewer gate, in process, as the host's
+        ``review`` calls it; its ledger is this one, and no worker starts."""
+        supervisor = run_supervisor.Supervisor(self.db, fixture_mode=True, fixture_command=["true"])
 
-    def test_a_review_turn_already_out_is_left_alone(self):
-        self.turn("running", head=fg.HEAD, seat="reviewer", key="dismissed:9")
+        def deliver(loop, pr, head, sender):
+            with mock.patch.object(gate, "isolated_supervisor", return_value=supervisor), \
+                    mock.patch.object(gate, "fetch_reviews", return_value=reviews), \
+                    mock.patch.object(gate, "drain_seat"), \
+                    mock.patch.object(merge_check, "mark_pending"), \
+                    mock.patch.object(observer, "notify"), \
+                    mock.patch.object(run_supervisor.Supervisor, "_spawn"):
+                self.logged = one_shot_action._run_reviewer(
+                    review_kick.review_requested(loop, pr, head, sender))
+            return True
+        return deliver
+
+    def keys(self):
+        with contextlib.closing(sqlite3.connect(self.db)) as con:
+            return dict(con.execute("SELECT turn_key, state FROM runs WHERE seat='reviewer'"))
+
+    def test_a_dismissed_verdict_gets_the_review_the_gate_queues_for_it(self):
+        # Review of #2760, F4: the reviewer's change request at the head was dismissed, and the
+        # head's plain review turn already succeeded. The turn owed is the dismissal's; delivered
+        # through the real gate, it is queued under ``dismissed:42`` and the plain one is left.
+        reviews = [{**fg.verdict(42), "state": "DISMISSED"}]
+        self.turn("succeeded", head=fg.HEAD, seat="reviewer")
+        self.assertIn(f"would {unstick.REVIEW}", self.unstick(reviews, dry_run=True)["lines"][0])
+        out = self.unstick(reviews, kick=self.gate(reviews))
+        self.assertEqual(out["code"], 0, out["lines"])
+        self.assertEqual(self.kicked, [(7, fg.HEAD, "unstick-review-7")])
+        self.assertEqual(self.keys(), {"": "succeeded", "dismissed:42": "pending"})
+        # Again: that turn is out now, and nothing more is delivered.
+        self.assertEqual((self.unstick(reviews)["code"], self.kicked), (1, []))
+
+    def test_a_review_turn_redeliveries_no_longer_re_arm_is_re_armed(self):
+        # Review of #2760, F6: past MAX_REARMS failures the gate's intake refuses a redelivery;
+        # unstick re-arms that turn itself, as ``retry`` does, and delivers nothing.
+        failed = self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer",
+                           retries=run_supervisor.MAX_REARMS)
+        self.assertIn(f"would {unstick.REREVIEW}", self.unstick([], dry_run=True)["lines"][0])
+        out = self.unstick([])
+        self.assertEqual((out["code"], self.kicked), (0, []), out["lines"])
+        self.assertEqual(self.state(failed), "pending")
+        self.assertIn("reviewer re-armed (was failed", out["lines"][0])
+
+    def test_the_gates_intake_leaves_that_turn_failed(self):
+        # The F6 premise, through the real intake: delivered to the gate (as before the fix),
+        # the request "succeeds" and the turn stays failed.
+        failed = self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer",
+                           retries=run_supervisor.MAX_REARMS)
+        with mock.patch.object(transition, "unrecorded", return_value=True):
+            out = self.unstick([], kick=self.gate([]))
+        self.assertEqual((out["code"], self.state(failed)), (0, "failed"))
+        self.assertEqual(self.kicked, [(7, fg.HEAD, "unstick-review-7")])
+        self.assertIn(f"{run_supervisor.MAX_REARMS} failed attempts — only `hermes dk retry` "
+                      "re-arms it", "\n".join(self.logged))
+
+    def test_a_review_turn_retry_would_refuse_is_said_dry_and_for_real(self):
+        ended = self.turn("succeeded", head=fg.HEAD, seat="reviewer")
+        dry, real = self.unstick([], dry_run=True), self.unstick([])
+        self.assertEqual(dry, real)
+        self.assertEqual((real["code"], self.kicked, self.state(ended)), (1, [], "succeeded"))
+        self.assertIn("review turn here ended succeeded, and retry would not re-arm", real["lines"][0])
+
+    def test_a_review_turn_of_any_key_already_out_is_left_alone(self):
+        # Review of #2760, F7: a running turn of another key than the one owed here (the plain
+        # one), updated before the plain turn ended.
+        self.turn("running", head=fg.HEAD, seat="reviewer", key="dismissed:9",
+                  updated=time.time() - 600)
+        self.turn("succeeded", head=fg.HEAD, seat="reviewer")
         out = self.unstick([])
         self.assertEqual((out["code"], self.kicked), (1, []))
         self.assertIn("reviewer turn is already running", out["lines"][0])
+
+    def test_a_retargets_review_turn_is_the_one_owed(self):
+        # The gate's key after a recorded retarget is the transition's; one it has still to
+        # record names a turn not written yet, so the request is delivered.
+        self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer")
+        entry = self.st.transition_set(7, {"head": fg.HEAD, "from_base": "stack", "at": 1000,
+                                           "observed_stacked_head": OLD, "old_review_ids": []})
+        self.assertIn(f"would {unstick.REVIEW}", self.unstick([], dry_run=True)["lines"][0])
+        self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer", key=transition.turn_key(entry))
+        self.assertIn(f"would {unstick.REREVIEW}", self.unstick([], dry_run=True)["lines"][0])
+        self.st.transition_set(7, {**entry, "head": "c" * 40})
+        watch = self.st.watch()
+        watch.setdefault("stacked_wait", {})["7"] = {"head": OLD, "base": "stack"}
+        self.st.watch_save(watch)
+        self.assertTrue(transition.unrecorded(self.loop, self.st, 7, fg.HEAD))
+        self.assertIn(f"would {unstick.REVIEW}", self.unstick([], dry_run=True)["lines"][0])
+
+    def test_a_retarget_without_a_baseline_is_said(self):
+        self.st.transition_set(7, {"head": fg.HEAD, "from_base": "stack", "at": 1000,
+                                   "old_review_ids": None})
+        out = self.unstick([], dry_run=True)
+        self.assertEqual(out["code"], 1)
+        self.assertIn(transition.MISSING_BASELINE, out["lines"][0])
 
     def test_a_fix_turn_retry_would_refuse_is_said_dry_and_for_real(self):
         # Review of #2760, F5: the dry run promised a re-arm retry then refused.

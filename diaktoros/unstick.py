@@ -8,10 +8,11 @@ state owes, or says whose move it is:
 - a change request at the head: a fix turn at the head that ended is re-armed when ``retry``
   would re-arm it (else the line says why not); with none there, one is queued (``fix_rescue``,
   without the sweep's wait);
-- no verdict at the head and no review turn queued or running there: the review request is
-  delivered to the reviewer gate (the sweep's own delivery, #532 / #2468). The gate names the turn
-  the head owes (a fresh, a dismissal's or a retarget's key) and re-arms a failed one of its own;
-  a turn of another key at the head is not the one owed (#2760 F4);
+- no verdict at the head and no review turn of any key queued or running there: the review turn
+  the reviewer gate would queue (its key: a dismissal's, a retarget's, or the plain one, #2760
+  F4) is re-armed when it ended and ``retry`` would re-arm it, as the gate's redelivery does not
+  past ``MAX_REARMS`` (F6); with none at that key, the review request is delivered to the gate
+  (the sweep's own delivery, #532 / #2468), which queues it;
 - a turn already queued or running, an approval, a maintainer's hold, a ruling pending, a spent
   cap, a review-only author's move, or a loop without fixer pushes: nothing is done, and the
   line names the command that is the operator's.
@@ -21,9 +22,12 @@ loop's own gates and claims still decide it. ``dry_run`` says the step without t
 """
 from __future__ import annotations
 
+import sqlite3
+
 from . import config, fix_rescue, gate, gh, merge_only, pr_hold, review_kick, run_supervisor
 from . import state as state_mod
 from . import transition
+from .run_supervisor import views
 
 
 def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
@@ -60,8 +64,8 @@ def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
 
 
 def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, latest):
-    """The step owed at ``head``: ``FIX`` or ``REVIEW``, ``(REFIX, run id)``, or ``(code, line)``
-    when nothing is the loop's to do."""
+    """The step owed at ``head``: ``FIX`` or ``REVIEW``, ``(REFIX | REREVIEW, run id)``, or
+    ``(code, line)`` when nothing is the loop's to do."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
     state = gh.review_state(latest) if latest is not None else ""
     author = ((pr.get("user") or {}).get("login") or "").lower()
@@ -93,49 +97,102 @@ def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, lates
             number, head, spent):
         return 1, (f"{at}: review cap reached — `hermes dk review --loop {loop['id']} --pr "
                    f"{number} --another-round` grants one more")
-    turn = fix_rescue.turn_at(config.host_path("ledger"), loop["repo"], number, head, "reviewer")
-    if turn is not None and turn["state"] in run_supervisor.NOT_ENDED:
-        return 1, f"{at}: a reviewer turn is already {turn['state']} here — nothing to unstick"
-    return REVIEW
+    return _review_step(loop, st, number, head, reviews)
 
 
 FIX = "queue the fix turn owed at this head"
 REFIX = "re-arm the fix turn at this head"
 REVIEW = "deliver the review request to the reviewer gate"
+REREVIEW = "re-arm the review turn owed at this head"
 
 
 def _fix_step(loop: dict, number: int, head: str):
-    """``FIX`` with no fix turn at ``head`` under the gate's key, ``(REFIX, run id)`` when one
-    ended there and ``retry`` would re-arm it, and nothing (said) when one is queued or running or
-    ``retry`` refuses it: the dry run says the real step (#2760 F5). An unreadable ledger reads as
-    none: the enqueue dedups against any turn there."""
+    """``FIX`` with no fix turn at ``head`` under the gate's key, else ``_rearm_step``'s answer
+    for it. An unreadable ledger reads as none: the enqueue dedups against any turn there."""
+    turn = _turn_at(loop, number, head, "fixer", "")
+    return FIX if turn is None else _rearm_step(loop, number, head, "fixer", turn)
+
+
+def _review_step(loop: dict, st, number: int, head: str, reviews: list):
+    """``REVIEW`` when the review turn the reviewer gate would queue here has no row yet, else
+    ``_rearm_step``'s answer for it; nothing (said) while a reviewer turn of any key is queued or
+    running here (#2760 F7). The key is the gate's own (``gate_reviewer.decide``): a dismissal's,
+    else a recorded retarget's, else the plain one (F4). A retarget the gate has still to record
+    names a turn not yet written, so the request is delivered for the gate to record it."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
-    turn = fix_rescue.turn_at(config.host_path("ledger"), loop["repo"], number, head, "fixer")
-    if turn is None:
-        return FIX
+    live = _live_at(loop, number, head, "reviewer")
+    if live:
+        return 1, f"{at}: a reviewer turn is already {live} here — nothing to unstick"
+    if transition.unrecorded(loop, st, number, head):
+        return REVIEW
+    entry = transition.hold(st, number, head)
+    fresh = transition.turn_key(entry) if entry is not None else ""
+    if entry is not None and (transition.baseline_missing(entry) or not fresh):
+        why = (transition.MISSING_BASELINE if transition.baseline_missing(entry)
+               else "its transition time is unreadable, so its fresh turn cannot be named")
+        return 1, f"{at}: base retarget hold — {why}"
+    turn = _turn_at(loop, number, head, "reviewer", gate.dismissed_key(reviews, loop, head) or fresh)
+    return REVIEW if turn is None else _rearm_step(loop, number, head, "reviewer", turn)
+
+
+def _rearm_step(loop: dict, number: int, head: str, seat: str, turn: dict):
+    """For ``seat``'s owed turn at ``head``: ``(REFIX | REREVIEW, run id)`` when it ended and
+    ``retry`` would re-arm it, and nothing (said) when it is queued or running or ``retry`` refuses
+    it: the dry run says the real step (#2760 F5)."""
+    at = f"[{loop['id']}] #{number} @ {head[:7]}"
     if turn["state"] in run_supervisor.NOT_ENDED:
-        return 1, f"{at}: a fixer turn is already {turn['state']} here — nothing to unstick"
-    why = _not_rearmable(loop, number, turn["id"])
+        return 1, f"{at}: a {seat} turn is already {turn['state']} here — nothing to unstick"
+    why = _not_rearmable(loop, number, seat, turn["id"])
+    name = "fix" if seat == "fixer" else "review"
     if why:
-        return 1, (f"{at}: the fix turn here ended {turn['state']}, and retry would not re-arm "
-                   f"it ({why}) — `hermes dk explain --loop {loop['id']} --pr {number}` says "
-                   "what it answered")
-    return REFIX, turn["id"]
+        return 1, (f"{at}: the {name} turn here ended {turn['state']}, and retry would not "
+                   f"re-arm it ({why}) — `hermes dk explain --loop {loop['id']} --pr {number}` "
+                   "says what it answered")
+    return (REFIX if seat == "fixer" else REREVIEW), turn["id"]
 
 
-def _not_rearmable(loop: dict, number: int, run_id: str) -> str:
+def _ledger_rows(sql: str, args: tuple) -> list:
+    """Rows of a read of the host run ledger; none when it is absent or unreadable."""
+    try:
+        con = views.read_only_connect(config.host_path("ledger"))
+        if con is None:
+            return []
+        try:
+            return con.execute(sql, args).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return []
+
+
+def _turn_at(loop: dict, number: int, head: str, seat: str, turn_key: str) -> dict | None:
+    """``seat``'s turn at this PR head under ``turn_key`` as ``{"id", "state"}``, or None."""
+    rows = _ledger_rows("SELECT id, state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                        "AND COALESCE(turn_key, '')=? ORDER BY updated DESC LIMIT 1",
+                        (loop["repo"], number, head, seat, turn_key))
+    return {"id": rows[0][0], "state": rows[0][1]} if rows else None
+
+
+def _live_at(loop: dict, number: int, head: str, seat: str) -> str:
+    """The state of a ``seat`` turn of any key queued or running at this PR head, or ``""``."""
+    marks = ", ".join("?" * len(run_supervisor.NOT_ENDED))
+    rows = _ledger_rows(f"SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                        f"AND state IN ({marks}) LIMIT 1",
+                        (loop["repo"], number, head, seat, *run_supervisor.NOT_ENDED))
+    return rows[0][0] if rows else ""
+
+
+def _not_rearmable(loop: dict, number: int, seat: str, run_id: str) -> str:
     """Why ``retry`` would not re-arm ``run_id`` (``retry_action.plan``, pinned to it), or ``""``
     when it would."""
-    import sqlite3
     from . import retry_action
-    from .run_supervisor import views
     try:
         con = views.read_only_connect(config.host_path("ledger"))
         if con is None:
             return "no run ledger"
         con.row_factory = sqlite3.Row                      # plan reads rows by name
         try:
-            found = retry_action.plan(con, loop["repo"], number, "fixer", run_id=run_id)
+            found = retry_action.plan(con, loop["repo"], number, seat, run_id=run_id)
         finally:
             con.close()
     except (sqlite3.Error, OSError) as exc:
@@ -148,12 +205,12 @@ def _not_rearmable(loop: dict, number: int, run_id: str) -> str:
 
 def _take(loop: dict, number: int, head: str, pr: dict, step: str, run_id) -> dict:
     """Take ``step`` and say what came of it. A re-arm is of ``run_id`` alone, the turn
-    ``_fix_step`` found at this head (#2760 F1, F2)."""
+    ``_rearm_step`` found at this head (#2760 F1, F2, F6)."""
     at = f"[{loop['id']}] #{number} @ {head[:7]}"
-    if step == REFIX:
+    if step in (REFIX, REREVIEW):
         from . import retry_action
-        result = retry_action.perform(loop, number, "fixer", read_pr=lambda: pr,
-                                      reveal_errors=True, run_id=run_id)
+        result = retry_action.perform(loop, number, "fixer" if step == REFIX else "reviewer",
+                                      read_pr=lambda: pr, reveal_errors=True, run_id=run_id)
         lines = [f"{at}: {result['message']}"] if result["message"] else []
         lines += [f"{at}: {e['seat']} re-armed (was {e['state']}: {e.get('error') or 'no reason'})"
                   for e in result["rearmed"]]

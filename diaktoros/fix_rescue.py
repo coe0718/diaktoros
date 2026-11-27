@@ -54,26 +54,6 @@ def _rows(db, repo: str, number: int, head: str, since: float):
         return None
 
 
-def turn_at(db, repo: str, number: int, head: str, seat: str) -> dict | None:
-    """``seat``'s newest turn at this PR head as ``{"id", "state"}`` (for the fixer, under the
-    gate's key only: a CI-fix or conflict turn answers no verdict); None when there is none, or
-    the ledger is absent or unreadable."""
-    plain = " AND COALESCE(turn_key, '')=''" if seat == "fixer" else ""
-    try:
-        con = views.read_only_connect(db)
-        if con is None:
-            return None
-        try:
-            row = con.execute(f"SELECT id, state FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                              f"seat=?{plain} ORDER BY updated DESC, created DESC LIMIT 1",
-                              (repo, number, head, seat)).fetchone()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
-    return {"id": row[0], "state": row[1]} if row else None
-
-
 def owed(loop: dict, db, number: int, head: str, latest: dict) -> bool | None:
     """Whether the change request ``latest`` (the latest effective verdict at ``head``, its own
     or carried there) is owed a fix turn nobody will queue: there is none at this head, and every

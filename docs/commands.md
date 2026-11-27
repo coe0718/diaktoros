@@ -2185,10 +2185,12 @@ live, then:
 - **Changes requested at the head** (its own, or one carried over a base merge): a fix turn at the
   head that ended is re-armed when `retry` would re-arm it; when it wouldn't, the line says why.
   With no fix turn at the head, one is queued.
-- **No verdict at the head**, and no review turn queued or running there: the review request is
-  delivered to the reviewer gate, as the watchdog's sweep delivers one. The gate picks the turn the
-  head owes (a fresh review, or the one a dismissal or a retarget asks for) and re-arms a failed one
-  of its own.
+- **No verdict at the head**, and no review turn of any kind queued or running there: it finds
+  the review turn the reviewer gate would queue (a fresh review, or the one a dismissal or a
+  retarget asks for). If that turn ended, it is re-armed when `retry` would re-arm it, even after
+  the redeliveries that the gate allows have run out; when it wouldn't, the line says why. With
+  no turn there yet, the review request is delivered to the reviewer gate, as the watchdog's sweep
+  delivers one, and the gate queues it.
 - **Anything else:** nothing is done, and the line says whose move it is and the command to run.
   That covers a turn already queued or running, an approval, a maintainer's hold, a pending
   ruling, a spent cap (`escalate`), a review-only author's move or review cap
