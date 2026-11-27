@@ -26,7 +26,7 @@ import sqlite3
 
 from . import config, fix_rescue, gate, gh, merge_only, pr_hold, review_kick, run_supervisor
 from . import state as state_mod
-from . import transition
+from . import transition, util
 from .run_supervisor import views
 
 
@@ -53,20 +53,33 @@ def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
     if hold:
         return _out(1, f"{at}: a maintainer holds it — release the hold first")
     st = state_mod.state_for(loop)
-    if transition.unrecorded(loop, st, number, head):
-        # #2760 F9: a same-head retarget the gates have still to record. No review from before
-        # it is a verdict on the root base (the gates record the boundary before reading any),
-        # so the step is the fresh review it owes; the reviewer gate records it and names it.
-        # A person's approval left at this head survives the boundary, as in the gate (F10).
-        step = _person_hold(loop, st, number, head) or _review_live(loop, number, head) or REVIEW
-    else:
-        step = _read_owed(loop, st, number, head, pr)
+    try:
+        step = _step(loop, st, number, head, pr)
+    except LedgerUnread as exc:
+        # #2760 F11: whether a turn is already out is unknown, so no step is taken on a guess.
+        return _out(2, f"{at}: the run ledger could not be read ({exc}) — whether a turn is "
+                       "already out is unknown; nothing done, try again")
     if isinstance(step, tuple) and isinstance(step[0], int):
         return _out(*step)
     step, run_id = step if isinstance(step, tuple) else (step, None)
     if dry_run:
         return _out(0, f"{at}: would {step}")
     return _take(loop, number, head, pr, step, run_id)
+
+
+class LedgerUnread(Exception):
+    """The run ledger is there but could not be read (locked, say): no turn's state is known."""
+
+
+def _step(loop: dict, st, number: int, head: str, pr: dict):
+    """The step owed (``_owed``'s answer). Raises ``LedgerUnread``."""
+    if transition.unrecorded(loop, st, number, head):
+        # #2760 F9: a same-head retarget the gates have still to record. No review from before
+        # it is a verdict on the root base (the gates record the boundary before reading any),
+        # so the step is the fresh review it owes; the reviewer gate records it and names it.
+        # A person's approval left at this head survives the boundary, as in the gate (F10).
+        return _person_hold(loop, st, number, head) or _review_live(loop, number, head) or REVIEW
+    return _read_owed(loop, st, number, head, pr)
 
 
 def _read_owed(loop: dict, st, number: int, head: str, pr: dict):
@@ -80,6 +93,11 @@ def _read_owed(loop: dict, st, number: int, head: str, pr: dict):
         latest = gate.latest_effective_review_at_head(reviews, loop, head)
         if latest is None and merge_only.undecided(loop, reviews, head):
             return 2, f"{at}: {merge_only.UNDECIDED_WHY} — nothing done; try again"
+        if latest is None and gate.reviewed_at_head(reviews, loop, head):
+            # A verdict is there, but which is latest cannot be proved (an undated or unfamiliar
+            # review): the gates refuse a review, and no fix is owed on a guess.
+            return 2, (f"{at}: the latest verdict at this head cannot be told — nothing done; "
+                       f"`hermes dk explain --loop {loop['id']} --pr {number}` shows the reviews")
         return _owed(loop, st, number, head, pr, reviews, latest)
 
 
@@ -127,8 +145,7 @@ REREVIEW = "re-arm the review turn owed at this head"
 def _fix_step(loop: dict, number: int, head: str):
     """``FIX`` with no fix turn at ``head`` under the gate's key, else ``_rearm_step``'s answer
     for it; nothing (said) while a fixer turn of any key (a CI fix's, a conflict's) is queued or
-    running here, as for the reviewer (#2760 F8): an ended one of those answers no verdict. An
-    unreadable ledger reads as none: the enqueue dedups against any turn there."""
+    running here, as for the reviewer (#2760 F8): an ended one of those answers no verdict."""
     live = _live_at(loop, number, head, "fixer")
     if live:
         return 1, (f"[{loop['id']}] #{number} @ {head[:7]}: a fixer turn is already {live} "
@@ -154,7 +171,16 @@ def _review_step(loop: dict, st, number: int, head: str, reviews: list):
                else "its transition time is unreadable, so its fresh turn cannot be named")
         return 1, f"{at}: base retarget hold — {why}"
     turn = _turn_at(loop, number, head, "reviewer", gate.dismissed_key(reviews, loop, head) or fresh)
-    return REVIEW if turn is None else _rearm_step(loop, number, head, "reviewer", turn)
+    if turn is not None:
+        return _rearm_step(loop, number, head, "reviewer", turn)
+    mark = f"review:{number}:{head}"
+    if st.inflight(mark):
+        # The gate refuses a request while this head's review is marked out; the mark ages out
+        # (a re-arm above goes past the gate, so it is not held by it).
+        until = st.inflight_at(mark) + st.minutes("inflight_ttl_min") * 60
+        return 1, (f"{at}: a review of this head is marked in flight until "
+                   f"{util.iso_at(until)} — the reviewer gate takes no request before then")
+    return REVIEW
 
 
 def _person_hold(loop: dict, st, number: int, head: str):
@@ -191,7 +217,9 @@ def _rearm_step(loop: dict, number: int, head: str, seat: str, turn: dict):
 
 
 def _ledger_rows(sql: str, args: tuple) -> list:
-    """Rows of a read of the host run ledger; none when it is absent or unreadable."""
+    """Rows of a read of the host run ledger; none when there is no ledger (no turn ever ran).
+    Raises ``LedgerUnread`` when it is there and the read fails: an empty answer would hide a
+    live turn under another key, which the enqueue's same-key dedup does not see (#2760 F11)."""
     try:
         con = views.read_only_connect(config.host_path("ledger"))
         if con is None:
@@ -200,8 +228,8 @@ def _ledger_rows(sql: str, args: tuple) -> list:
             return con.execute(sql, args).fetchall()
         finally:
             con.close()
-    except sqlite3.Error:
-        return []
+    except (sqlite3.Error, OSError) as exc:
+        raise LedgerUnread(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _turn_at(loop: dict, number: int, head: str, seat: str, turn_key: str) -> dict | None:
@@ -223,7 +251,7 @@ def _live_at(loop: dict, number: int, head: str, seat: str) -> str:
 
 def _not_rearmable(loop: dict, number: int, seat: str, run_id: str) -> str:
     """Why ``retry`` would not re-arm ``run_id`` (``retry_action.plan``, pinned to it), or ``""``
-    when it would."""
+    when it would. Raises ``LedgerUnread``."""
     from . import retry_action
     try:
         con = views.read_only_connect(config.host_path("ledger"))
@@ -235,7 +263,7 @@ def _not_rearmable(loop: dict, number: int, seat: str, run_id: str) -> str:
         finally:
             con.close()
     except (sqlite3.Error, OSError) as exc:
-        return f"the run ledger cannot be read: {exc}"
+        raise LedgerUnread(f"{type(exc).__name__}: {exc}") from exc
     if found["rearmable"]:
         return ""
     return (next(iter(found["blocked"].values()), "") or found["message"]

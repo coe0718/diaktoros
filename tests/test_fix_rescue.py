@@ -25,6 +25,7 @@ import test_review_follows_head as rfh  # noqa: E402
 from diaktoros import config, fix_rescue, gate, gh, merge_check, merge_only  # noqa: E402
 from diaktoros import observer, one_shot_action, pr_hold, retry_action, review_kick  # noqa: E402
 from diaktoros import run_supervisor, transition, unstick, util  # noqa: E402
+from diaktoros.run_supervisor import views  # noqa: E402
 
 OLD = rfh.OLD
 SUPERSEDED = run_supervisor.FIX_VERDICT_SUPERSEDED
@@ -376,6 +377,52 @@ class Unstick(Ledger):
                     out = self.unstick(reviews, pr=pr)
                     self.assertEqual((out["code"], self.queued, self.kicked), (1, [], []))
                     self.assertIn(why, out["lines"][0])
+
+    def test_an_unreadable_ledger_takes_no_step(self):
+        # Review of #2760, F11: a locked ledger read as empty hid a running turn of another key,
+        # and a second turn was queued beside it. The read fails only for unstick's decision; the
+        # gate a delivery would reach reads it again, recovered.
+        connect, locked = views.read_only_connect, [True]
+
+        def read_only_connect(db, *args, **kwargs):
+            if locked[0]:
+                raise sqlite3.OperationalError("database is locked")
+            return connect(db, *args, **kwargs)
+
+        def recovered(loop, pr, head, sender):
+            locked[0] = False
+            return deliver(loop, pr, head, sender)
+        deliver = self.gate([])
+        self.turn("running", head=fg.HEAD, seat="reviewer", key="dismissed:9")
+        self.turn("running", head=fg.HEAD, key="cifix:")
+        with mock.patch.object(views, "read_only_connect", side_effect=read_only_connect):
+            for reviews in ([], [fg.verdict()]):
+                for dry_run in (True, False):
+                    with self.subTest(reviews=len(reviews), dry_run=dry_run):
+                        locked[0] = True
+                        out = self.unstick(reviews, dry_run=dry_run, kick=recovered)
+                        self.assertEqual((out["code"], self.queued, self.kicked), (2, [], []))
+                        self.assertIn("database is locked", out["lines"][0])
+        self.assertEqual(self.keys(), {"dismissed:9": "running"})
+
+    def test_a_review_marked_in_flight_is_waited_for_and_an_ended_turn_still_re_armed(self):
+        # The reviewer gate refuses a request while the head's review is marked out.
+        self.st.inflight(f"review:7:{fg.HEAD}", record=True)
+        dry = self.unstick([], dry_run=True)
+        real = self.unstick([], kick=self.gate([]))
+        self.assertEqual(dry, real)
+        self.assertEqual((real["code"], self.kicked), (1, []))
+        self.assertIn("marked in flight until", real["lines"][0])
+        self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer")
+        self.assertIn(f"would {unstick.REREVIEW}", self.unstick([], dry_run=True)["lines"][0])
+
+    def test_a_verdict_that_cannot_be_ordered_takes_no_step(self):
+        for state in ("CHANGES_REQUESTED", "APPROVED"):
+            with self.subTest(state=state):
+                undated = {**fg.verdict(5, state), "submitted_at": None}
+                out = self.unstick([undated])
+                self.assertEqual((out["code"], self.queued, self.kicked), (2, [], []))
+                self.assertIn("latest verdict at this head cannot be told", out["lines"][0])
 
     def test_a_retarget_without_a_baseline_is_said(self):
         self.st.transition_set(7, {"head": fg.HEAD, "from_base": "stack", "at": 1000,
