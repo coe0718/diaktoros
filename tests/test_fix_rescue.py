@@ -353,6 +353,30 @@ class Unstick(Ledger):
         self.assertIn("reviewer turn is already running", out["lines"][0])
         self.assertEqual(self.state(running), "running")
 
+    def test_a_persons_approval_still_holds_across_a_retarget_still_to_be_recorded(self):
+        # Review of #2760, F10: the boundary is recorded by the gate, but the person's approval
+        # left at this head stands (``gate_reviewer.decide`` still reads it): nothing is owed.
+        watch = self.st.watch()
+        watch.setdefault("stacked_wait", {})["7"] = {"head": OLD, "base": "stack"}
+        self.st.watch_save(watch)
+        self.st.human_hold_set(7, fg.HEAD, "person must approve")
+        dry = self.unstick([fg.verdict()], dry_run=True)
+        real = self.unstick([fg.verdict()], kick=self.gate([]))
+        self.assertEqual(dry, real)
+        self.assertEqual((real["code"], self.queued, self.kicked), (1, [], []))
+        self.assertIn("person must approve", real["lines"][0])
+        self.assertEqual(self.keys(), {})
+
+    def test_a_pr_neither_gate_takes_is_owed_no_turn(self):
+        # Both gates refuse a draft and a PR by an author the loop does not review.
+        for pr, why in (({**fg.LIVE, "draft": True}, "a draft"),
+                        ({**fg.LIVE, "user": {"login": "stranger"}}, "by stranger, not a fixer")):
+            with self.subTest(why=why):
+                for reviews in ([fg.verdict()], []):
+                    out = self.unstick(reviews, pr=pr)
+                    self.assertEqual((out["code"], self.queued, self.kicked), (1, [], []))
+                    self.assertIn(why, out["lines"][0])
+
     def test_a_retarget_without_a_baseline_is_said(self):
         self.st.transition_set(7, {"head": fg.HEAD, "from_base": "stack", "at": 1000,
                                    "old_review_ids": None})

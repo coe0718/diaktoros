@@ -41,6 +41,12 @@ def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
     at = f"{tag} @ {head[:7]}"
     if pr.get("state") != "open" or (pr.get("base") or {}).get("ref") != loop["base"]:
         return _out(1, f"{tag}: not an open PR on {loop['base']} — nothing to unstick")
+    author = ((pr.get("user") or {}).get("login") or "").lower()
+    if pr.get("draft") or author not in config.reviewed_authors(loop):
+        # Both gates refuse these before anything else (``eligible_author``): no turn is owed.
+        why = "a draft" if pr.get("draft") else (f"by {author or 'an unknown author'}, not a "
+                                                 "fixer or review-only author for this loop")
+        return _out(1, f"{at}: {why} — the loop owes it no turn")
     hold, hold_error = pr_hold.read(loop, number)
     if hold_error:
         return _out(2, f"{tag}: whether a maintainer holds it could not be read — nothing done")
@@ -51,7 +57,8 @@ def perform(loop: dict, number: int, *, dry_run: bool = False) -> dict:
         # #2760 F9: a same-head retarget the gates have still to record. No review from before
         # it is a verdict on the root base (the gates record the boundary before reading any),
         # so the step is the fresh review it owes; the reviewer gate records it and names it.
-        step = _review_live(loop, number, head) or REVIEW
+        # A person's approval left at this head survives the boundary, as in the gate (F10).
+        step = _person_hold(loop, st, number, head) or _review_live(loop, number, head) or REVIEW
     else:
         step = _read_owed(loop, st, number, head, pr)
     if isinstance(step, tuple) and isinstance(step[0], int):
@@ -101,11 +108,9 @@ def _owed(loop: dict, st, number: int, head: str, pr: dict, reviews: list, lates
             return 1, (f"{at}: changes requested, and fixer pushes are off — run "
                        f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         return _fix_step(loop, number, head)
-    held = st.human_hold(number, head)
-    if isinstance(held, dict):
-        # #478, as the sweep and the reviewer gate read it: no review is owed here (#2760 F3).
-        return 1, (f"{at}: waits for a person's approval (human_paths: "
-                   f"{held.get('why') or 'reserved paths'}) — no review is owed")
+    held = _person_hold(loop, st, number, head)
+    if held:
+        return held
     if review_only and spent >= config.review_only_cap(loop) and not st.review_cap_granted(
             number, head, spent):
         return 1, (f"{at}: review cap reached — `hermes dk review --loop {loop['id']} --pr "
@@ -150,6 +155,15 @@ def _review_step(loop: dict, st, number: int, head: str, reviews: list):
         return 1, f"{at}: base retarget hold — {why}"
     turn = _turn_at(loop, number, head, "reviewer", gate.dismissed_key(reviews, loop, head) or fresh)
     return REVIEW if turn is None else _rearm_step(loop, number, head, "reviewer", turn)
+
+
+def _person_hold(loop: dict, st, number: int, head: str):
+    """``(1, line)`` when the loop's review of ``head`` left its approval to a person (#478, as
+    the sweep and the reviewer gate read it: no review is owed, #2760 F3), else None."""
+    held = st.human_hold(number, head)
+    return (1, (f"[{loop['id']}] #{number} @ {head[:7]}: waits for a person's approval "
+                f"(human_paths: {held.get('why') or 'reserved paths'}) — no review is owed")
+            ) if isinstance(held, dict) else None
 
 
 def _review_live(loop: dict, number: int, head: str):
