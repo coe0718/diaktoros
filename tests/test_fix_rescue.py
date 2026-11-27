@@ -230,15 +230,44 @@ class Unstick(Ledger):
         self.assertEqual((out["code"], self.queued), (1, []))
         self.assertIn("already pending", out["lines"][0])
 
-    def test_no_verdict_delivers_the_review_request_or_re_arms_the_review(self):
+    def test_no_verdict_delivers_the_review_request_for_the_gate_to_name_the_turn(self):
+        # Review of #2760, F4: an ended review turn at the head need not be the one owed (after a
+        # dismissal the gate's key is ``dismissed:<id>``), so the gate names it, and re-arms a
+        # failed one of its own; unstick re-arms no review turn itself.
         out = self.unstick([])
         self.assertEqual((out["code"], self.kicked), (0, [(7, fg.HEAD, "unstick-review-7")]))
-        here = self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer",
-                         updated=time.time() - 600)
-        older = self.turn("failed", TIMEOUT, seat="reviewer")        # F1, for the reviewer
+        for state in ("succeeded", "failed"):
+            with self.subTest(state=state):
+                ended = self.turn(state, TIMEOUT if state == "failed" else "", head=fg.HEAD,
+                                  seat="reviewer")
+                out = self.unstick([])
+                self.assertEqual((out["code"], self.kicked), (0, [(7, fg.HEAD, "unstick-review-7")]))
+                self.assertEqual(self.state(ended), state, "the gate's, not unstick's")
+                with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+                    con.execute("DELETE FROM runs")
+
+    def test_a_review_turn_already_out_is_left_alone(self):
+        self.turn("running", head=fg.HEAD, seat="reviewer", key="dismissed:9")
         out = self.unstick([])
-        self.assertEqual((out["code"], self.kicked), (0, []), out["lines"])
-        self.assertEqual([self.state(i) for i in (here, older)], ["pending", "failed"])
+        self.assertEqual((out["code"], self.kicked), (1, []))
+        self.assertIn("reviewer turn is already running", out["lines"][0])
+
+    def test_a_fix_turn_retry_would_refuse_is_said_dry_and_for_real(self):
+        # Review of #2760, F5: the dry run promised a re-arm retry then refused.
+        for state, error in (("succeeded", ""), ("cancelled", SUPERSEDED)):
+            with self.subTest(state=state):
+                ended = self.turn(state, error, head=fg.HEAD)
+                dry = self.unstick([fg.verdict()], dry_run=True)
+                real = self.unstick([fg.verdict()])
+                self.assertEqual(dry, real, "the dry run says what the command does")
+                self.assertEqual((real["code"], self.queued), (1, []))
+                self.assertIn(f"ended {state}, and retry would not re-arm it", real["lines"][0])
+                self.assertEqual(self.state(ended), state)
+                with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+                    con.execute("DELETE FROM runs")
+        self.turn("failed", TIMEOUT, head=fg.HEAD)
+        self.assertIn(f"would {unstick.REFIX}",
+                      self.unstick([fg.verdict()], dry_run=True)["lines"][0])
 
     def test_a_head_left_to_a_persons_approval_is_owed_no_review(self):
         # Review of #2760, F3: human_paths, as the sweep and the reviewer gate read it.
@@ -246,9 +275,7 @@ class Unstick(Ledger):
         out = self.unstick([])
         self.assertEqual((out["code"], self.kicked), (1, []))
         self.assertIn("person must approve", out["lines"][0])
-        failed = self.turn("failed", TIMEOUT, head=fg.HEAD, seat="reviewer")
         self.assertEqual(self.unstick([])["code"], 1)
-        self.assertEqual(self.state(failed), "failed")
 
     def test_what_is_not_the_loops_to_do_is_said_and_left(self):
         approved = [fg.verdict(6, "APPROVED")]

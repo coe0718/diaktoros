@@ -112,7 +112,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
-| get a stuck PR moving again (queue or re-arm what it is owed) | [`unstick`](#unstick) |
+| get a stuck PR moving again (queue or re-arm its fix, or ask for its review) | [`unstick`](#unstick) |
 | stop a queued, blocked, waiting or running turn | [`cancel`](#cancel) |
 | finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
@@ -2183,9 +2183,12 @@ Takes the one next step a stuck PR is owed, so you don't have to work it out fro
 live, then:
 
 - **Changes requested at the head** (its own, or one carried over a base merge): a fix turn at the
-  head that ended is re-armed, under `retry`'s rules. With no fix turn at the head, one is queued.
-- **No verdict at the head:** a review turn at the head that ended is re-armed. With none there,
-  the review request is delivered to the reviewer gate, as the watchdog's sweep delivers one.
+  head that ended is re-armed when `retry` would re-arm it; when it wouldn't, the line says why.
+  With no fix turn at the head, one is queued.
+- **No verdict at the head**, and no review turn queued or running there: the review request is
+  delivered to the reviewer gate, as the watchdog's sweep delivers one. The gate picks the turn the
+  head owes (a fresh review, or the one a dismissal or a retarget asks for) and re-arms a failed one
+  of its own.
 - **Anything else:** nothing is done, and the line says whose move it is and the command to run.
   That covers a turn already queued or running, an approval, a maintainer's hold, a pending
   ruling, a spent cap (`escalate`), a review-only author's move or review cap

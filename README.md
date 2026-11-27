@@ -85,7 +85,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 | **History** | Seat turns, timings, verdicts and cost over a window | `hermes dk stats` |
 | **Why a PR is stuck** | The current gate, and what has to happen next | `hermes dk explain` |
 | **Re-arm a failed run** | Retry a run that failed before writing anything | `hermes dk retry` |
-| **Unstick a PR** | Take the next step a stuck PR is owed (queue or re-arm its fix or review), or say whose move it is | `hermes dk unstick` |
+| **Unstick a PR** | Take the next step a stuck PR is owed (queue or re-arm its fix, or ask for its review), or say whose move it is | `hermes dk unstick` |
 | **Stop a run** | Cancel a queued, blocked, waiting or running run; only a retry re-arms it | `hermes dk cancel` |
 | **Queue** | A queued run starts once its seat frees | `hermes dk drain` |
 | **Disk** | Local review artifacts for merged or closed PRs are reclaimed | `hermes dk cleanup` |
