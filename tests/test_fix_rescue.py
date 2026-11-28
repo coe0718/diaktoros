@@ -125,6 +125,16 @@ class Owed(Ledger):
         self.turn("succeeded", head=fg.HEAD, key="cifix:")
         self.assertIs(self.owed(), True)
 
+    def test_a_fix_turn_of_another_key_out_at_the_head_is_waited_for(self):
+        # Review of #2760, F12: no plain turn beside a CI fix or conflict turn still out there.
+        for key in ("cifix:", "conflict:"):
+            for state in ("pending", "running"):
+                with self.subTest(key=key, state=state):
+                    self.setUp()
+                    self.turn("cancelled", SUPERSEDED)
+                    self.turn(state, head=fg.HEAD, key=key)
+                    self.assertIs(self.owed(), False)
+
     def test_an_unreadable_ledger_or_an_undated_verdict_decides_nothing(self):
         self.turn("cancelled", SUPERSEDED)
         self.assertIs(self.owed({**asked(), "submitted_at": None}), False)
@@ -166,6 +176,19 @@ class SweepQueuesIt(Ledger):
         out = self.sweep_fix([asked()])
         self.assertEqual(self.queued, [])
         self.assertIn("fixer never pushed", out)
+
+    def test_a_fix_turn_of_another_key_running_at_the_head_is_waited_for(self):
+        # Review of #2760, F12: a CI fix running at the head gets no plain turn beside it; once
+        # it has ended, the change request's own turn is the one owed.
+        self.arm()
+        self.turn("cancelled", SUPERSEDED)
+        cifix = self.turn("running", head=fg.HEAD, key="cifix:")
+        self.sweep_fix([asked()])
+        self.assertEqual(self.queued, [])
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (cifix,))
+        self.sweep_fix([asked()])
+        self.assertEqual(self.queued, [(7, fg.HEAD)])
 
     def test_it_waits_until_the_verdict_and_the_head_have_stood_a_sweep_interval(self):
         # Real clocks: a verdict a minute old, or a head just seen, is the gate's still.

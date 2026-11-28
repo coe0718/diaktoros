@@ -36,17 +36,16 @@ def moved(state: str, error: str | None) -> bool:
 
 
 def _rows(db, repo: str, number: int, head: str, since: float):
-    """The PR's fix turns under the gate's key (no ``turn_key``) at ``head`` or created since
-    ``since``, oldest first, as (head, state, error); None when the ledger is absent or
-    unreadable."""
+    """The PR's fix turns of any key at ``head`` or created since ``since``, oldest first, as
+    (head, state, error, turn_key); None when the ledger is absent or unreadable."""
     try:
         con = views.read_only_connect(db)
         if con is None:
             return None
         try:
             return con.execute(
-                "SELECT head, state, error FROM runs WHERE repo=? AND pr=? AND seat='fixer' "
-                "AND COALESCE(turn_key, '')='' AND (head=? OR created>=?) ORDER BY created",
+                "SELECT head, state, error, COALESCE(turn_key, '') FROM runs WHERE repo=? "
+                "AND pr=? AND seat='fixer' AND (head=? OR created>=?) ORDER BY created",
                 (repo, number, head, since)).fetchall()
         finally:
             con.close()
@@ -56,16 +55,23 @@ def _rows(db, repo: str, number: int, head: str, since: float):
 
 def owed(loop: dict, db, number: int, head: str, latest: dict) -> bool | None:
     """Whether the change request ``latest`` (the latest effective verdict at ``head``, its own
-    or carried there) is owed a fix turn nobody will queue: there is none at this head, and every
-    one since the verdict ended only because the head moved on, by merges of the base alone, to
-    this one. None when the ledger or a merge-only read cannot be read: a later sweep decides."""
+    or carried there) is owed a fix turn nobody will queue: there is none at this head, none of
+    another key (a CI fix, a conflict) is queued or running there either, and every one since
+    the verdict ended only because the head moved on, by merges of the base alone, to this one.
+    None when the ledger or a merge-only read cannot be read: a later sweep decides."""
     at = util.iso_epoch(latest.get("submitted_at"))
     if at is None:
         return False
     rows = _rows(db, loop["repo"], number, head, at - CLOCK_SLACK_S)
     if rows is None:
         return None
-    for row_head, state, error in rows:
+    for row_head, state, error, key in rows:
+        if key:
+            # Another key's turn answers no verdict, but one out at this head is the fixer's
+            # turn there: the rescue queues none beside it (review of #2760, F12).
+            if row_head == head and state in run_supervisor.NOT_ENDED:
+                return False
+            continue
         if row_head == head or not moved(state, error):
             return False          # a turn at this head, or one that ran: not this rescue's
         follows = merge_only.leads_to(loop, head, row_head)
