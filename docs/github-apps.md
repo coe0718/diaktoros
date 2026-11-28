@@ -47,7 +47,10 @@ hermes dk create-apps --owner "<you-or-your-org>" --prefix "<name>-dk" --host "h
   it already made.
 
 The reader App gets the only active webhook, and Webhooks and Administration **Read and write**.
-That makes it the hook admin, and lets it run `protect`. The permissions each App gets are listed
+That makes it the hook admin, and lets it run `protect`. It also gets Issues **Read and write**, to
+file the issues a shadow review or a ruling found. With `--loop` on a loop that still uses repo
+hooks, the reader's webhook is made inactive; set it Active in the App's settings before moving
+that loop to App ingress. The permissions each App gets are listed
 in [Accounts](accounts.md#a-github-app-identity-instead-of-an-account).
 
 When it finishes, it prints an install link for each App, then the commands for the next steps.

@@ -108,6 +108,31 @@ class Manifests(unittest.TestCase):
         fresh = am.next_steps(made, "coe0718", False, None)
         self.assertTrue(fresh[-1].startswith("hermes dk setup --repo OWNER/REPO --app"))
 
+    def test_the_reader_can_file_issues(self):
+        # #1623: with shadow.file_issues or adjudicator_file_issues on, the reader files issues.
+        reader = am.manifest("widgets-dk", "reader", HOST, "r", "u")
+        self.assertEqual(reader["default_permissions"]["issues"], "write")
+
+    def test_the_readers_webhook_is_active_only_where_it_delivers(self):
+        # #1623: a repo-hooks loop has no App route; a new loop and an app-webhook loop do.
+        self.assertTrue(am.reader_hook_active(None))
+        self.assertTrue(am.reader_hook_active({"ingress": "app-webhook", "ingress_app": "r[bot]"}))
+        self.assertFalse(am.reader_hook_active({"ingress": "repo-hooks", "ingress_app": ""}))
+        off = am.manifest("widgets-dk", "reader", HOST, "r", "u", hook_active=False)
+        self.assertFalse(off["hook_attributes"]["active"])
+        made = {"reader": {"slug": "w-dk-reader", "id": 1, "login": "w-dk-reader[bot]",
+                           "key_file": "/k/r.pem", "hook_active": False}}
+        steps = am.next_steps(made, "coe0718", False, "widgets")
+        self.assertFalse(any("--ingress app-webhook" in s or "app-webhook --loop" in s
+                             for s in steps), steps)
+        self.assertTrue(any("inactive" in s for s in steps), steps)
+        # A record that does not say (a session from before #1623): the steps say to check first.
+        del made["reader"]["hook_active"]
+        steps = am.next_steps(made, "coe0718", False, "widgets")
+        check = [i for i, s in enumerate(steps) if s.startswith("check that the reader's webhook")]
+        switch = [i for i, s in enumerate(steps) if "--ingress app-webhook" in s]
+        self.assertTrue(check and switch and check[0] < switch[0], steps)
+
 
 class ForALoop(app_cli.Base):
     """`create-apps --loop`: the loop's own host, its id as the prefix, its roles, and the
@@ -126,9 +151,11 @@ class ForALoop(app_cli.Base):
 
         def create(**kw):
             seen.update(kw)
-            return {role: {"slug": f"{kw['prefix']}-{role}", "id": n,
+            made = {role: {"slug": f"{kw['prefix']}-{role}", "id": n,
                            "login": f"{kw['prefix']}-{role}[bot]", "key_file": f"/k/{role}.pem"}
                     for n, role in enumerate(kw["roles"], 1)}
+            made["reader"]["hook_active"] = kw.get("hook_active", True)   # as create records it
+            return made
         with mock.patch.object(am, "create", side_effect=create):
             rc, out = self.run_cli(["create-apps", "--owner", "acme", *argv])
         return rc, out, seen
@@ -141,7 +168,37 @@ class ForALoop(app_cli.Base):
                          ("widgets-dk", "https://gateway.example", ["reader", "reviewer", "fixer"],
                           config.home() / "apps"))
         self.assertIn('hermes dk identity --loop widgets --seat read --app "widgets-dk-reader[bot]', out)
-        self.assertIn("hermes dk app-webhook --loop widgets --set", out)
+        # This loop is on repo hooks: no App ingress steps (#1623; the app-webhook loop's are
+        # in test_an_app_webhook_loop_and_a_new_loop_keep_it_active).
+        self.assertNotIn("hermes dk app-webhook --loop widgets --set", out)
+
+    def readers_manifest(self, *argv):
+        """The reader manifest `create-apps` would post, built from what the command passed."""
+        rc, out, seen = self.create_apps(*argv)
+        self.assertEqual(rc, 0, out)
+        body = am.manifest(seen["prefix"], "reader", seen["host"], "r", "u",
+                           seen.get("hook_active", True))
+        return body, out
+
+    def test_a_repo_hooks_loop_gets_an_inactive_reader_webhook(self):
+        # #1623: this loop is on repo hooks (the default), so it has no App route.
+        body, out = self.readers_manifest("--loop", "widgets")
+        self.assertFalse(body["hook_attributes"]["active"])
+        self.assertEqual(body["default_permissions"]["issues"], "write")
+        self.assertNotIn("--ingress app-webhook", out)
+        self.assertIn("inactive", out)
+
+    def test_an_app_webhook_loop_and_a_new_loop_keep_it_active(self):
+        data = json.loads(self.loop_file().read_text())
+        data["apps"] = {**(data.get("apps") or {}),
+                        "acme-reader[bot]": {"app_id": 5, "key_file": str(self.key("read"))}}
+        data.update(ingress="app-webhook", ingress_app="acme-reader[bot]")
+        self.loop_file().write_text(json.dumps(data))
+        body, out = self.readers_manifest("--loop", "widgets")
+        self.assertTrue(body["hook_attributes"]["active"], out)
+        self.assertIn("--ingress app-webhook", out)
+        body, out = self.readers_manifest("--prefix", "fresh-dk", "--host", "https://gw.example")
+        self.assertTrue(body["hook_attributes"]["active"], out)
 
     def test_a_loop_with_an_adjudicator_gets_its_app_too(self):
         data = json.loads(self.loop_file().read_text())
@@ -213,6 +270,7 @@ class BrowserRound(unittest.TestCase):
                 manifest = json.loads(html.unescape(
                     re.search(r'name="manifest" value="([^"]*)"', page).group(1)))
                 self.log.append(("manifest", manifest["name"], manifest["redirect_url"]))
+                self.log.append(("hook", manifest["name"], manifest["hook_attributes"]["active"]))
                 back = (f"http://127.0.0.1:{port}/callback?code=c-{manifest['name']}"
                         f"&state={'nope' if wrong_state else state}")
                 try:
@@ -257,6 +315,38 @@ class BrowserRound(unittest.TestCase):
         self.assertEqual(sorted(made), ["fixer", "reader"])
         with self.assertRaises(FileExistsError):
             am.write_key(self.key_dir, "w-dk-reader", "other")
+
+    def test_the_browser_page_posts_the_readers_webhook_state(self):
+        # #1623: the manifest GitHub is actually sent follows hook_active, in the browser path.
+        made, _ = self.create(roles=("reader",), hook_active=False)
+        self.assertIn(("hook", "w-dk-reader", False), self.log)
+        self.assertIs(made["reader"]["hook_active"], False)
+        self.log.clear()
+        self.key_dir = self.key_dir.with_name("apps2")
+        made, _ = self.create(roles=("reader",))
+        self.assertIn(("hook", "w-dk-reader", True), self.log)
+        self.assertIs(made["reader"]["hook_active"], True)
+
+    def test_a_resumed_reader_keeps_the_webhook_state_it_was_made_with(self):
+        # #1623: a reader made inactive for a repo-hooks loop, resumed by an app-webhook run, is
+        # not remade: the run says so, and the next steps never offer the switch for it.
+        self.create(roles=("reader",), hook_active=False)
+        made, out = self.create(roles=("reader", "fixer"), hook_active=True)
+        self.assertIn("reader: w-dk-reader (made earlier", out)
+        self.assertIn("was made with its webhook inactive, and a rerun does not change it", out)
+        self.assertIs(made["reader"]["hook_active"], False)
+        steps = am.next_steps(made, "coe0718", False, "widgets")
+        self.assertFalse(any("--ingress app-webhook" in s or "app-webhook --loop" in s
+                             for s in steps), steps)
+        self.assertTrue(any("was made inactive" in s for s in steps), steps)
+        # A session from before #1623 has no state for its reader: the run says to check it.
+        session = json.loads((self.key_dir / am.SESSION).read_text())
+        for run in session["runs"].values():
+            run["apps"]["reader"].pop("hook_active")
+        (self.key_dir / am.SESSION).write_text(json.dumps(session))
+        made, out = self.create(roles=("reader",), hook_active=True)
+        self.assertIn("was made before its webhook state was recorded", out)
+        self.assertIsNone(am.reader_hook_made_active(made["reader"]))
 
     def test_another_runs_apps_are_never_reused(self):
         # One key directory serves every loop: a run for another prefix makes its own Apps.
@@ -370,6 +460,28 @@ class BrowserRound(unittest.TestCase):
                       key_dir=self.key_dir, browser=False, emit=out.append, post=self.post,
                       ask=lambda _p: "https://github.com/x?code=c-w-dk-reader&state=forged")
         self.assertFalse((self.key_dir / "w-dk-reader.pem").exists())
+
+    def test_without_a_browser_the_page_posts_the_readers_webhook_state(self):
+        # #1623: the manifest in the no-browser page follows hook_active too.
+        for active in (False, True):
+            with self.subTest(active=active):
+                key_dir = self.key_dir / ("on" if active else "off")
+                sent = []
+
+                def ask(_prompt, key_dir=key_dir, sent=sent):
+                    text = sorted(key_dir.glob("*-manifest.html"))[0].read_text()
+                    action = html.unescape(re.search(r'action="([^"]*)"', text).group(1))
+                    state = urllib.parse.parse_qs(urllib.parse.urlsplit(action).query)["state"][0]
+                    manifest = json.loads(html.unescape(
+                        re.search(r'name="manifest" value="([^"]*)"', text).group(1)))
+                    sent.append(manifest["hook_attributes"]["active"])
+                    return f"{manifest['redirect_url']}?code=c-{manifest['name']}&state={state}"
+
+                made = am.create(owner="coe0718", org=False, prefix="w-dk", roles=("reader",),
+                                 host=HOST, key_dir=key_dir, browser=False, emit=lambda _l: None,
+                                 ask=ask, post=self.post, hook_active=active)
+                self.assertEqual(sent, [active])
+                self.assertIs(made["reader"]["hook_active"], active)
 
 
 class CreateAppsCommand(unittest.TestCase):

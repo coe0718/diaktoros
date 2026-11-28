@@ -425,9 +425,18 @@ hermes dk create-apps --owner "<org>" --org --prefix widgets-dk --host https://g
 
 The Apps are named `<prefix>-<role>` (`<loop-id>-dk-…` with `--loop`), private, and get the
 permissions in [Accounts](accounts.md#a-github-app-identity-instead-of-an-account). The reader gets Webhooks and
-Administration **Read and write**, so it can also be the hook admin and run `protect`, and the
-only active webhook: it points at the loop's App route (`<host>/webhooks/dk-app-<slug>`), which
-`hermes dk app-webhook --set` then gives its secret. The defaults are reader, reviewer and
+Administration **Read and write**, so it can also be the hook admin and run `protect`, Issues
+**Read and write**, so it can file the issues `shadow.file_issues` and `adjudicator_file_issues`
+ask for, and the only webhook that can be active: it points at the loop's App route
+(`<host>/webhooks/dk-app-<slug>`), which `hermes dk app-webhook --set` then gives its secret. That
+webhook is active without `--loop` and for a loop on `ingress: app-webhook`; for a loop on repo
+hooks it is made inactive (there is no App route to deliver to), and the `set --ingress
+app-webhook` steps are not printed. A rerun resumes the Apps it already made and does not remake
+them: GitHub reads the webhook state only when an App is created, so the session records the state
+the reader was made with, and the next steps follow that one. A rerun on an `app-webhook` loop that
+resumes a reader made inactive says so and does not print the switch. With no state recorded (a
+session from an older version), it says to check Active in the App's settings first. Nothing reads the
+state back from GitHub, so a change made later in the App's settings is not seen. The defaults are reader, reviewer and
 fixer, plus the adjudicator when the loop has one. The local page answers only requests made
 to its own address and port, and takes a code only with the random state it issued.
 
