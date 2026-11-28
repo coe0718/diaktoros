@@ -36,17 +36,11 @@ def record(loop, st, number, head, base, *, watch=None):
     A complete baseline authorizes only the transition's one fresh isolated
     reviewer turn (``start_fresh_review``), never the old reviews themselves.
     """
-    data = watch if watch is not None else st.watch()
-    stacked = (data.get("stacked_wait") or {}).get(str(number))
-    if not isinstance(stacked, dict):
-        previous = (data.get("heads") or {}).get(str(number))
-        if (isinstance(previous, dict)
-                and previous.get("base") not in (None, loop["base"])):
-            stacked = {"head": previous.get("sha"), "base": previous["base"]}
+    stacked = _stacked(loop, watch if watch is not None else st.watch(), number)
     prior = st.transition_get(number)
     if isinstance(prior, dict) and prior.get("head") == head:
         return prior
-    if not isinstance(stacked, dict) or base != loop["base"]:
+    if stacked is None or base != loop["base"]:
         return None
     reviews, error = gh.reviews_read(loop, number)
     # The entire old review set must be known before a future human review can
@@ -66,6 +60,26 @@ def record(loop, st, number, head, base, *, watch=None):
     # generation work. The head-scoped marks are removed by the state helper.
     st.quarantine(number, head)
     return entry
+
+
+def _stacked(loop, data, number):
+    """The stacked child the watch state last saw PR ``number`` as, or None."""
+    stacked = (data.get("stacked_wait") or {}).get(str(number))
+    if not isinstance(stacked, dict):
+        previous = (data.get("heads") or {}).get(str(number))
+        if (isinstance(previous, dict)
+                and previous.get("base") not in (None, loop["base"])):
+            stacked = {"head": previous.get("sha"), "base": previous["base"]}
+    return stacked if isinstance(stacked, dict) else None
+
+
+def unrecorded(loop, st, number, head) -> bool:
+    """Whether ``record`` would record a new boundary at ``head`` on the root base, read without
+    recording it (``unstick``, #2760 F4): its fresh turn has no key yet, so no ledger row."""
+    prior = st.transition_get(number)
+    if isinstance(prior, dict) and prior.get("head") == head:
+        return False
+    return _stacked(loop, st.watch(), number) is not None
 
 
 def hold(st, number, head):

@@ -359,10 +359,7 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
         # #478: the loop's review of this head ended with its approval left to a person.
         silence(f"head {head[:7]} waits for a person's approval (human_paths: "
                 f"{held.get('why') or 'reserved paths'})")
-    dismissed = [int(r['id']) for r in gate.reviews_at_head(reviews, loop, head)
-                 if gh.review_state(r) == 'DISMISSED' and type(r.get('id')) is int and r['id'] > 0]
-    turn_key = (reconsider_key or dispute_key
-                or (f'dismissed:{max(dismissed)}' if dismissed else fresh_key))
+    turn_key = reconsider_key or dispute_key or gate.dismissed_key(reviews, loop, head) or fresh_key
     if st.inflight(f"review:{number}:{head}"):
         silence(f"a review for head {head[:7]} is already out")
 

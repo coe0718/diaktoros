@@ -70,6 +70,7 @@ from .operations import (  # noqa: F401
     cmd_retry,
     cmd_review,
     cmd_status,
+    cmd_unstick,
 )
 from .reports import (  # noqa: F401
     cmd_calls,
@@ -108,7 +109,8 @@ _COMMANDS = (
     set_parser.add_set, identity_command.add_identity, apply_command.add_apply,
     cli_settings.add_settings, cli_settings.add_show, cli_checks.add_arm, cli_checks.add_protect,
     cli_checks.add_app_webhook, cli_checks.add_create_apps, triage_command.add_triage,
-    identity_command.add_fixer_push, cli_operations.add_retry, cli_operations.add_cancel,
+    identity_command.add_fixer_push, cli_operations.add_retry, cli_operations.add_unstick,
+    cli_operations.add_cancel,
     cli_operations.add_continue, cli_operations.add_drain, cli_operations.add_observer,
     cli_operations.add_cleanup, cli_lifecycle.add_uninstall,
 )

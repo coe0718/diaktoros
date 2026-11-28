@@ -812,12 +812,7 @@ def _run_blockers(c) -> None:
     # one that ended with no push (failed, cancelled, succeeded) is named as such (#2077).
     if (c.at_head and not c.fix_live and not c.queued_seat and not c.push_off
             and not c.review_only and not c.ruling and not c.disputed and not c.cap_spent):
-        if not c.fixer_turn:
-            c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run "
-                              f"out — the fixer gate did not start one for that delivery")
-        elif c.fixer_turn not in LIVE_TURN:
-            c.blockers.append(f"{explain_next.shown_turn(c)} at head {c.short} is "
-                              f"{c.fixer_turn} with no fix pushed — nothing restarts it by itself")
+        _fix_not_out(c)
     if (c.request_pending and not c.held and not c.inflight_review and not c.at_head
             and not c.approved and not c.ruling and "reviewer" not in c.ledgered):
         c.blockers.append(f"a review request for {c.loop['reviewer_seat']} is pending at head "
@@ -829,6 +824,22 @@ def _run_blockers(c) -> None:
         c.blockers.append(f"no review request exists for head {c.short} — GitHub clears a request "
                           f"when a verdict lands, so the reviewer gate stays silent until the "
                           f"fixer asks again")
+
+
+def _fix_not_out(c) -> None:
+    """The blocker of a change request at the head with no fix turn out: none was started, or
+    the one at the head ended unpushed. Each names ``unstick`` when it takes the step (#2759):
+    a queue, or a re-arm only of a turn retry would re-arm (#2760 F5)."""
+    unstick = f"`hermes dk unstick --loop {c.loop['id']} --pr {c.number}`"
+    if not c.fixer_turn:
+        c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run "
+                          f"out — the fixer gate did not start one for that delivery; "
+                          f"{unstick} queues it")
+    elif c.fixer_turn not in LIVE_TURN:
+        rearms = f"; {unstick} re-arms it" if explain_next.fixer_retry(c)[0] else ""
+        c.blockers.append(f"{explain_next.shown_turn(c)} at head {c.short} is "
+                          f"{c.fixer_turn} with no fix pushed — nothing restarts it by itself"
+                          f"{rearms}")
 
 
 def _queue_blockers(c, declined: bool) -> None:
