@@ -51,7 +51,6 @@
     "diaktoros/gate/failures.py::gateway_webhook_setting": 117,
     "diaktoros/gate/failures.py::run": 136,
     "diaktoros/ready.py::assess_kinds": 93,
-    "diaktoros/retry_action.py::perform": 84,
     "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 112,
     "diaktoros/run_supervisor/notices.py::OperatorNotices.notify": 126,
     "diaktoros/run_supervisor/pr_facts.py::pr_change": 193,

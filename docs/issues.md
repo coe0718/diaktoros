@@ -486,8 +486,18 @@ head that was already there when the loop was armed: the cancelled turn in the r
 review was asked for, and the 15 minutes count from when the loop first saw the head (from
 arming, for a watchdog record too old to say). A sweep whose listing still shows the old head
 reports no "reviewer never posted a verdict" stall for it when that head's newest reviewer turn
-was cancelled this way: the head is gone, and the next sweep judges the new one (#2626). Other
-dropped wakes show as stall alerts.
+was cancelled this way: the head is gone, and the next sweep judges the new one (#2626).
+
+A fix owed the same way is queued too (#2759). A change request carried to a head that only merged
+the base (#2743) is still the fixer's to answer. The fix turn answering it may already have ended
+because a base merge moved the head: cancelled before it started, or stopped at staging because
+the head it fetched was gone. Then the watchdog queues the fixer at the current head. It does this
+once the verdict and the head have both stood 15 minutes, with no fix turn at this head, and only
+when every fix turn since the verdict ended that way and the head moved on through base merges
+alone. A verdict whose webhook queued no fix turn at all is queued the same way. A fix turn that
+ran and failed for its own reasons, or ended without pushing, is not run again: that stays a
+"fixer never pushed" stall, and `hermes dk retry` or [`unstick`](commands.md#unstick) is yours.
+Other dropped wakes show as stall alerts.
 
 ## Current limits
 
