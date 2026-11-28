@@ -203,6 +203,7 @@ class OperatorIntentTest(Fixture):
                          events=["pull_request_review"], script="gate_fixer.py",
                          deliver="discord", host=HOST)
         route_intent.record_live(self.loop, ["widgets-fix"])
+        self.loop["seats"]["fixer"]["profile"] = "fix-2"     # `set` moves the config with it
         self.assertEqual(route_intent.heal(self.loop), [])
         self.assertEqual(self.live()["widgets-fix"]["profile"], "fix-2")
 
@@ -420,21 +421,33 @@ class PromptUpgrade(Fixture):
         self.assertIn("record replaced by garbage", lines[0])
         self.assertEqual(self.live()["widgets-review"]["secret"], "drifted", "nothing restored")
 
-    def test_doctor_does_not_name_the_repair_when_the_record_has_another_profile(self):
-        # #1418 review F2: the repair would restore the recorded (wrong) profile.
+    def test_doctor_names_the_repair_that_refreshes_a_stale_recorded_profile(self):
+        # #1418 review F2 named "remove, then --recreate-routes" here, because the repair then
+        # restored the record's stale profile. Since #1446 the repair keeps the live (configured)
+        # profile, refreshes the record and restores the prompt with the same secret, so it is
+        # the fix to name (review of #2756, F5) — and following it works.
         from diaktoros.gate import shims as gate_shims
-        # The state that matters (shadow review, F3): the record holds THIS version's prompt
-        # but a stale profile; the live route has the configured profile and the old prompt.
-        # Main's old check (record prompt == this version's) recommended the repair here, and
-        # the repair would have restored the stale profile.
-        self.old_install()
+        # The record holds THIS version's prompt but a stale profile; the live route has the
+        # configured profile and the old prompt.
+        before = self.old_install()
         intent = route_intent.load(self.loop)
         route_intent.record(self.loop, {"widgets-review": dict(
             intent["widgets-review"], profile="old-profile", prompt=prompts.REVIEWER)})
         self.assertEqual(self.live()["widgets-review"]["profile"], "rev")
         fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
         self.assertIsNotNone(fix)
-        self.assertNotIn("--repair", fix[1])
+        self.assertIn("--repair", fix[1])
+        self.assertNotIn("--recreate-routes", fix[1])
+        checks = [doctor.Check("route:widgets-review", doctor.VERIFIED, "rev")]
+        overlay = route_checks._intent_overlay(self.loop, self.live(), checks)[0]
+        self.assertIn(route_intent.STALE_PROFILE, overlay.detail)
+        self.assertIn("--repair", overlay.fix)
+        route_intent.heal(self.loop)
+        live = self.live()["widgets-review"]
+        self.assertEqual((live["profile"], live["prompt"], live["secret"]),
+                         ("rev", prompts.REVIEWER, before["widgets-review"]["secret"]))
+        self.assertEqual(route_intent.load(self.loop)["widgets-review"]["profile"], "rev")
+        self.assertNotIn("widgets-review", gate_shims.divergence(self.loop, contract=True))
 
     def test_a_rebind_just_before_the_registry_restore_is_kept(self):
         # #1418 review round 2: a rebind (registry, then record) completes after the heal read
@@ -444,11 +457,11 @@ class PromptUpgrade(Fixture):
         self.native(lambda data: data["widgets-review"].update(secret="drifted"))  # a heal is due
         real = routes.heal_entries
 
-        def rebind_then_heal(expected, fields, owned):
+        def rebind_then_heal(expected, fields, owned, **kwargs):
             self.native(lambda data: data["widgets-review"].update(secret="new-secret",
                                                                   profile="new-profile"))
             route_intent.record_live(self.loop, ["widgets-review"])
-            return real(expected, fields, owned)
+            return real(expected, fields, owned, **kwargs)
         with mock.patch.object(routes, "heal_entries", side_effect=rebind_then_heal):
             route_intent.heal(self.loop)
         live = self.live()["widgets-review"]

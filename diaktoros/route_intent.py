@@ -132,6 +132,20 @@ def recorded_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
             and bool(secret) and want.get("secret") == secret)
 
 
+def refreshable(loop: dict, role: str, name: str, entry, intent) -> bool:
+    """Does the intent record vouch for the live route ``name`` except for a stale profile the
+    heal refreshes (``routes.profile_verdict`` says ``"refresh"``, #1446)? Same gate and secret
+    as the live entry, which already serves the loop config's profile: the repair keeps that
+    profile, brings the record up to it and restores the other recorded fields."""
+    want = intent.get(name) if isinstance(intent, dict) else None
+    if not isinstance(want, dict) or not isinstance(entry, dict):
+        return False
+    secret = entry.get("secret")
+    return (plugin_gate(role, entry.get("script")) and want.get("script") == entry.get("script")
+            and bool(secret) and want.get("secret") == secret
+            and routes.profile_verdict(config.seat_profile(loop, role), want, entry) == "refresh")
+
+
 def provably_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
     """Is the live route ``name`` provably this loop's ``role`` route, so ``apply``/``set`` may
     rewrite it (secret kept)? It must run one of this role's gates (``plugin_gate``) and either
@@ -245,7 +259,8 @@ def _adoptable(loop: dict, registry: dict, known: dict) -> dict:
     return found
 
 
-def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
+def _upgrade_prompts(loop: dict, intent: dict, label: str,
+                     held: frozenset = frozenset()) -> tuple[set, str]:
     """Bring this loop's recorded routes up to this version's gate prompts (an upgrade).
 
     The record is the plugin's own, so it is the proof a route is ours, not the prompt's wording,
@@ -253,9 +268,13 @@ def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
     not this version's has its record's prompt replaced; the heal then writes it to the live
     registry with the same secret. ``intent`` is updated in place. Returns the upgraded names
     and an alert line when the record could not be written ("" otherwise).
+
+    ``held`` names routes whose record is left exactly as it is (``_profile_conflicts``): a
+    profile conflict touches neither the route nor the record (#1446).
     """
     stale = {name: (role, want.get("prompt")) for role, name in routes_of(loop).items()
-             if isinstance(want := intent.get(name), dict) and want.get("script") == GATE_SCRIPT[role]
+             if name not in held
+             and isinstance(want := intent.get(name), dict) and want.get("script") == GATE_SCRIPT[role]
              and want.get("prompt") != ROUTE_PROMPT[role]}
     upgraded = set()
     for name, (role, seen) in sorted(stale.items()):
@@ -296,23 +315,98 @@ def _set_prompt(loop: dict, name: str, role: str, seen) -> bool:
         return True
 
 
+def configured_profiles(loop: dict) -> dict:
+    """route name → the profile the loop config says it serves (``config.seat_profile``): the
+    third side the heal weighs a drifted profile against (#1446)."""
+    return {name: config.seat_profile(loop, role) for role, name in routes_of(loop).items()}
+
+
+STALE_PROFILE = "stale record profile"
+
+
 def drift(loop: dict, registry: dict, intent: dict) -> dict:
-    """name → differing watched fields (``["missing"]`` when erased), for this loop's names only."""
+    """name → differing watched fields (``["missing"]`` when erased), for this loop's names only.
+
+    A drifted route's profile is named by what the heal does with it (``routes.profile_verdict``,
+    the rule ``routes.heal_entries`` applies, #1446): ``"profile"`` when it is restored,
+    ``STALE_PROFILE`` when the live route already serves the config's profile (the heal refreshes
+    the record instead), ``routes.PROFILE_CONFLICT`` when the record, the config and the live
+    route (or its absence) disagree (the heal touches nothing).
+    """
     role_of = {name: role for role, name in routes_of(loop).items()}
+    profiles = configured_profiles(loop)
     out = {}
     for name, want in intent.items():
         if name not in role_of:
             continue
         live = registry.get(name)
-        if live is None:
-            out[name] = ["missing"]
-        elif not isinstance(live, dict):
+        if live is not None and not isinstance(live, dict):
             out[name] = ["entry"]
-        else:
-            diff = [key for key in watched(role_of[name]) if live.get(key) != want.get(key)]
-            if diff:
-                out[name] = diff
+            continue
+        diff = ["missing"] if live is None else [
+            key for key in watched(role_of[name]) if live.get(key) != want.get(key)]
+        if diff:
+            out[name] = _name_profile(diff, routes.profile_verdict(profiles[name], want, live))
     return out
+
+
+def _name_profile(diff: list, verdict: str) -> list:
+    """``drift``'s fields with the profile named by the heal's ``verdict`` on it."""
+    named = {"refresh": STALE_PROFILE, "conflict": routes.PROFILE_CONFLICT}.get(verdict)
+    if not named:
+        return diff
+    if "profile" not in diff:
+        return diff + [named]               # a missing route: its profile is decided too
+    return [named if key == "profile" else key for key in diff]
+
+
+def _refresh_profile(loop: dict, name: str, stale, live: dict) -> bool:
+    """Bring the record's profile of ``name`` up to the live entry's, which is the loop config's
+    (#1446), under the record's lock and only if the record still holds the ``stale`` profile
+    that was read: a concurrent rebind is kept. The key is copied as the live entry has it
+    (present or absent), so the record serves exactly the live profile."""
+    with _lock(loop) as target:
+        current = load(loop) or {}
+        entry = current.get(name)
+        if not isinstance(entry, dict) or entry.get("profile", _ABSENT) != stale:
+            return False
+        current[name] = routes._keep_live_profile(entry, live)
+        _write(target, loop, current)
+        return True
+
+
+_ABSENT = object()
+
+
+def _profile_conflicts(loop: dict, registry: dict, intent: dict) -> frozenset:
+    """This loop's recorded routes whose profile is a ``"conflict"`` (``routes.profile_verdict``)
+    against the registry as ``heal`` read it: the heal touches nothing of them, so the prompt
+    upgrade must not rewrite their record either (review of #2756, F1)."""
+    profiles = configured_profiles(loop)
+    held = set()
+    for name, want in intent.items():
+        live = registry.get(name)
+        if (name in profiles and isinstance(want, dict) and (live is None or isinstance(live, dict))
+                and routes.profile_verdict(profiles[name], want, live) == "conflict"):
+            held.add(name)
+    return frozenset(held)
+
+
+def _apply_lines(loop: dict, label: str, registry: dict, expected: dict) -> list[str]:
+    """The heal's line for each route the record and the live registry agree on, on a profile
+    the loop config does not name (``routes.profile_verdict`` says ``"apply"``, #1446): the
+    operator changed the config without ``apply``. The heal moves nothing; it says so."""
+    profiles = configured_profiles(loop)
+    lines = []
+    for name, want in sorted(expected.items()):
+        live = registry.get(name)
+        if (isinstance(live, dict) and name in profiles
+                and routes.profile_verdict(profiles[name], want, live) == "apply"):
+            lines.append(f"⚠️ Diaktoros {label} — route {name} serves profile "
+                         f"{routes.route_profile(live)!r}, as the intent record says, but the "
+                         f"loop config names {profiles[name]!r}: NOT moved by the heal. Run "
+                         f"`hermes dk apply --loop {loop.get('id', '?')}` to rebind it.")
+    return lines
 
 
 def heal(loop: dict, *, adopt: bool = True) -> list[str]:
@@ -355,10 +449,12 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
                 intent.update(found)
             except (OSError, IntentError) as exc:
                 lines.append(f"⚠️ Diaktoros {label} — could not record route intent: {exc}")
-    upgraded, line = _upgrade_prompts(loop, intent, label)
+    upgraded, line = _upgrade_prompts(loop, intent, label,
+                                      _profile_conflicts(loop, registry, intent))
     lines += [line] if line else []
     expected = {name: entry for name, entry in intent.items()
                 if name in set(routes_of(loop).values())}
+    lines += _apply_lines(loop, label, registry, expected)
     if not expected or not drift(loop, registry, expected):
         return lines
     try:
@@ -370,11 +466,32 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
             # is what is restored, never the older snapshot.
             fresh = load(loop) or {}
             return {name: entry for name, entry in fresh.items() if name in names}
-        restored, conflicts = routes.heal_entries(
-            current, {name: watched(role_of[name]) for name in expected}, owned)
+        restored, conflicts, refreshed = routes.heal_entries(
+            current, {name: watched(role_of[name]) for name in expected}, owned,
+            profiles=configured_profiles(loop))
     except (OSError, ValueError) as exc:
         return lines + [f"⚠️ Diaktoros {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]
+    return lines + _heal_report(loop, label, upgraded, restored, conflicts, refreshed)
+
+
+def _heal_report(loop: dict, label: str, upgraded: set, restored: dict, conflicts: dict,
+                 refreshed: dict) -> list[str]:
+    """``heal``'s lines for what ``routes.heal_entries`` did, after it refreshes the record of
+    each route whose live profile was kept because it is the loop config's (#1446)."""
+    lines = []
+    for name, (want, live) in sorted(refreshed.items()):
+        try:
+            done = _refresh_profile(loop, name, want.get("profile", _ABSENT), live)
+        except (OSError, IntentError) as exc:
+            lines.append(f"⚠️ Diaktoros {label} — route {name}: could not refresh its recorded "
+                         f"profile to the loop config's: {exc}")
+            continue
+        if done:
+            lines.append(f"🔧 Diaktoros {label} — route {name}: the intent record's profile "
+                         f"{routes.route_profile(want)!r} was stale; refreshed to "
+                         f"{routes.route_profile(live)!r}, which the route already serves and "
+                         "the loop config names (nothing moved)")
     for name in [n for n, fields in restored.items() if n in upgraded and fields == ["prompt"]]:
         lines.append(f"🔧 Diaktoros {label} — route {name}: its gate prompt was upgraded to this "
                      "version's (same secret, so GitHub's hook still authenticates)")
@@ -387,6 +504,8 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
             what = "was missing" if fields == ["missing"] else "had changed " + ", ".join(fields)
             lines.append(f"  {name}: {what}")
     for name, reason in sorted(conflicts.items()):
-        lines.append(f"⚠️ Diaktoros {label} — route {name} NOT restored: {reason}. "
-                     "Pick another route name or remove the other entry.")
+        then = (f"`hermes dk doctor --loop {loop.get('id', '?')}` names the fix"
+                if reason.startswith(routes.PROFILE_CONFLICT)
+                else "Pick another route name or remove the other entry")
+        lines.append(f"⚠️ Diaktoros {label} — route {name} NOT restored: {reason}. {then}.")
     return lines

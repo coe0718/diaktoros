@@ -477,7 +477,50 @@ def restore_entries(entries: dict[str, dict | None]) -> None:
     _transact(subs_path(), edit)
 
 
-def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
+_MISSING = object()
+PROFILE_CONFLICT = "profile conflict"
+
+
+def profile_verdict(configured: str, recorded: dict, live: dict | None) -> str:
+    """What the heal does with a route's profile, from three sources (#1446): the loop
+    config's profile (``configured``: what the operator asked for), the intent record's
+    (``recorded``: what the plugin last installed) and the live entry's (``live``: what runs;
+    ``None`` when the route is missing). The rule: a seat is never moved to a profile the loop
+    config does not name.
+
+    * ``""`` — the record and the live route serve one profile, the config's: nothing to do.
+    * ``"apply"`` — the record and the live route agree on a profile the config does not name:
+      the operator changed the config without ``apply``. Nothing moves; the heal says so.
+    * ``"refresh"`` — the live route already serves the config's profile and the record's is
+      stale: the record is refreshed to it; nothing moves.
+    * ``"restore"`` — the record holds the config's profile and the live route does not, or is
+      missing: an outside writer changed it, and the record's profile is put back.
+    * ``"conflict"`` — the record's profile is not the config's, and the live route serves
+      neither (or is missing): reported; nothing is touched.
+
+    A config that names no profile for the role (``configured`` is ``""``) leaves the record the
+    only authority, as before #1446: any difference is ``"restore"``.
+    """
+    want = route_profile(recorded)
+    have = route_profile(live) if isinstance(live, dict) else _MISSING
+    if want == have:
+        return "apply" if configured and have != configured else ""
+    if not configured or want == configured:
+        return "restore"
+    return "refresh" if have == configured else "conflict"
+
+
+def profile_conflict(configured: str, recorded: dict, live: dict | None) -> str:
+    """The reason a ``"conflict"`` (``profile_verdict``) is reported with: all three sides."""
+    have = (f"the live route serves {route_profile(live)!r}" if isinstance(live, dict)
+            else "the route is missing")
+    return (f"{PROFILE_CONFLICT}: the loop config names {configured!r}, the intent record "
+            f"{route_profile(recorded)!r}, and {have}; the heal never moves a seat to a profile "
+            "the config does not name, so nothing was touched")
+
+
+def heal_entries(expected: dict[str, dict], fields, owned,
+                 profiles: dict | None = None) -> tuple[dict, dict, dict]:
     """Put back the plugin's own routes a non-cooperating writer erased or rewrote.
 
     ``expected`` is the plugin's intent record (name → full entry), or a callable returning it:
@@ -490,36 +533,65 @@ def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
     Other names in the registry are not read for anything but preservation. A malformed
     registry raises (fail closed) exactly like every other plugin write.
 
-    Returns ``(restored, conflicts)``: name → list of fields restored ("missing" for an erased
-    route), and name → reason.
+    ``profiles`` (name → the loop config's profile) puts the profile through
+    ``profile_verdict`` (#1446), only for a route that is missing or still ``owned``: a
+    ``"conflict"`` is reported and nothing of that route is written; a ``"refresh"`` keeps the
+    live profile while the other watched fields are restored. Without it, the record wins.
+
+    Returns ``(restored, conflicts, refreshed)``: name → list of fields restored ("missing" for
+    an erased route), name → reason, and name → (record entry, live entry) for each route whose
+    live profile was kept because it is the config's (the caller brings the record up to it).
     """
     def edit(data: dict):
         restored: dict = {}
         conflicts: dict = {}
+        refreshed: dict = {}
         wanted = expected() if callable(expected) else expected
         for name, want in wanted.items():
             live = data.get(name)
-            if live is None:
-                data[name] = dict(want)
-                restored[name] = ["missing"]
-                continue
-            if not isinstance(live, dict):
+            if live is not None and not isinstance(live, dict):
                 conflicts[name] = "registry entry is not a JSON object"
                 continue
             watched = fields.get(name, ()) if isinstance(fields, dict) else fields
-            diff = [key for key in watched if live.get(key) != want.get(key)]
+            diff = ["missing"] if live is None else [
+                key for key in watched if live.get(key) != want.get(key)]
             if not diff:
                 continue
-            if not owned(live):
+            if live is not None and not owned(live):
                 conflicts[name] = (f"now runs {live.get('script')!r}, not a Diaktoros gate — "
                                    "something else holds this name")
                 continue
-            merged = {**live, **want}
-            for key in watched:         # a watched key the plugin never wrote is not kept either
-                if key not in want:
-                    merged.pop(key, None)
-            data[name] = merged
-            restored[name] = diff
-        return bool(restored), (restored, conflicts)
+            verdict = profile_verdict(profiles.get(name, ""), want, live) if profiles else ""
+            if verdict == "conflict":
+                conflicts[name] = profile_conflict(profiles[name], want, live)
+                continue
+            if verdict == "refresh":
+                refreshed[name] = (dict(want), dict(live))
+                want = _keep_live_profile(want, live)
+                diff = [key for key in diff if key != "profile"]
+            merged = dict(want) if live is None else _merged(live, want, watched)
+            if diff:
+                data[name] = merged
+                restored[name] = diff
+        return bool(restored), (restored, conflicts, refreshed)
 
     return _transact(subs_path(), edit)
+
+
+def _merged(live: dict, want: dict, watched) -> dict:
+    """``heal_entries``'s restore of a present entry: the live one with the record's fields, and
+    without a watched key the plugin never wrote."""
+    merged = {**live, **want}
+    for key in watched:
+        if key not in want:
+            merged.pop(key, None)
+    return merged
+
+
+def _keep_live_profile(want: dict, live: dict) -> dict:
+    """The record's entry with the live entry's ``profile`` (its key present or absent alike):
+    what the heal restores for a route whose live profile is the config's (#1446)."""
+    kept = {key: value for key, value in want.items() if key != "profile"}
+    if "profile" in live:
+        kept["profile"] = live["profile"]
+    return kept
