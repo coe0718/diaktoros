@@ -79,7 +79,8 @@ class EveryAgeDecision(unittest.TestCase):
         latest = with_time({"state": "CHANGES_REQUESTED", "user": {"login": "r"}},
                            "submitted_at", submitted)
         c = SimpleNamespace(loop=LOOP, st=SimpleNamespace(), breach={}, grace={"fixer": GRACE_MIN},
-                            current_heads={"7": {"observed_at": None}}, now=time.time())
+                            current_heads={"7": {"observed_at": None}}, watch={},
+                            now=time.time())
         gate, config = watchdog.gate, watchdog.config
         views = watchdog.run_supervisor.views
         with mock.patch.object(gate, "changes_at_head", return_value=[latest]), \

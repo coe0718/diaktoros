@@ -472,6 +472,14 @@ def reviews_at_head(reviews: list, loop: dict, head: str) -> list:
             if isinstance(r, dict) and is_reviewer(r, loop) and r.get("commit_id") == head]
 
 
+def dismissed_key(reviews: list, loop: dict, head: str) -> str:
+    """The reviewer turn key a dismissal at this head owes (``dismissed:<newest id>``), or ``""``
+    with none: the reviewer gate's and ``unstick``'s one rule (#2760 F4)."""
+    dismissed = [int(r['id']) for r in reviews_at_head(reviews, loop, head)
+                 if gh.review_state(r) == 'DISMISSED' and type(r.get('id')) is int and r['id'] > 0]
+    return f'dismissed:{max(dismissed)}' if dismissed else ''
+
+
 # Review states that are not a verdict: they never supersede one (overrides.py reads this too).
 NOT_VERDICTS = frozenset({"DISMISSED", "COMMENTED", "PENDING"})
 

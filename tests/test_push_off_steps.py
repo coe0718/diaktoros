@@ -230,6 +230,21 @@ class AfterEnabling(Steps):
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
 
+    def test_an_ended_turn_names_unstick_only_when_retry_re_arms_it(self):
+        # Review of #2760, F5: "unstick re-arms it" was said of a turn retry refuses.
+        for state, error, offered in (("failed", "", True),
+                                      ("cancelled", "fixer verdict superseded", False),
+                                      ("succeeded", "", False)):
+            with self.subTest(state=state):
+                sup, _ = self.ledgered(state, error)
+                self.set_push(True)
+                ended = [b for b in self.report()["blockers"]
+                         if f"is {state} with no fix pushed" in b]
+                self.assertEqual(len(ended), 1, ended)
+                self.assertEqual("hermes dk unstick" in ended[0], offered, ended[0])
+                with sup._connect() as con:
+                    con.execute("DELETE FROM runs")
+
     def test_with_pushes_on_an_ended_turn_is_no_run_that_did_not_start(self):
         # #2077: below the cap with pushes on, a failed or cancelled fixer turn at the head got
         # "the fixer gate did not start one" and a step to re-deliver "after checking why its run

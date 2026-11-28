@@ -50,6 +50,9 @@ NOT_ENDED = ("pending", "waiting", "claimed", "launching", "running")
 # review-only author's push, a base merge by the host or by "Update branch") does not, so the
 # watchdog delivers it for the new head (``views.moved_review``).
 REVIEW_HEAD_MOVED = 'PR head moved before the review started'
+# A fix turn whose PR head moved, or whose verdict there stopped asking for changes, before it
+# started: cancelled at its claim. A carried change request is owed it again (``fix_rescue``, #2759).
+FIX_VERDICT_SUPERSEDED = 'fixer verdict superseded'
 MAX_ATTEMPTS = 3
 # Issue #53: a turn that failed before any external write is not dead. It waits
 # (``waiting``, ``retry_at``) with exponential backoff and is relaunched up to MAX_RETRIES
