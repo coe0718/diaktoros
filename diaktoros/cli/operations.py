@@ -516,6 +516,18 @@ def cmd_retry(args) -> int:
     return 0 if result["ok"] else 2
 
 
+def cmd_unstick(args) -> int:
+    """Do the one next step a stuck PR is owed, or say whose move it is (#2759): ``unstick``'s."""
+    from .. import unstick
+    loop = _one_loop(args)
+    if loop is None:
+        return 2
+    result = unstick.perform(loop, args.pr, dry_run=args.dry_run)
+    for line in result["lines"]:
+        print(line)
+    return result["code"]
+
+
 def cmd_cancel(args) -> int:
     """Stop a queued, blocked, waiting or running isolated run (#1148).
 
@@ -1115,6 +1127,18 @@ def add_retry(sub) -> None:  # noqa: ANN001
                             "outage or usage-window hold) and run its held turns now, e.g. after "
                             "switching its model; with --pr, then re-arm that PR's run too")
     retry.set_defaults(func=cmd_retry)
+
+
+def add_unstick(sub) -> None:  # noqa: ANN001
+    """The ``unstick`` subcommand's parser, registered by ``cli.register_cli`` (#2759)."""
+    summary = ("Do the next step a stuck PR is owed (queue or re-arm its fix or review turn), "
+               "or say whose move it is; posts nothing, spends no verdict")
+    unstick = sub.add_parser("unstick", help=summary, description=summary)
+    unstick.add_argument("--loop", help="loop id (default: the only configured loop)")
+    unstick.add_argument("--pr", type=int, required=True, help="the pull request to unstick")
+    unstick.add_argument("--dry-run", action="store_true",
+                         help="only say the step it would take")
+    unstick.set_defaults(func=cmd_unstick)
 
 
 def add_cancel(sub) -> None:  # noqa: ANN001

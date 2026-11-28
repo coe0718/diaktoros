@@ -125,7 +125,8 @@ def newest(rows: list[dict]) -> dict:
     return max(rows, key=lambda row: (row["updated"] or 0, row["id"]))
 
 
-def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None) -> dict:
+def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None,
+         run_id: str | None = None) -> dict:
     """What re-arming this PR (or this seat's run) would pick, from the ledger.
 
     The head is the newest one that still has an offerable row — the ledger-only answer, which is
@@ -137,8 +138,13 @@ def plan(con, repo: str, pr: int, seat: str | None = None, resolve_head=None) ->
     Every row is classified: ``rearmable`` ones would actually be re-armed (write evidence is
     checked here, with the same function ``Supervisor.retry`` re-checks inside its transaction),
     and ``blocked`` maps an offered row's id to why it would be refused.
+
+    ``run_id`` pins the plan to that one row, at its own head, whatever else is newest: ``unstick``
+    re-arms exactly the turn it inspected, never another head's or another turn key's (#2760 F1, F2).
     """
     rows = rows_for(con, repo, pr, seat)
+    if run_id is not None:
+        rows = [row for row in rows if row["id"] == run_id]
     out = {"head": "", "head7": "", "rows": rows, "offered": [], "rearmable": [], "blocked": {},
            "disputed": False, "message": ""}
     if not rows:
@@ -310,7 +316,7 @@ def _moved(loop: dict, pr: int, confirm_head: str, found: dict) -> str:
 
 
 def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confirm_head: str | None = None,
-            resolve_head=None, read_pr=None, reveal_errors: bool = False) -> dict:
+            resolve_head=None, read_pr=None, reveal_errors: bool = False, run_id=None) -> dict:
     """Re-arm what ``retry`` would re-arm, and answer in structured form.
 
     The result carries the lines the CLI prints and the facts the Desktop page shows:
@@ -335,7 +341,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
     # transaction (workers may take the locks in the opposite order).
     held = scope_lock.snapshot(loop, pr)
     with sup._connect() as con:
-        found = plan(con, loop["repo"], pr, seat, resolve_head=resolve_head)
+        found = plan(con, loop["repo"], pr, seat, resolve_head=resolve_head, run_id=run_id)
     out["head"], out["head7"] = found["head"], found["head7"]
     if found["message"]:
         out["message"] = f"[{loop['id']}] " + found["message"]
@@ -349,23 +355,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
     if closed:
         out["message"] = closed
         return out
-    rearmed, refused = 0, 0
-    for row in found["offered"]:
-        entry = {"id": row["id"], "seat": row["seat"], "head": found["head"],
-                 "head7": found["head7"], "state": row["state"],
-                 "turn_key": str(row.get("turn_key") or "")}
-        if reveal_errors:
-            entry["error"] = row["error"] or ""
-        try:
-            # The loop's budget now (#49): a turn killed at its budget reruns on the raised one.
-            sup.retry(row["id"], budget=config.turn_budget(loop, row["seat"]))
-        except ValueError as exc:
-            refused += 1
-            entry["reason"] = bounded(exc)
-            out["refused"].append(entry)
-            continue
-        rearmed += 1
-        out["rearmed"].append(entry)
+    rearmed, refused = _rearm(loop, sup, found, out, reveal_errors)
     if rearmed:
         # #482: retry releases the PR's hold only after at least one committed re-arm, even
         # on CLI partial success. The plan is only a preview: retry re-checks write evidence
@@ -387,6 +377,29 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
                              "no private runtime file — the run stays pending until one exists")
     out["ok"] = bool(rearmed and not refused)
     return out
+
+
+def _rearm(loop: dict, sup, found: dict, out: dict, reveal_errors: bool) -> tuple[int, int]:
+    """Re-arm each of the plan's offered rows into ``out``'s ``rearmed`` or ``refused``; the two
+    counts."""
+    rearmed, refused = 0, 0
+    for row in found["offered"]:
+        entry = {"id": row["id"], "seat": row["seat"], "head": found["head"],
+                 "head7": found["head7"], "state": row["state"],
+                 "turn_key": str(row.get("turn_key") or "")}
+        if reveal_errors:
+            entry["error"] = row["error"] or ""
+        try:
+            # The loop's budget now (#49): a turn killed at its budget reruns on the raised one.
+            sup.retry(row["id"], budget=config.turn_budget(loop, row["seat"]))
+        except ValueError as exc:
+            refused += 1
+            entry["reason"] = bounded(exc)
+            out["refused"].append(entry)
+            continue
+        rearmed += 1
+        out["rearmed"].append(entry)
+    return rearmed, refused
 
 
 def _profile_seats(loop: dict, profile: str) -> list[str]:
