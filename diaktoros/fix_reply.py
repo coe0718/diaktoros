@@ -205,8 +205,8 @@ def claim_pr_comment(st, comment) -> bool:
         seen = dict(seen) if isinstance(seen, dict) else {}
         if str(cid) in seen:
             return False
-        cutoff = time.time() - WAIT_DAYS * 86400
-        seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and v > cutoff}
+        # Never pruned (#2738 review round 2, F1): a redelivery may come at any age, and a
+        # pruned id would make it actionable again. One small entry per maintainer PR comment.
         seen[str(cid)] = time.time()
         try:
             st.kv_set_strict(st.dir / PR_COMMENTS, seen)
@@ -214,6 +214,20 @@ def claim_pr_comment(st, comment) -> bool:
             log(f"state write failed ({PR_COMMENTS}): {exc}")
             return False
     return True
+
+
+def unclaim_pr_comment(st, comment) -> None:
+    """Drop this comment's claim (``claim_pr_comment``) when its retry re-armed nothing or
+    raised, so the nudge is not consumed by a failure (#2738 review round 2, F3)."""
+    cid = str(comment.get("id")) if isinstance(comment, dict) else ""
+    with st.locked():
+        seen = st.kv_get(st.dir / PR_COMMENTS, {})
+        if isinstance(seen, dict) and cid in seen:
+            seen = {k: v for k, v in seen.items() if k != cid}
+            try:
+                st.kv_set_strict(st.dir / PR_COMMENTS, seen)
+            except Exception as exc:
+                log(f"state write failed ({PR_COMMENTS}): {exc}")
 
 
 def on_pr_comment(loop: dict, number: int, login: str, comment=None) -> None:
@@ -231,8 +245,14 @@ def on_pr_comment(loop: dict, number: int, login: str, comment=None) -> None:
     from . import state as state_mod
     if not claim_pr_comment(state_mod.state_for(loop), comment):
         silence(f"#{number}: PR comment already acted on, or without an id; nothing re-queued")
-    result = retry_action.perform(loop, number, "fixer", confirm_head=head, read_pr=lambda: pr)
+    try:
+        result = retry_action.perform(loop, number, "fixer", confirm_head=head, read_pr=lambda: pr)
+    except Exception:
+        unclaim_pr_comment(state_mod.state_for(loop), comment)
+        raise
     if not result["rearmed"]:
+        # Round 2, F3: nothing was re-armed, so the nudge is not spent; a redelivery may act.
+        unclaim_pr_comment(state_mod.state_for(loop), comment)
         why = retry_action.bounded(result["message"] or "; ".join(
             str(e.get("reason") or "") for e in result["refused"]) or "nothing to re-arm")
         silence(f"#{number}: a comment on a PR; no fixer turn re-queued ({why}); the seats read "

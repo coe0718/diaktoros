@@ -292,6 +292,47 @@ class Delivery(Replies):
             self.assertEqual(self.deliver(self.comment(on_pr=True, cid=999))[0], "accepted")
         self.assertEqual(calls, [12, 12])
 
+    def test_a_pr_comment_replayed_after_weeks_and_other_comments_rearms_nothing(self):
+        """#2738 round 2, F1: a later comment weeks on never prunes an earlier id, so the old
+        delivery replayed after it stays declined."""
+        self.origin_pr = {"number": 12, "state": "open", "head": {"sha": "e" * 40}}
+        calls = []
+
+        def perform(loop, pr, seat, **kw):
+            calls.append(pr)
+            return {"rearmed": [{"seat": "fixer"}], "refused": [], "message": ""}
+        from diaktoros import retry_action
+        now = time.time()
+        with mock.patch.object(retry_action, "perform", perform):
+            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "accepted")
+            with mock.patch.object(fix_reply.time, "time", lambda: now + 15 * 86400):
+                self.assertEqual(self.deliver(self.comment(on_pr=True, cid=300))[0], "accepted")
+                self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "declined")
+        self.assertEqual(calls, [12, 12])
+
+    def test_a_pr_comment_whose_retry_failed_is_acted_on_when_redelivered(self):
+        """#2738 round 2, F3: a retry that re-armed nothing, or raised, does not spend the
+        comment; its redelivery re-arms once it can, and only once."""
+        self.origin_pr = {"number": 12, "state": "open", "head": {"sha": "e" * 40}}
+        outcomes = ["refused", "raise", "ok"]
+        calls = []
+
+        def perform(loop, pr, seat, **kw):
+            calls.append(pr)
+            outcome = outcomes.pop(0) if outcomes else "ok"
+            if outcome == "raise":
+                raise RuntimeError("ledger busy")
+            return {"rearmed": [{"seat": "fixer"}] if outcome == "ok" else [], "refused": [],
+                    "message": "" if outcome == "ok" else "no run ledger — nothing to retry"}
+        from diaktoros import retry_action
+        with mock.patch.object(retry_action, "perform", perform):
+            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "declined")
+            with self.assertRaises(RuntimeError):
+                fix_reply.on_comment(self.loop, self.comment(on_pr=True))
+            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "accepted")
+            self.assertEqual(self.deliver(self.comment(on_pr=True))[0], "declined")
+        self.assertEqual(calls, [12, 12, 12])
+
     def test_an_answer_to_an_ask_resumes_it_at_once_and_no_other_issues(self):
         self.st.fix_ask_set(12, "question", 100, "Which API shape?")
         self.st.fix_ask_set(13, "question", 100, "And this one?")   # answered too, by the sweep's
