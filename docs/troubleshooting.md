@@ -359,7 +359,8 @@ the live route (#1446). The heal never moves a seat to a profile the config does
 - live route = record, config differs: nothing moves; the heal and doctor say to run `apply`.
 - live route differs from both, record = config: the record's profile is restored.
 - record differs from the config and the live route serves neither (or is missing): reported
-  as a profile conflict; neither the route nor the record is touched. Set the profile you want
+  as a profile conflict; neither the route nor the record is touched (not even a prompt
+  upgrade of the record). Set the profile you want
   in the loop config, then `apply` (or `apply --recreate-routes` if apply refuses the route).
 
 A role whose config names no profile keeps the old rule: the record's profile is restored.

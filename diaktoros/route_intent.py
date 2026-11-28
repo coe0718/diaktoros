@@ -259,7 +259,8 @@ def _adoptable(loop: dict, registry: dict, known: dict) -> dict:
     return found
 
 
-def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
+def _upgrade_prompts(loop: dict, intent: dict, label: str,
+                     held: frozenset = frozenset()) -> tuple[set, str]:
     """Bring this loop's recorded routes up to this version's gate prompts (an upgrade).
 
     The record is the plugin's own, so it is the proof a route is ours, not the prompt's wording,
@@ -267,9 +268,13 @@ def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
     not this version's has its record's prompt replaced; the heal then writes it to the live
     registry with the same secret. ``intent`` is updated in place. Returns the upgraded names
     and an alert line when the record could not be written ("" otherwise).
+
+    ``held`` names routes whose record is left exactly as it is (``_profile_conflicts``): a
+    profile conflict touches neither the route nor the record (#1446).
     """
     stale = {name: (role, want.get("prompt")) for role, name in routes_of(loop).items()
-             if isinstance(want := intent.get(name), dict) and want.get("script") == GATE_SCRIPT[role]
+             if name not in held
+             and isinstance(want := intent.get(name), dict) and want.get("script") == GATE_SCRIPT[role]
              and want.get("prompt") != ROUTE_PROMPT[role]}
     upgraded = set()
     for name, (role, seen) in sorted(stale.items()):
@@ -373,6 +378,20 @@ def _refresh_profile(loop: dict, name: str, stale, live: dict) -> bool:
 _ABSENT = object()
 
 
+def _profile_conflicts(loop: dict, registry: dict, intent: dict) -> frozenset:
+    """This loop's recorded routes whose profile is a ``"conflict"`` (``routes.profile_verdict``)
+    against the registry as ``heal`` read it: the heal touches nothing of them, so the prompt
+    upgrade must not rewrite their record either (review of #2756, F1)."""
+    profiles = configured_profiles(loop)
+    held = set()
+    for name, want in intent.items():
+        live = registry.get(name)
+        if (name in profiles and isinstance(want, dict) and (live is None or isinstance(live, dict))
+                and routes.profile_verdict(profiles[name], want, live) == "conflict"):
+            held.add(name)
+    return frozenset(held)
+
+
 def _apply_lines(loop: dict, label: str, registry: dict, expected: dict) -> list[str]:
     """The heal's line for each route the record and the live registry agree on, on a profile
     the loop config does not name (``routes.profile_verdict`` says ``"apply"``, #1446): the
@@ -430,7 +449,8 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
                 intent.update(found)
             except (OSError, IntentError) as exc:
                 lines.append(f"⚠️ Diaktoros {label} — could not record route intent: {exc}")
-    upgraded, line = _upgrade_prompts(loop, intent, label)
+    upgraded, line = _upgrade_prompts(loop, intent, label,
+                                      _profile_conflicts(loop, registry, intent))
     lines += [line] if line else []
     expected = {name: entry for name, entry in intent.items()
                 if name in set(routes_of(loop).values())}

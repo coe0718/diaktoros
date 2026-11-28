@@ -72,9 +72,12 @@ def _intent_overlay(loop: dict, data: dict, checks: list[doctor.Check]) -> list[
         fields = drifted.get(name)
         if check is None:
             if fields:
+                # A route no check of its own covers (an observer's urgent route): the repair
+                # touches nothing of a profile conflict there either (review of #2756, F6).
+                fix = PROFILE_CONFLICT_FIX if routes.PROFILE_CONFLICT in fields else REPAIR_FIX
                 checks.append(doctor.Check(f"route:{name}", doctor.MISMATCH,
                                            "differs from the plugin's intent record: " + ", ".join(fields),
-                                           REPAIR_FIX))
+                                           fix))
             continue
         if not fields:
             if check.status == doctor.VERIFIED:

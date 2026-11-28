@@ -18,7 +18,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
-from diaktoros import doctor, route_intent, routes, watch_mode  # noqa: E402
+from diaktoros import doctor, observer, route_intent, routes, watch_mode  # noqa: E402
 from diaktoros.doctor import route_checks  # noqa: E402
 from scripts import watchdog  # noqa: E402
 from test_route_self_heal import Fixture  # noqa: E402
@@ -161,6 +161,67 @@ class ProfileHealRows(Fixture):
         self.assertEqual(self.recorded()["profile"], "old-profile")
         self.assertFalse(any("refreshed" in line for line in lines), lines)
         self.assertTrue(any("something else holds this name" in line for line in lines), lines)
+
+    def test_heal_entries_never_offers_a_foreign_entry_for_refresh(self):
+        # Review of #2756, round 2, F3: the candidate for a record refresh is chosen only after
+        # the live entry is established as the plugin's (routes.heal_entries checks ``owned``
+        # first). Selecting it before that check hands the caller a foreign entry to copy.
+        self.install()
+        self.record_profile("widgets-review", "old-profile")
+        self.native(lambda d: d["widgets-review"].update(script="foreign.py"))
+        expected = {"widgets-review": self.recorded()}
+        restored, conflicts, refreshed = routes.heal_entries(
+            expected, route_intent.watched("reviewer"), route_intent.owned,
+            profiles=route_intent.configured_profiles(self.loop))
+        self.assertEqual((restored, refreshed), ({}, {}))
+        self.assertIn("something else holds this name", conflicts["widgets-review"])
+
+    def test_row4_an_outdated_recorded_prompt_is_not_upgraded_either(self):
+        # Review of #2756, round 2, F1: the prompt upgrade ran before the conflict decision and
+        # rewrote the record of a route the heal then reported as "nothing was touched".
+        self.install()
+        entry = self.recorded()
+        route_intent.record(self.loop, {"widgets-review": dict(
+            entry, profile="old-profile", prompt="the previous reviewer prompt")})
+        self.native(lambda d: d["widgets-review"].update(profile="other"))
+        registry, record = self.subs.read_bytes(), route_intent.path(self.loop).read_bytes()
+        for lines in (self.sweep(), route_intent.heal(self.loop)):
+            self.assertEqual(self.subs.read_bytes(), registry, lines)
+            self.assertEqual(route_intent.path(self.loop).read_bytes(), record, lines)
+            self.assertTrue(any(routes.PROFILE_CONFLICT in line for line in lines), lines)
+            self.assertFalse(any("upgraded" in line for line in lines), lines)
+
+
+class UrgentRouteConflict(Fixture):
+    """Review of #2756, round 2, F6: an observer's urgent route has no route check of its own, so
+    doctor's intent overlay writes its check; a profile conflict there must not name the repair,
+    which touches nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.loop["observer"] = {"route": "widgets-feed", "urgent_route": "widgets-urgent",
+                                 "profile": "default", "urgent_profile": "pager",
+                                 "deliver": "telegram"}
+        self.native(lambda d: d.update({
+            "widgets-feed": {"secret": "f", **observer.route_contract(self.loop)},
+            "widgets-urgent": {"secret": "u", **observer.route_contract(self.loop, True)}}))
+        route_intent.record_live(self.loop, ["widgets-feed", "widgets-urgent"], replace=True)
+        entry = route_intent.load(self.loop)["widgets-urgent"]
+        route_intent.record(self.loop, {"widgets-urgent": dict(entry, profile="old-pager")})
+        self.native(lambda d: d["widgets-urgent"].update(profile="other"))
+
+    def test_doctor_names_the_conflict_and_the_heal_touches_nothing(self):
+        checks = {check.name: check for check in route_checks.check_routes(self.loop)}
+        check = checks["route:widgets-urgent"]
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn(routes.PROFILE_CONFLICT, check.detail)
+        self.assertEqual(check.fix, route_checks.PROFILE_CONFLICT_FIX)
+        self.assertNotIn("--repair", check.fix)
+        registry = self.subs.read_bytes()
+        lines = route_intent.heal(self.loop)
+        self.assertEqual(self.subs.read_bytes(), registry, lines)
+        self.assertTrue(any(routes.PROFILE_CONFLICT in line and "widgets-urgent" in line
+                            for line in lines), lines)
 
 
 if __name__ == "__main__":
